@@ -123,6 +123,88 @@ function toQuery(params: Record<string, unknown>): string {
   return sp.toString();
 }
 
+// ---------- Politico Influence types ----------
+
+export interface NewsletterSummary {
+  id: number;
+  url: string;
+  title: string;
+  published_date: string | null;
+  scraped_at: string | null;
+  entities_extracted: boolean;
+  body_preview: string;
+}
+
+export interface NewsletterDetail {
+  id: number;
+  url: string;
+  title: string;
+  published_date: string | null;
+  body_text: string;
+  entities: Array<{
+    name: string;
+    entity_type: string;
+    display_name: string;
+    paragraph_index: number;
+    context: string;
+  }>;
+}
+
+export interface EntitySummary {
+  id: number;
+  name: string;
+  entity_type: string;
+  display_name: string;
+  mention_count: number;
+  first_seen: string | null;
+  last_seen: string | null;
+}
+
+export interface EntityDetail extends EntitySummary {
+  connections: Array<{
+    entity: EntitySummary;
+    relationship_type: string;
+    weight: number;
+    first_seen: string | null;
+    last_seen: string | null;
+    context_snippets: string[];
+  }>;
+  newsletter_mentions: Array<{
+    newsletter_id: number;
+    newsletter_title: string;
+    published_date: string | null;
+    context: string;
+  }>;
+}
+
+export interface NetworkData {
+  nodes: Array<{
+    id: number;
+    name: string;
+    entity_type: string;
+    display_name: string;
+    mention_count: number;
+  }>;
+  edges: Array<{
+    source: number;
+    target: number;
+    weight: number;
+    relationship_type: string;
+  }>;
+  total_entities: number;
+  total_relationships: number;
+}
+
+export interface InfluenceStats {
+  total_newsletters: number;
+  total_entities: number;
+  total_persons: number;
+  total_organizations: number;
+  total_relationships: number;
+  total_affiliations: number;
+  latest_newsletter: string | null;
+}
+
 export const api = {
   searchFilings: (params: SearchParams) =>
     fetchJson<PaginatedResponse<FilingSummary>>(`${BASE}/filings?${toQuery(params)}`),
@@ -150,4 +232,29 @@ export const api = {
 
   getSyncStatus: () =>
     fetchJson<SyncStatus>(`${BASE}/sync/status`),
+
+  // Politico Influence
+  triggerInfluenceScrape: (params: { max_newsletters?: number; max_discovery_pages?: number }) =>
+    postJson<{ status: string }>(`${BASE}/influence/scrape`, params),
+
+  getInfluenceScrapeStatus: () =>
+    fetchJson<{ status: string; stored?: number; skipped?: number; errors?: number }>(`${BASE}/influence/scrape/status`),
+
+  getNewsletters: (page = 1, pageSize = 25) =>
+    fetchJson<PaginatedResponse<NewsletterSummary>>(`${BASE}/influence/newsletters?page=${page}&page_size=${pageSize}`),
+
+  getNewsletter: (id: number) =>
+    fetchJson<NewsletterDetail>(`${BASE}/influence/newsletters/${id}`),
+
+  getEntities: (params: { q?: string; entity_type?: string; sort?: string; page?: number; page_size?: number }) =>
+    fetchJson<PaginatedResponse<EntitySummary>>(`${BASE}/influence/entities?${toQuery(params)}`),
+
+  getEntity: (id: number) =>
+    fetchJson<EntityDetail>(`${BASE}/influence/entities/${id}`),
+
+  getNetwork: (params: { min_weight?: number; max_nodes?: number; entity_type?: string; center_entity_id?: number }) =>
+    fetchJson<NetworkData>(`${BASE}/influence/network?${toQuery(params)}`),
+
+  getInfluenceStats: () =>
+    fetchJson<InfluenceStats>(`${BASE}/influence/stats`),
 };

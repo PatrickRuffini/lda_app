@@ -1,9 +1,10 @@
-import { useState, useEffect, useCallback } from 'react';
-import { Search, FileText, Tag, BarChart3, RefreshCw, Building2, Users, ChevronLeft, ChevronRight, ExternalLink, DollarSign, Calendar, Loader2 } from 'lucide-react';
-import { api, type FilingSummary, type FilingDetail, type IssueSummary, type Stats, type SyncStatus, type SearchParams, type TopEntity } from './api';
+import { useState, useEffect, useCallback, useRef } from 'react';
+import { Search, FileText, Tag, BarChart3, RefreshCw, Building2, Users, ChevronLeft, ChevronRight, ExternalLink, DollarSign, Calendar, Loader2, Network, Newspaper, User, Briefcase } from 'lucide-react';
+import { api, type FilingSummary, type FilingDetail, type IssueSummary, type Stats, type SyncStatus, type SearchParams, type TopEntity, type NewsletterSummary, type EntitySummary, type EntityDetail, type NetworkData, type InfluenceStats } from './api';
 import { formatDistanceToNow, format } from 'date-fns';
+import NetworkGraph from './NetworkGraph';
 
-type Page = 'dashboard' | 'search' | 'issues' | 'filing';
+type Page = 'dashboard' | 'search' | 'issues' | 'filing' | 'influence' | 'network' | 'entity';
 
 function formatMoney(val: number | null | undefined): string {
   if (val === null || val === undefined) return '-';
@@ -26,6 +27,8 @@ function Nav({ page, setPage }: { page: Page; setPage: (p: Page) => void }) {
     { id: 'dashboard', label: 'Dashboard', icon: <BarChart3 size={18} /> },
     { id: 'search', label: 'Search', icon: <Search size={18} /> },
     { id: 'issues', label: 'Issues', icon: <Tag size={18} /> },
+    { id: 'influence', label: 'Influence', icon: <Newspaper size={18} /> },
+    { id: 'network', label: 'Network', icon: <Network size={18} /> },
   ];
   return (
     <header className="bg-white border-b border-gray-200 sticky top-0 z-50">
@@ -579,10 +582,421 @@ function FilingDetailPage({ filingUuid, onBack }: { filingUuid: string; onBack: 
   );
 }
 
+// ---------- Influence Page ----------
+function InfluencePage({ onNavigate }: { onNavigate: (page: Page, ctx?: unknown) => void }) {
+  const [stats, setStats] = useState<InfluenceStats | null>(null);
+  const [newsletters, setNewsletters] = useState<NewsletterSummary[]>([]);
+  const [topEntities, setTopEntities] = useState<EntitySummary[]>([]);
+  const [total, setTotal] = useState(0);
+  const [page, setPageNum] = useState(1);
+  const [loading, setLoading] = useState(true);
+  const [scraping, setScraping] = useState(false);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    try {
+      const [s, n, e] = await Promise.all([
+        api.getInfluenceStats(),
+        api.getNewsletters(page),
+        api.getEntities({ sort: '-mention_count', page_size: 15 }),
+      ]);
+      setStats(s);
+      setNewsletters(n.results);
+      setTotal(n.total);
+      setTopEntities(e.results);
+    } catch (err) {
+      console.error(err);
+    }
+    setLoading(false);
+  }, [page]);
+
+  useEffect(() => { load(); }, [load]);
+
+  const handleScrape = async () => {
+    setScraping(true);
+    try {
+      await api.triggerInfluenceScrape({ max_newsletters: 30, max_discovery_pages: 3 });
+      const poll = setInterval(async () => {
+        const s = await api.getInfluenceScrapeStatus();
+        if (s.status !== 'running') {
+          clearInterval(poll);
+          setScraping(false);
+          load();
+        }
+      }, 3000);
+    } catch (err) {
+      console.error(err);
+      setScraping(false);
+    }
+  };
+
+  if (loading) return <div className="flex items-center justify-center h-64"><Loader2 className="animate-spin text-indigo-600" size={32} /></div>;
+
+  return (
+    <div className="space-y-6">
+      {/* Header with scrape button */}
+      <div className="bg-white rounded-lg border border-gray-200 p-4 flex items-center justify-between">
+        <div>
+          <h1 className="text-lg font-semibold text-gray-900">Politico Influence</h1>
+          <p className="text-sm text-gray-500">
+            {stats?.total_newsletters ? `${stats.total_newsletters} newsletters scraped` : 'No newsletters yet'}
+            {stats?.latest_newsletter && ` · Latest: ${formatDate(stats.latest_newsletter)}`}
+          </p>
+        </div>
+        <button
+          onClick={handleScrape}
+          disabled={scraping}
+          className="flex items-center gap-2 bg-amber-600 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-amber-700 disabled:opacity-50 cursor-pointer"
+        >
+          {scraping ? <Loader2 size={16} className="animate-spin" /> : <RefreshCw size={16} />}
+          {scraping ? 'Scraping...' : 'Scrape Newsletters'}
+        </button>
+      </div>
+
+      {/* Stats */}
+      {stats && stats.total_entities > 0 && (
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
+          <div className="bg-white rounded-lg border border-gray-200 p-4">
+            <p className="text-2xl font-bold text-amber-600">{stats.total_entities.toLocaleString()}</p>
+            <p className="text-sm text-gray-500">Entities</p>
+          </div>
+          <div className="bg-white rounded-lg border border-gray-200 p-4">
+            <p className="text-2xl font-bold text-indigo-600">{stats.total_persons.toLocaleString()}</p>
+            <p className="text-sm text-gray-500">People</p>
+          </div>
+          <div className="bg-white rounded-lg border border-gray-200 p-4">
+            <p className="text-2xl font-bold text-amber-600">{stats.total_organizations.toLocaleString()}</p>
+            <p className="text-sm text-gray-500">Organizations</p>
+          </div>
+          <div className="bg-white rounded-lg border border-gray-200 p-4">
+            <p className="text-2xl font-bold text-green-600">{stats.total_relationships.toLocaleString()}</p>
+            <p className="text-sm text-gray-500">Relationships</p>
+          </div>
+        </div>
+      )}
+
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+        {/* Newsletter list */}
+        <div className="md:col-span-2">
+          <h2 className="text-lg font-semibold text-gray-900 mb-3">Newsletters</h2>
+          {newsletters.length === 0 ? (
+            <div className="text-center py-12 bg-white rounded-lg border border-gray-200">
+              <Newspaper size={40} className="mx-auto text-gray-300 mb-3" />
+              <p className="text-gray-500">No newsletters scraped yet. Click "Scrape Newsletters" to start.</p>
+            </div>
+          ) : (
+            <div className="space-y-3">
+              {newsletters.map(nl => (
+                <div key={nl.id} className="bg-white rounded-lg border border-gray-200 p-4 hover:shadow-md transition">
+                  <div className="flex items-start justify-between gap-2 mb-1">
+                    <h3 className="font-semibold text-gray-900 text-sm">{nl.title}</h3>
+                    <span className="text-xs text-gray-400 shrink-0">{formatDate(nl.published_date)}</span>
+                  </div>
+                  <p className="text-sm text-gray-600 line-clamp-2">{nl.body_preview}</p>
+                  <div className="flex items-center gap-3 mt-2">
+                    <a href={nl.url} target="_blank" rel="noopener noreferrer" className="text-xs text-indigo-600 hover:underline flex items-center gap-1">
+                      Read on Politico <ExternalLink size={10} />
+                    </a>
+                    {nl.entities_extracted && (
+                      <span className="text-xs text-green-600">Entities extracted</span>
+                    )}
+                  </div>
+                </div>
+              ))}
+              <Pagination page={page} pageSize={25} total={total} onPage={setPageNum} />
+            </div>
+          )}
+        </div>
+
+        {/* Top entities sidebar */}
+        <div>
+          <div className="flex items-center justify-between mb-3">
+            <h2 className="text-lg font-semibold text-gray-900">Top Entities</h2>
+            <button onClick={() => onNavigate('network')} className="text-sm text-indigo-600 hover:underline cursor-pointer">View network</button>
+          </div>
+          <div className="bg-white rounded-lg border border-gray-200 divide-y divide-gray-100">
+            {topEntities.length === 0 && <p className="p-4 text-sm text-gray-400">No entities found yet.</p>}
+            {topEntities.map(e => (
+              <button
+                key={e.id}
+                onClick={() => onNavigate('entity', e.id)}
+                className="w-full text-left px-4 py-2.5 text-sm flex items-center justify-between cursor-pointer hover:bg-gray-50 transition"
+              >
+                <div className="flex items-center gap-2 min-w-0">
+                  {e.entity_type === 'person' ? <User size={14} className="text-indigo-500 shrink-0" /> :
+                   e.entity_type === 'organization' ? <Briefcase size={14} className="text-amber-500 shrink-0" /> :
+                   <Tag size={14} className="text-gray-400 shrink-0" />}
+                  <span className="truncate">{e.display_name || e.name}</span>
+                </div>
+                <span className="text-xs text-gray-400 shrink-0 ml-2">{e.mention_count}</span>
+              </button>
+            ))}
+          </div>
+        </div>
+      </div>
+
+      {/* Empty state */}
+      {(!stats || stats.total_newsletters === 0) && (
+        <div className="text-center py-12">
+          <Network size={48} className="mx-auto text-gray-300 mb-4" />
+          <h2 className="text-xl font-semibold text-gray-700 mb-2">Build Your DC Network Map</h2>
+          <p className="text-gray-500 max-w-lg mx-auto">
+            Scrape Politico Influence newsletters to automatically extract entities (people, organizations) and map their relationships based on co-mentions.
+          </p>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ---------- Network Map Page ----------
+function NetworkMapPage({ onNavigate, centerEntityId }: { onNavigate: (page: Page, ctx?: unknown) => void; centerEntityId?: number }) {
+  const [network, setNetwork] = useState<NetworkData | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [minWeight, setMinWeight] = useState(2);
+  const [maxNodes, setMaxNodes] = useState(80);
+  const [entityType, setEntityType] = useState('');
+  const containerRef = useRef<HTMLDivElement>(null);
+  const [dimensions, setDimensions] = useState({ width: 800, height: 600 });
+
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el) return;
+    const observer = new ResizeObserver(entries => {
+      const { width } = entries[0].contentRect;
+      setDimensions({ width: Math.max(400, width), height: Math.max(400, Math.min(700, window.innerHeight - 250)) });
+    });
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, []);
+
+  const loadNetwork = useCallback(async () => {
+    setLoading(true);
+    try {
+      const data = await api.getNetwork({
+        min_weight: minWeight,
+        max_nodes: maxNodes,
+        entity_type: entityType || undefined,
+        center_entity_id: centerEntityId,
+      });
+      setNetwork(data);
+    } catch (err) {
+      console.error(err);
+    }
+    setLoading(false);
+  }, [minWeight, maxNodes, entityType, centerEntityId]);
+
+  useEffect(() => { loadNetwork(); }, [loadNetwork]);
+
+  return (
+    <div className="space-y-4">
+      <div className="bg-white rounded-lg border border-gray-200 p-4 flex flex-wrap items-center gap-4">
+        <h1 className="text-lg font-semibold text-gray-900 mr-auto">DC Network Map</h1>
+        <div className="flex items-center gap-2 text-sm">
+          <label className="text-gray-500">Min connections:</label>
+          <input
+            type="range"
+            min={1}
+            max={10}
+            value={minWeight}
+            onChange={e => setMinWeight(Number(e.target.value))}
+            className="w-24"
+          />
+          <span className="text-gray-700 w-4">{minWeight}</span>
+        </div>
+        <div className="flex items-center gap-2 text-sm">
+          <label className="text-gray-500">Max nodes:</label>
+          <select
+            value={maxNodes}
+            onChange={e => setMaxNodes(Number(e.target.value))}
+            className="border border-gray-300 rounded px-2 py-1 text-sm cursor-pointer"
+          >
+            <option value={30}>30</option>
+            <option value={50}>50</option>
+            <option value={80}>80</option>
+            <option value={120}>120</option>
+            <option value={200}>200</option>
+          </select>
+        </div>
+        <select
+          value={entityType}
+          onChange={e => setEntityType(e.target.value)}
+          className="border border-gray-300 rounded px-2 py-1 text-sm cursor-pointer"
+        >
+          <option value="">All types</option>
+          <option value="person">People</option>
+          <option value="organization">Organizations</option>
+        </select>
+      </div>
+
+      {/* Legend */}
+      <div className="flex items-center gap-4 text-xs text-gray-500 px-1">
+        <span className="flex items-center gap-1"><span className="w-3 h-3 rounded-full bg-indigo-500 inline-block"></span> Person</span>
+        <span className="flex items-center gap-1"><span className="w-3 h-3 rounded-full bg-amber-500 inline-block"></span> Organization</span>
+        <span className="flex items-center gap-1"><span className="w-3 h-3 rounded-full bg-slate-400 inline-block"></span> Unknown type</span>
+        <span className="flex items-center gap-1"><span className="w-6 border-t-2 border-amber-400 inline-block"></span> Affiliation</span>
+        <span className="flex items-center gap-1"><span className="w-6 border-t border-slate-300 inline-block"></span> Co-mention</span>
+        <span className="ml-auto text-gray-400">Scroll to zoom · Drag nodes to rearrange · Click for details</span>
+      </div>
+
+      <div ref={containerRef}>
+        {loading ? (
+          <div className="flex items-center justify-center h-96 bg-white rounded-lg border border-gray-200">
+            <Loader2 className="animate-spin text-indigo-600" size={32} />
+          </div>
+        ) : network && network.nodes.length > 0 ? (
+          <NetworkGraph
+            data={network}
+            width={dimensions.width}
+            height={dimensions.height}
+            onNodeClick={id => onNavigate('entity', id)}
+          />
+        ) : (
+          <div className="flex items-center justify-center h-96 bg-white rounded-lg border border-gray-200 text-gray-400">
+            <div className="text-center">
+              <Network size={40} className="mx-auto mb-3 text-gray-300" />
+              <p>No network data yet. Scrape some newsletters first, or lower the minimum connections filter.</p>
+            </div>
+          </div>
+        )}
+      </div>
+
+      {network && (
+        <p className="text-xs text-gray-400 text-center">
+          Showing {network.nodes.length} entities and {network.edges.length} relationships
+        </p>
+      )}
+    </div>
+  );
+}
+
+// ---------- Entity Detail Page ----------
+function EntityDetailPage({ entityId, onBack, onNavigate }: { entityId: number; onBack: () => void; onNavigate: (page: Page, ctx?: unknown) => void }) {
+  const [entity, setEntity] = useState<EntityDetail | null>(null);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    api.getEntity(entityId).then(e => { setEntity(e); setLoading(false); }).catch(() => setLoading(false));
+  }, [entityId]);
+
+  if (loading) return <div className="flex items-center justify-center h-64"><Loader2 className="animate-spin text-indigo-600" size={32} /></div>;
+  if (!entity) return <div className="text-center py-12 text-gray-500">Entity not found.</div>;
+
+  const affiliations = entity.connections.filter(c => c.relationship_type === 'affiliation');
+  const coMentions = entity.connections.filter(c => c.relationship_type !== 'affiliation');
+
+  return (
+    <div className="space-y-6">
+      <button onClick={onBack} className="text-sm text-indigo-600 hover:underline flex items-center gap-1 cursor-pointer">
+        <ChevronLeft size={14} /> Back
+      </button>
+
+      <div className="bg-white rounded-lg border border-gray-200 p-6">
+        <div className="flex items-start justify-between gap-4">
+          <div>
+            <div className="flex items-center gap-2 mb-1">
+              {entity.entity_type === 'person' ? <User size={20} className="text-indigo-500" /> :
+               entity.entity_type === 'organization' ? <Briefcase size={20} className="text-amber-500" /> :
+               <Tag size={20} className="text-gray-400" />}
+              <h1 className="text-xl font-bold text-gray-900">{entity.display_name || entity.name}</h1>
+            </div>
+            <p className="text-sm text-gray-500">
+              {entity.entity_type} · {entity.mention_count} mentions ·
+              First seen {formatDate(entity.first_seen)} · Last seen {formatDate(entity.last_seen)}
+            </p>
+          </div>
+          <button
+            onClick={() => onNavigate('network', entity.id)}
+            className="text-sm text-indigo-600 border border-indigo-200 px-3 py-1.5 rounded-lg hover:bg-indigo-50 cursor-pointer flex items-center gap-1"
+          >
+            <Network size={14} /> View in network
+          </button>
+        </div>
+      </div>
+
+      {/* Affiliations */}
+      {affiliations.length > 0 && (
+        <div>
+          <h2 className="text-lg font-semibold text-gray-900 mb-3">Affiliations</h2>
+          <div className="bg-white rounded-lg border border-gray-200 divide-y divide-gray-100">
+            {affiliations.map(c => (
+              <button
+                key={c.entity.id}
+                onClick={() => onNavigate('entity', c.entity.id)}
+                className="w-full text-left px-4 py-3 hover:bg-gray-50 cursor-pointer transition"
+              >
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    {c.entity.entity_type === 'person' ? <User size={14} className="text-indigo-500" /> : <Briefcase size={14} className="text-amber-500" />}
+                    <span className="text-sm font-medium text-gray-900">{c.entity.display_name || c.entity.name}</span>
+                  </div>
+                  <span className="text-xs text-amber-600 bg-amber-50 px-2 py-0.5 rounded-full">Affiliated · {c.weight}x</span>
+                </div>
+                {c.context_snippets.length > 0 && (
+                  <p className="text-xs text-gray-500 mt-1 line-clamp-1">{c.context_snippets[0]}</p>
+                )}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Co-mentions */}
+      {coMentions.length > 0 && (
+        <div>
+          <h2 className="text-lg font-semibold text-gray-900 mb-3">Co-mentioned With</h2>
+          <div className="bg-white rounded-lg border border-gray-200 divide-y divide-gray-100">
+            {coMentions.map(c => (
+              <button
+                key={c.entity.id}
+                onClick={() => onNavigate('entity', c.entity.id)}
+                className="w-full text-left px-4 py-3 hover:bg-gray-50 cursor-pointer transition"
+              >
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    {c.entity.entity_type === 'person' ? <User size={14} className="text-indigo-500" /> :
+                     c.entity.entity_type === 'organization' ? <Briefcase size={14} className="text-amber-500" /> :
+                     <Tag size={14} className="text-gray-400" />}
+                    <span className="text-sm font-medium text-gray-900">{c.entity.name}</span>
+                  </div>
+                  <span className="text-xs text-gray-500">{c.weight} co-mentions</span>
+                </div>
+                {c.context_snippets.length > 0 && (
+                  <p className="text-xs text-gray-500 mt-1 line-clamp-1">{c.context_snippets[c.context_snippets.length - 1]}</p>
+                )}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Newsletter appearances */}
+      {entity.newsletter_mentions.length > 0 && (
+        <div>
+          <h2 className="text-lg font-semibold text-gray-900 mb-3">Newsletter Appearances</h2>
+          <div className="space-y-2">
+            {entity.newsletter_mentions.map((m, i) => (
+              <div key={i} className="bg-white rounded-lg border border-gray-200 p-3">
+                <div className="flex items-center justify-between mb-1">
+                  <span className="text-sm font-medium text-gray-900">{m.newsletter_title}</span>
+                  <span className="text-xs text-gray-400">{formatDate(m.published_date)}</span>
+                </div>
+                <p className="text-xs text-gray-600 line-clamp-2">{m.context}</p>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ---------- App ----------
 export default function App() {
   const [page, setPage] = useState<Page>('dashboard');
   const [filingUuid, setFilingUuid] = useState<string | null>(null);
+  const [entityId, setEntityId] = useState<number | null>(null);
+  const [centerEntityId, setCenterEntityId] = useState<number | undefined>(undefined);
   const [prevPage, setPrevPage] = useState<Page>('dashboard');
 
   const handleNavigate = (target: Page, ctx?: unknown) => {
@@ -590,20 +1004,35 @@ export default function App() {
       setPrevPage(page);
       setFilingUuid(ctx);
       setPage('filing');
+    } else if (target === 'entity' && typeof ctx === 'number') {
+      setPrevPage(page);
+      setEntityId(ctx);
+      setPage('entity');
+    } else if (target === 'network' && typeof ctx === 'number') {
+      setCenterEntityId(ctx);
+      setPage('network');
     } else {
+      setCenterEntityId(undefined);
       setPage(target);
     }
   };
 
+  const navPage = (page === 'filing' || page === 'entity') ? prevPage : page;
+
   return (
     <div className="min-h-screen">
-      <Nav page={page === 'filing' ? prevPage : page} setPage={p => { setPage(p); setFilingUuid(null); }} />
+      <Nav page={navPage} setPage={p => { setPage(p); setFilingUuid(null); setEntityId(null); setCenterEntityId(undefined); }} />
       <main className="max-w-7xl mx-auto px-4 sm:px-6 py-6">
         {page === 'dashboard' && <Dashboard onNavigate={handleNavigate} />}
         {page === 'search' && <SearchPage onNavigate={handleNavigate} />}
         {page === 'issues' && <IssuesPage onNavigate={handleNavigate} />}
         {page === 'filing' && filingUuid && (
           <FilingDetailPage filingUuid={filingUuid} onBack={() => { setPage(prevPage); setFilingUuid(null); }} />
+        )}
+        {page === 'influence' && <InfluencePage onNavigate={handleNavigate} />}
+        {page === 'network' && <NetworkMapPage onNavigate={handleNavigate} centerEntityId={centerEntityId} />}
+        {page === 'entity' && entityId && (
+          <EntityDetailPage entityId={entityId} onBack={() => { setPage(prevPage); setEntityId(null); }} onNavigate={handleNavigate} />
         )}
       </main>
     </div>

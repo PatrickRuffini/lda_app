@@ -14,9 +14,11 @@ from sqlalchemy import text, func, desc
 
 from .models import (
     Filing, LobbyingActivity, Registrant, Client,
+    Entity, EntityMention, Newsletter, Relationship,
     get_engine, get_session, init_db,
 )
 from .sync import sync_filings
+from .influence import scrape_and_store, reprocess_entities
 
 logger = logging.getLogger(__name__)
 
@@ -422,6 +424,359 @@ def _safe_json_loads(val):
         return json.loads(val)
     except (json.JSONDecodeError, TypeError):
         return val
+
+
+# ---------- Politico Influence endpoints ----------
+
+class InfluenceScrapeRequest(BaseModel):
+    max_newsletters: int = 50
+    max_discovery_pages: int = 5
+
+
+_influence_status: dict = {"status": "idle"}
+
+
+@app.post("/api/influence/scrape")
+def trigger_influence_scrape(req: InfluenceScrapeRequest, background_tasks: BackgroundTasks):
+    """Trigger a background scrape of Politico Influence newsletters."""
+    global _influence_status
+    if _influence_status.get("status") == "running":
+        return {"status": "already_running"}
+
+    _influence_status = {"status": "running"}
+
+    def _run_scrape():
+        global _influence_status
+        try:
+            result = scrape_and_store(
+                max_newsletters=req.max_newsletters,
+                max_discovery_pages=req.max_discovery_pages,
+                db_path=DB_PATH,
+            )
+            _influence_status = {"status": "completed", **result}
+        except Exception as e:
+            _influence_status = {"status": "error", "error": str(e)}
+
+    background_tasks.add_task(_run_scrape)
+    return {"status": "started"}
+
+
+@app.get("/api/influence/scrape/status")
+def get_influence_status():
+    return _influence_status
+
+
+@app.get("/api/influence/newsletters")
+def list_newsletters(
+    page: int = Query(1, ge=1),
+    page_size: int = Query(25, ge=1, le=100),
+):
+    """List scraped newsletters, most recent first."""
+    session = _get_session()
+    try:
+        query = session.query(Newsletter).order_by(desc(Newsletter.published_date))
+        total = query.count()
+        newsletters = query.offset((page - 1) * page_size).limit(page_size).all()
+        return {
+            "results": [
+                {
+                    "id": nl.id,
+                    "url": nl.url,
+                    "title": nl.title,
+                    "published_date": nl.published_date.isoformat() if nl.published_date else None,
+                    "scraped_at": nl.scraped_at.isoformat() if nl.scraped_at else None,
+                    "entities_extracted": nl.entities_extracted,
+                    "body_preview": (nl.body_text or "")[:300],
+                }
+                for nl in newsletters
+            ],
+            "total": total,
+            "page": page,
+            "page_size": page_size,
+        }
+    finally:
+        session.close()
+
+
+@app.get("/api/influence/newsletters/{newsletter_id}")
+def get_newsletter(newsletter_id: int):
+    """Get full newsletter content."""
+    session = _get_session()
+    try:
+        nl = session.query(Newsletter).get(newsletter_id)
+        if not nl:
+            raise HTTPException(status_code=404, detail="Newsletter not found")
+
+        # Get entities mentioned in this newsletter
+        mentions = (
+            session.query(EntityMention, Entity)
+            .join(Entity, EntityMention.entity_id == Entity.id)
+            .filter(EntityMention.newsletter_id == newsletter_id)
+            .all()
+        )
+
+        return {
+            "id": nl.id,
+            "url": nl.url,
+            "title": nl.title,
+            "published_date": nl.published_date.isoformat() if nl.published_date else None,
+            "body_text": nl.body_text,
+            "entities": [
+                {
+                    "name": ent.name,
+                    "entity_type": ent.entity_type,
+                    "display_name": ent.display_name,
+                    "paragraph_index": mention.paragraph_index,
+                    "context": mention.context_text,
+                }
+                for mention, ent in mentions
+            ],
+        }
+    finally:
+        session.close()
+
+
+@app.get("/api/influence/entities")
+def list_entities(
+    q: Optional[str] = Query(None),
+    entity_type: Optional[str] = Query(None),
+    sort: str = Query("-mention_count"),
+    page: int = Query(1, ge=1),
+    page_size: int = Query(50, ge=1, le=200),
+):
+    """List entities, optionally filtered by type or search query."""
+    session = _get_session()
+    try:
+        query = session.query(Entity)
+        if q:
+            query = query.filter(Entity.name.ilike(f"%{q}%"))
+        if entity_type:
+            query = query.filter(Entity.entity_type == entity_type)
+
+        total = query.count()
+
+        if sort.startswith("-"):
+            sort_col = getattr(Entity, sort[1:], Entity.mention_count)
+            query = query.order_by(desc(sort_col))
+        else:
+            sort_col = getattr(Entity, sort, Entity.mention_count)
+            query = query.order_by(sort_col)
+
+        entities = query.offset((page - 1) * page_size).limit(page_size).all()
+        return {
+            "results": [
+                {
+                    "id": e.id,
+                    "name": e.name,
+                    "entity_type": e.entity_type,
+                    "display_name": e.display_name,
+                    "mention_count": e.mention_count,
+                    "first_seen": e.first_seen.isoformat() if e.first_seen else None,
+                    "last_seen": e.last_seen.isoformat() if e.last_seen else None,
+                }
+                for e in entities
+            ],
+            "total": total,
+            "page": page,
+            "page_size": page_size,
+        }
+    finally:
+        session.close()
+
+
+@app.get("/api/influence/entities/{entity_id}")
+def get_entity(entity_id: int):
+    """Get entity detail with relationships."""
+    session = _get_session()
+    try:
+        entity = session.query(Entity).get(entity_id)
+        if not entity:
+            raise HTTPException(status_code=404, detail="Entity not found")
+
+        # Get all relationships for this entity
+        rels = (
+            session.query(Relationship)
+            .filter(
+                (Relationship.entity_a_id == entity_id) |
+                (Relationship.entity_b_id == entity_id)
+            )
+            .order_by(desc(Relationship.weight))
+            .all()
+        )
+
+        connections = []
+        for rel in rels:
+            other_id = rel.entity_b_id if rel.entity_a_id == entity_id else rel.entity_a_id
+            other = session.query(Entity).get(other_id)
+            if other:
+                connections.append({
+                    "entity": {
+                        "id": other.id,
+                        "name": other.name,
+                        "entity_type": other.entity_type,
+                        "display_name": other.display_name,
+                        "mention_count": other.mention_count,
+                    },
+                    "relationship_type": rel.relationship_type,
+                    "weight": rel.weight,
+                    "first_seen": rel.first_seen.isoformat() if rel.first_seen else None,
+                    "last_seen": rel.last_seen.isoformat() if rel.last_seen else None,
+                    "context_snippets": _safe_json_loads(rel.context_snippets),
+                })
+
+        # Get newsletter mentions
+        mentions = (
+            session.query(EntityMention, Newsletter)
+            .join(Newsletter, EntityMention.newsletter_id == Newsletter.id)
+            .filter(EntityMention.entity_id == entity_id)
+            .order_by(desc(Newsletter.published_date))
+            .limit(20)
+            .all()
+        )
+
+        return {
+            "id": entity.id,
+            "name": entity.name,
+            "entity_type": entity.entity_type,
+            "display_name": entity.display_name,
+            "mention_count": entity.mention_count,
+            "first_seen": entity.first_seen.isoformat() if entity.first_seen else None,
+            "last_seen": entity.last_seen.isoformat() if entity.last_seen else None,
+            "connections": connections,
+            "newsletter_mentions": [
+                {
+                    "newsletter_id": nl.id,
+                    "newsletter_title": nl.title,
+                    "published_date": nl.published_date.isoformat() if nl.published_date else None,
+                    "context": mention.context_text,
+                }
+                for mention, nl in mentions
+            ],
+        }
+    finally:
+        session.close()
+
+
+@app.get("/api/influence/network")
+def get_network(
+    min_weight: int = Query(1, ge=1),
+    max_nodes: int = Query(100, ge=10, le=500),
+    entity_type: Optional[str] = Query(None),
+    center_entity_id: Optional[int] = Query(None),
+):
+    """
+    Get the network graph data for visualization.
+
+    Returns nodes and edges suitable for rendering a force-directed graph.
+    """
+    session = _get_session()
+    try:
+        if center_entity_id:
+            # Ego network: relationships involving the center entity
+            rels_query = (
+                session.query(Relationship)
+                .filter(
+                    (Relationship.entity_a_id == center_entity_id) |
+                    (Relationship.entity_b_id == center_entity_id),
+                    Relationship.weight >= min_weight,
+                )
+                .order_by(desc(Relationship.weight))
+                .limit(max_nodes)
+            )
+        else:
+            # Global network: top relationships by weight
+            rels_query = (
+                session.query(Relationship)
+                .filter(Relationship.weight >= min_weight)
+                .order_by(desc(Relationship.weight))
+                .limit(max_nodes * 2)
+            )
+
+        rels = rels_query.all()
+
+        # Collect unique entity IDs
+        entity_ids = set()
+        for rel in rels:
+            entity_ids.add(rel.entity_a_id)
+            entity_ids.add(rel.entity_b_id)
+
+        # Fetch entities
+        entities = session.query(Entity).filter(Entity.id.in_(entity_ids)).all()
+        if entity_type:
+            entities = [e for e in entities if e.entity_type == entity_type or e.entity_type == "unknown"]
+
+        entity_map = {e.id: e for e in entities}
+
+        # Build nodes
+        nodes = []
+        included_ids = set()
+        for e in sorted(entities, key=lambda x: x.mention_count or 0, reverse=True)[:max_nodes]:
+            nodes.append({
+                "id": e.id,
+                "name": e.name,
+                "entity_type": e.entity_type,
+                "display_name": e.display_name,
+                "mention_count": e.mention_count or 0,
+            })
+            included_ids.add(e.id)
+
+        # Build edges (only between included nodes)
+        edges = []
+        for rel in rels:
+            if rel.entity_a_id in included_ids and rel.entity_b_id in included_ids:
+                edges.append({
+                    "source": rel.entity_a_id,
+                    "target": rel.entity_b_id,
+                    "weight": rel.weight,
+                    "relationship_type": rel.relationship_type,
+                })
+
+        return {
+            "nodes": nodes,
+            "edges": edges,
+            "total_entities": len(entity_ids),
+            "total_relationships": len(rels),
+        }
+    finally:
+        session.close()
+
+
+@app.get("/api/influence/stats")
+def influence_stats():
+    """Get Politico Influence stats."""
+    session = _get_session()
+    try:
+        total_newsletters = session.query(func.count(Newsletter.id)).scalar() or 0
+        total_entities = session.query(func.count(Entity.id)).scalar() or 0
+        total_relationships = session.query(func.count(Relationship.id)).scalar() or 0
+        total_persons = (
+            session.query(func.count(Entity.id))
+            .filter(Entity.entity_type == "person")
+            .scalar() or 0
+        )
+        total_orgs = (
+            session.query(func.count(Entity.id))
+            .filter(Entity.entity_type == "organization")
+            .scalar() or 0
+        )
+        latest_newsletter = session.query(func.max(Newsletter.published_date)).scalar()
+        total_affiliations = (
+            session.query(func.count(Relationship.id))
+            .filter(Relationship.relationship_type == "affiliation")
+            .scalar() or 0
+        )
+
+        return {
+            "total_newsletters": total_newsletters,
+            "total_entities": total_entities,
+            "total_persons": total_persons,
+            "total_organizations": total_orgs,
+            "total_relationships": total_relationships,
+            "total_affiliations": total_affiliations,
+            "latest_newsletter": latest_newsletter.isoformat() if latest_newsletter else None,
+        }
+    finally:
+        session.close()
 
 
 # Serve React frontend in production
