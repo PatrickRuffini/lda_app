@@ -772,24 +772,19 @@ function InfluencePage({ onNavigate }: { onNavigate: (page: Page, ctx?: unknown)
               <p className="text-gray-500">No newsletters scraped yet. Click "Scrape Newsletters" to start.</p>
             </div>
           ) : (
-            <div className="space-y-3">
+            <div className="space-y-2">
               {newsletters.map(nl => (
                 <button
                   key={nl.id}
                   onClick={() => onNavigate('newsletter', nl.id)}
                   data-testid={`card-newsletter-${nl.id}`}
-                  className="w-full text-left bg-white rounded-lg border border-gray-200 p-4 hover:shadow-md transition cursor-pointer"
+                  className="w-full text-left bg-white rounded-lg border border-gray-200 px-4 py-3 hover:shadow-md transition cursor-pointer"
                 >
-                  <div className="flex items-start justify-between gap-2 mb-1">
+                  <div className="flex items-start justify-between gap-2">
                     <h3 className="font-semibold text-gray-900 text-sm">{nl.title}</h3>
                     <span className="text-xs text-gray-400 shrink-0">{formatDate(nl.published_date)}</span>
                   </div>
-                  <p className="text-sm text-gray-600 line-clamp-2">{nl.body_preview}</p>
-                  <div className="flex items-center gap-3 mt-2">
-                    {nl.entities_extracted && (
-                      <span className="text-xs text-green-600">Entities extracted</span>
-                    )}
-                  </div>
+                  <p className="text-xs text-gray-500 line-clamp-1 mt-1">{nl.body_preview}</p>
                 </button>
               ))}
               <Pagination page={page} pageSize={25} total={total} onPage={setPageNum} />
