@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
-import { Search, FileText, Tag, BarChart3, RefreshCw, Building2, Users, ChevronLeft, ChevronRight, ExternalLink, DollarSign, Calendar, Loader2, Network, Newspaper, User, Briefcase, Menu, X } from 'lucide-react';
-import { api, type FilingSummary, type FilingDetail, type IssueSummary, type Stats, type SyncStatus, type SearchParams, type TopEntity, type NewsletterSummary, type EntitySummary, type EntityDetail, type NetworkData, type InfluenceStats } from './api';
+import { Search, FileText, Tag, BarChart3, RefreshCw, Building2, Users, ChevronLeft, ChevronRight, ExternalLink, DollarSign, Calendar, Loader2, Network, Newspaper, User, Briefcase, Menu, X, Download, Square } from 'lucide-react';
+import { api, type FilingSummary, type FilingDetail, type IssueSummary, type Stats, type SyncStatus, type SyncCoverage, type SearchParams, type TopEntity, type NewsletterSummary, type EntitySummary, type EntityDetail, type NetworkData, type InfluenceStats } from './api';
 import { formatDistanceToNow, format } from 'date-fns';
 import NetworkGraph from './NetworkGraph';
 
@@ -136,6 +136,7 @@ function Dashboard({ onNavigate }: { onNavigate: (page: Page, ctx?: unknown) => 
   const [syncStatus, setSyncStatus] = useState<SyncStatus | null>(null);
   const [syncing, setSyncing] = useState(false);
   const [loading, setLoading] = useState(true);
+  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -152,6 +153,7 @@ function Dashboard({ onNavigate }: { onNavigate: (page: Page, ctx?: unknown) => 
       setTopRegistrants(tr);
       setTopClients(tc);
       setSyncStatus(ss);
+      if (ss.status === 'running') setSyncing(true);
     } catch (e) {
       console.error(e);
     }
@@ -160,52 +162,109 @@ function Dashboard({ onNavigate }: { onNavigate: (page: Page, ctx?: unknown) => 
 
   useEffect(() => { load(); }, [load]);
 
-  const handleSync = async () => {
+  useEffect(() => {
+    if (syncing && !pollRef.current) {
+      pollRef.current = setInterval(async () => {
+        try {
+          const s = await api.getSyncStatus();
+          setSyncStatus(s);
+          if (s.status !== 'running' && s.status !== 'cancelling' && s.status !== 'started') {
+            if (pollRef.current) clearInterval(pollRef.current);
+            pollRef.current = null;
+            setSyncing(false);
+            load();
+          }
+        } catch (e) { console.error(e); }
+      }, 2000);
+    }
+    return () => {
+      if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; }
+    };
+  }, [syncing, load]);
+
+  const handleSync = async (mode: string) => {
     setSyncing(true);
     try {
-      const currentYear = new Date().getFullYear();
-      await api.triggerSync({ filing_year: currentYear, max_pages: 20, page_size: 25 });
-      // Poll for completion
-      const poll = setInterval(async () => {
-        const s = await api.getSyncStatus();
-        setSyncStatus(s);
-        if (s.status !== 'running') {
-          clearInterval(poll);
-          setSyncing(false);
-          load();
-        }
-      }, 3000);
+      await api.triggerSync({ mode });
     } catch (e) {
       console.error(e);
       setSyncing(false);
     }
   };
 
+  const handleCancel = async () => {
+    try { await api.cancelSync(); } catch (e) { console.error(e); }
+  };
+
   if (loading) return <div className="flex items-center justify-center h-64"><Loader2 className="animate-spin text-indigo-600" size={32} /></div>;
+
+  const syncRunning = syncing || syncStatus?.status === 'running';
 
   return (
     <div className="space-y-6">
       {/* Sync bar */}
-      <div className="bg-white rounded-lg border border-gray-200 p-4 flex items-center justify-between">
-        <div>
-          <p className="text-sm text-gray-500">
-            {stats?.total_filings ? `${stats.total_filings.toLocaleString()} filings stored` : 'No filings synced yet'}
-            {stats?.latest_filing && ` \u00b7 Latest: ${formatDate(stats.latest_filing)}`}
-          </p>
-          {syncStatus && syncStatus.status !== 'idle' && (
-            <p className="text-xs text-gray-400 mt-0.5">
-              Last sync: {syncStatus.status}{syncStatus.stored ? ` (${syncStatus.stored} stored)` : ''}
+      <div className="bg-white rounded-lg border border-gray-200 p-4">
+        <div className="flex items-center justify-between flex-wrap gap-3">
+          <div>
+            <p className="text-sm text-gray-700 font-medium" data-testid="text-filing-count">
+              {stats?.total_filings ? `${stats.total_filings.toLocaleString()} filings stored` : 'No filings synced yet'}
+              {stats?.latest_filing && ` · Latest: ${formatDate(stats.latest_filing)}`}
             </p>
-          )}
+            {syncStatus && syncStatus.status !== 'idle' && (
+              <p className="text-xs text-gray-400 mt-0.5" data-testid="text-sync-status">
+                {syncStatus.status === 'running' && syncStatus.mode === 'incremental' && (
+                  <>Fetching new filings… {syncStatus.stored || 0} stored, page {syncStatus.pages || 0}</>
+                )}
+                {syncStatus.status === 'running' && syncStatus.mode === 'backfill' && (
+                  <>Backfilling {syncStatus.current_year || '…'} — {syncStatus.stored?.toLocaleString() || 0} stored, {syncStatus.years_completed?.length || 0} years done</>
+                )}
+                {syncStatus.status === 'cancelling' && 'Cancelling…'}
+                {syncStatus.status === 'completed' && (
+                  <>Completed: {syncStatus.stored?.toLocaleString() || 0} new filings{syncStatus.duplicates ? `, ${syncStatus.duplicates.toLocaleString()} already had` : ''}</>
+                )}
+                {syncStatus.status === 'cancelled' && (
+                  <>Cancelled: {syncStatus.stored?.toLocaleString() || 0} filings stored before stopping</>
+                )}
+                {syncStatus.status === 'error' && <>Error: {syncStatus.error}</>}
+              </p>
+            )}
+          </div>
+          <div className="flex items-center gap-2">
+            {syncRunning ? (
+              <button
+                onClick={handleCancel}
+                data-testid="button-cancel-sync"
+                className="flex items-center gap-2 bg-red-600 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-red-700 cursor-pointer"
+              >
+                <Square size={14} /> Stop
+              </button>
+            ) : (
+              <>
+                <button
+                  onClick={() => handleSync('incremental')}
+                  data-testid="button-sync-incremental"
+                  className="flex items-center gap-2 bg-indigo-600 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-indigo-700 cursor-pointer"
+                >
+                  <RefreshCw size={16} /> Sync New
+                </button>
+                <button
+                  onClick={() => handleSync('backfill')}
+                  data-testid="button-sync-backfill"
+                  className="flex items-center gap-2 bg-gray-700 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-gray-800 cursor-pointer"
+                >
+                  <Download size={16} /> Backfill All
+                </button>
+              </>
+            )}
+          </div>
         </div>
-        <button
-          onClick={handleSync}
-          disabled={syncing}
-          className="flex items-center gap-2 bg-indigo-600 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-indigo-700 disabled:opacity-50 cursor-pointer"
-        >
-          {syncing ? <Loader2 size={16} className="animate-spin" /> : <RefreshCw size={16} />}
-          {syncing ? 'Syncing...' : 'Sync Latest Filings'}
-        </button>
+        {syncRunning && (
+          <div className="mt-3">
+            <div className="w-full bg-gray-200 rounded-full h-1.5">
+              <div className="bg-indigo-600 h-1.5 rounded-full animate-pulse" style={{ width: '100%' }} />
+            </div>
+          </div>
+        )}
       </div>
 
       {/* Stats cards */}
@@ -278,7 +337,7 @@ function Dashboard({ onNavigate }: { onNavigate: (page: Page, ctx?: unknown) => 
         <div className="text-center py-16">
           <FileText size={48} className="mx-auto text-gray-300 mb-4" />
           <h2 className="text-xl font-semibold text-gray-700 mb-2">No filings yet</h2>
-          <p className="text-gray-500 mb-4">Click "Sync Latest Filings" to pull recent lobbying disclosures from the Senate LDA API.</p>
+          <p className="text-gray-500 mb-4">Click "Sync New" to grab the latest filings, or "Backfill All" to download the complete historical archive (1999–present, ~1.9M filings).</p>
         </div>
       )}
     </div>

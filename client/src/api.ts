@@ -95,10 +95,21 @@ export interface Stats {
 
 export interface SyncStatus {
   status: string;
+  mode?: string;
   stored?: number;
   skipped?: number;
+  duplicates?: number;
   pages?: number;
+  current_year?: number;
+  years_completed?: number[];
   error?: string;
+  started_at?: string;
+  finished_at?: string;
+}
+
+export interface SyncCoverage {
+  years: Array<{ year: number; count: number }>;
+  total: number;
 }
 
 export interface SearchParams {
@@ -228,11 +239,17 @@ export const api = {
   getStats: () =>
     fetchJson<Stats>(`${BASE}/stats`),
 
-  triggerSync: (params: Partial<SearchParams & { max_pages?: number }>) =>
+  triggerSync: (params: { mode?: string; max_pages?: number }) =>
     postJson<SyncStatus>(`${BASE}/sync`, params),
+
+  cancelSync: () =>
+    postJson<{ status: string }>(`${BASE}/sync/cancel`, {}),
 
   getSyncStatus: () =>
     fetchJson<SyncStatus>(`${BASE}/sync/status`),
+
+  getSyncCoverage: () =>
+    fetchJson<SyncCoverage>(`${BASE}/sync/coverage`),
 
   // Politico Influence
   triggerInfluenceScrape: (params: { max_newsletters?: number; max_discovery_pages?: number }) =>
