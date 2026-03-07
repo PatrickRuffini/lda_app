@@ -276,7 +276,7 @@ export const api = {
   getEntity: (id: number) =>
     fetchJson<EntityDetail>(`${BASE}/influence/entities/${id}`),
 
-  getNetwork: (params: { min_weight?: number; max_nodes?: number; entity_type?: string; center_entity_id?: number }) =>
+  getNetwork: (params: { min_weight?: number; max_nodes?: number; entity_type?: string; center_entity_id?: number; depth?: number }) =>
     fetchJson<NetworkData>(`${BASE}/influence/network?${toQuery(params)}`),
 
   getInfluenceStats: () =>

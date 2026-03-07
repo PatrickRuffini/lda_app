@@ -797,32 +797,49 @@ def get_network(
     max_nodes: int = Query(100, ge=10, le=500),
     entity_type: Optional[str] = Query(None),
     center_entity_id: Optional[int] = Query(None),
+    depth: int = Query(1, ge=1, le=3),
 ):
     """
     Get the network graph data for visualization.
+    When center_entity_id is set, depth controls how many levels of connections to include.
     """
     session = _get_session()
     try:
         if center_entity_id:
-            rels_query = (
-                session.query(Relationship)
-                .filter(
-                    (Relationship.entity_a_id == center_entity_id) |
-                    (Relationship.entity_b_id == center_entity_id),
-                    Relationship.weight >= min_weight,
+            # Collect entity IDs at each depth level
+            current_ids = {center_entity_id}
+            all_rels = []
+            seen_rel_ids = set()
+
+            for _level in range(depth):
+                level_rels = (
+                    session.query(Relationship)
+                    .filter(
+                        (Relationship.entity_a_id.in_(current_ids)) |
+                        (Relationship.entity_b_id.in_(current_ids)),
+                        Relationship.weight >= min_weight,
+                    )
+                    .order_by(desc(Relationship.weight))
+                    .all()
                 )
-                .order_by(desc(Relationship.weight))
-                .limit(max_nodes)
-            )
+                next_ids = set()
+                for rel in level_rels:
+                    if rel.id not in seen_rel_ids:
+                        seen_rel_ids.add(rel.id)
+                        all_rels.append(rel)
+                    next_ids.add(rel.entity_a_id)
+                    next_ids.add(rel.entity_b_id)
+                current_ids = next_ids - current_ids
+
+            rels = all_rels[:max_nodes * 2]
         else:
-            rels_query = (
+            rels = (
                 session.query(Relationship)
                 .filter(Relationship.weight >= min_weight)
                 .order_by(desc(Relationship.weight))
                 .limit(max_nodes * 2)
+                .all()
             )
-
-        rels = rels_query.all()
 
         entity_ids = set()
         for rel in rels:

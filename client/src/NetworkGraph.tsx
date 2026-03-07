@@ -282,7 +282,8 @@ export default function NetworkGraph({ data, width, height, onNodeClick }: Props
       onMouseLeave={handleMouseUp}
       onClick={handleClick}
       onWheel={handleWheel}
-      className="rounded-lg border border-gray-200 bg-white"
+      className="rounded-lg border border-gray-200 bg-white max-w-full"
+      style={{ width: '100%', height }}
     />
   );
 }

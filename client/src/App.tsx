@@ -1003,7 +1003,7 @@ function InfluencePage({ onNavigate }: { onNavigate: (page: Page, ctx?: unknown)
 function NetworkMapPage({ onNavigate, centerEntityId }: { onNavigate: (page: Page, ctx?: unknown) => void; centerEntityId?: number }) {
   const [network, setNetwork] = useState<NetworkData | null>(null);
   const [loading, setLoading] = useState(true);
-  const [minWeight, setMinWeight] = useState(2);
+  const [minWeight, setMinWeight] = useState(centerEntityId ? 1 : 2);
   const [maxNodes, setMaxNodes] = useState(80);
   const [entityType, setEntityType] = useState('');
   const containerRef = useRef<HTMLDivElement>(null);
@@ -1014,7 +1014,7 @@ function NetworkMapPage({ onNavigate, centerEntityId }: { onNavigate: (page: Pag
     if (!el) return;
     const observer = new ResizeObserver(entries => {
       const { width } = entries[0].contentRect;
-      setDimensions({ width: Math.max(400, width), height: Math.max(400, Math.min(700, window.innerHeight - 250)) });
+      setDimensions({ width: Math.max(280, width), height: Math.max(300, Math.min(700, window.innerHeight - 250)) });
     });
     observer.observe(el);
     return () => observer.disconnect();
@@ -1028,6 +1028,7 @@ function NetworkMapPage({ onNavigate, centerEntityId }: { onNavigate: (page: Pag
         max_nodes: maxNodes,
         entity_type: entityType || undefined,
         center_entity_id: centerEntityId,
+        depth: centerEntityId ? 2 : undefined,
       });
       setNetwork(data);
     } catch (err) {
@@ -1040,22 +1041,22 @@ function NetworkMapPage({ onNavigate, centerEntityId }: { onNavigate: (page: Pag
 
   return (
     <div className="space-y-4">
-      <div className="bg-white rounded-lg border border-gray-200 p-4 flex flex-wrap items-center gap-4">
-        <h1 className="text-lg font-semibold text-gray-900 mr-auto">DC Network Map</h1>
-        <div className="flex items-center gap-2 text-sm">
-          <label className="text-gray-500">Min connections:</label>
+      <div className="bg-white rounded-lg border border-gray-200 p-4 flex flex-wrap items-center gap-3 sm:gap-4">
+        <h1 className="text-lg font-semibold text-gray-900 w-full sm:w-auto sm:mr-auto">DC Network Map</h1>
+        <div className="flex items-center gap-2 text-sm min-w-0">
+          <label className="text-gray-500 shrink-0">Min connections:</label>
           <input
             type="range"
             min={1}
             max={10}
             value={minWeight}
             onChange={e => setMinWeight(Number(e.target.value))}
-            className="w-24"
+            className="w-20 sm:w-24"
           />
           <span className="text-gray-700 w-4">{minWeight}</span>
         </div>
         <div className="flex items-center gap-2 text-sm">
-          <label className="text-gray-500">Max nodes:</label>
+          <label className="text-gray-500 shrink-0">Max nodes:</label>
           <select
             value={maxNodes}
             onChange={e => setMaxNodes(Number(e.target.value))}
@@ -1080,17 +1081,17 @@ function NetworkMapPage({ onNavigate, centerEntityId }: { onNavigate: (page: Pag
       </div>
 
       {/* Legend */}
-      <div className="flex items-center gap-4 text-xs text-gray-500 px-1">
+      <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-gray-500 px-1">
         <span className="flex items-center gap-1"><span className="w-3 h-3 rounded-full bg-indigo-500 inline-block"></span> Person</span>
         <span className="flex items-center gap-1"><span className="w-3 h-3 rounded-full bg-amber-500 inline-block"></span> Organization</span>
         <span className="flex items-center gap-1"><span className="w-3 h-3 rounded-full bg-slate-400 inline-block"></span> Unknown type</span>
         <span className="flex items-center gap-1"><span className="w-6 border-t-2 border-amber-400 inline-block"></span> Affiliation</span>
         <span className="flex items-center gap-1"><span className="w-6 border-t-2 border-green-400 inline-block"></span> Registration</span>
         <span className="flex items-center gap-1"><span className="w-6 border-t border-slate-300 inline-block"></span> Co-mention</span>
-        <span className="ml-auto text-gray-400">Scroll to zoom · Drag nodes to rearrange · Click for details</span>
+        <span className="hidden sm:inline ml-auto text-gray-400">Scroll to zoom · Drag nodes to rearrange · Click for details</span>
       </div>
 
-      <div ref={containerRef}>
+      <div ref={containerRef} className="overflow-hidden">
         {loading ? (
           <div className="flex items-center justify-center h-96 bg-white rounded-lg border border-gray-200">
             <Loader2 className="animate-spin text-indigo-600" size={32} />
@@ -1160,15 +1161,15 @@ function EntityDetailPage({ entityId, onBack, onNavigate }: { entityId: number; 
       </button>
 
       <div className="bg-white rounded-lg border border-gray-200 p-6">
-        <div className="flex items-start justify-between gap-4">
-          <div>
-            <div className="flex items-center gap-2 mb-1">
-              {entity.entity_type === 'person' ? <User size={20} className="text-indigo-500" /> :
-               entity.entity_type === 'organization' ? <Briefcase size={20} className="text-amber-500" /> :
-               <Tag size={20} className="text-gray-400" />}
-              <h1 className="text-xl font-bold text-gray-900">{entity.display_name || entity.name}</h1>
+        <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-4">
+          <div className="min-w-0">
+            <div className="flex items-center gap-2 mb-1 min-w-0">
+              {entity.entity_type === 'person' ? <User size={20} className="text-indigo-500 shrink-0" /> :
+               entity.entity_type === 'organization' ? <Briefcase size={20} className="text-amber-500 shrink-0" /> :
+               <Tag size={20} className="text-gray-400 shrink-0" />}
+              <h1 className="text-xl font-bold text-gray-900 break-words">{entity.display_name || entity.name}</h1>
             </div>
-            <div className="flex items-center gap-3 text-sm text-gray-500">
+            <div className="text-sm text-gray-500">
               <span>{entity.mention_count} mentions · First seen {formatDate(entity.first_seen)} · Last seen {formatDate(entity.last_seen)}</span>
             </div>
             <div className="flex items-center gap-2 mt-2">
@@ -1191,7 +1192,7 @@ function EntityDetailPage({ entityId, onBack, onNavigate }: { entityId: number; 
           </div>
           <button
             onClick={() => onNavigate('network', entity.id)}
-            className="text-sm text-indigo-600 border border-indigo-200 px-3 py-1.5 rounded-lg hover:bg-indigo-50 cursor-pointer flex items-center gap-1"
+            className="text-sm text-indigo-600 border border-indigo-200 px-3 py-1.5 rounded-lg hover:bg-indigo-50 cursor-pointer flex items-center gap-1 shrink-0 self-start"
           >
             <Network size={14} /> View in network
           </button>
@@ -1279,9 +1280,9 @@ function EntityDetailPage({ entityId, onBack, onNavigate }: { entityId: number; 
                 data-testid={`link-newsletter-mention-${m.newsletter_id}`}
                 className="w-full text-left bg-white rounded-lg border border-gray-200 p-3 hover:shadow-md transition cursor-pointer"
               >
-                <div className="flex items-center justify-between mb-1">
-                  <span className="text-sm font-medium text-gray-900">{m.newsletter_title}</span>
-                  <span className="text-xs text-gray-400">{formatDate(m.published_date)}</span>
+                <div className="flex items-start justify-between gap-2 mb-1">
+                  <span className="text-sm font-medium text-gray-900 break-words min-w-0">{m.newsletter_title}</span>
+                  <span className="text-xs text-gray-400 shrink-0">{formatDate(m.published_date)}</span>
                 </div>
                 <p className="text-xs text-gray-600 line-clamp-2">{m.context}</p>
               </button>
