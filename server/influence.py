@@ -196,6 +196,78 @@ def scrape_newsletter(page, url: str) -> Optional[dict]:
     }
 
 
+PERSON_INDICATORS = [
+    r"\b(said|told|wrote|argued|testified|lobbied|hired|appointed|named|joined|left|resigned|fired)\b",
+    r"\b(former|ex-|incoming|outgoing)\b.*\b(chief|director|secretary|president|chair|adviser|counsel|lobbyist|attorney|partner|aide|staffer|spokesperson|analyst|reporter|editor|correspondent|strategist|consultant|manager|officer|head)\b",
+    r"\b(Sen\.|Rep\.|Gov\.|Secretary|Ambassador|Commissioner|Chairman|Chairwoman|Judge|Justice|Attorney General|Director|President|Vice President|Mayor|Speaker|Minority Leader|Majority Leader)\s",
+    r"\b(Jr\.|Sr\.|III|IV)\b",
+]
+
+ORG_INDICATORS = [
+    r"\b(Inc\.|Corp\.|LLC|LLP|Ltd\.|Co\.|Group|Association|Institute|Foundation|Committee|Commission|Council|Bureau|Agency|Department|Administration|Board|Authority|Fund|PAC|Super PAC|Partners|Advisors|Strategies|Consulting|Solutions|Services|Alliance|Coalition|Union|Federation|Network|Center|Society)\b",
+    r"\b(the\s+)?(White House|Congress|Senate|House|Pentagon|State Department|Treasury|EPA|FDA|FCC|FTC|SEC|DOJ|DOD|DOE|HHS|USDA|Interior|Commerce|Labor|Education|HUD|VA|DHS|DOT|SBA|OMB|CIA|FBI|NSA|IRS|OSHA|FEMA|NIH|CDC|WHO|NATO|UN|IMF|WTO)\b",
+]
+
+KNOWN_ACRONYM_ENTITIES = {
+    "NATO", "UN", "IMF", "WTO", "WHO", "FBI", "CIA", "NSA", "IRS",
+    "EPA", "FDA", "FCC", "FTC", "SEC", "DOJ", "DOD", "DOE", "HHS",
+    "USDA", "DHS", "DOT", "SBA", "OMB", "NIH", "CDC", "OSHA", "FEMA",
+    "BP", "IBM", "AT&T", "HP", "GE", "GM", "BMW",
+}
+
+
+def _is_section_heading(name: str, para_text: str) -> bool:
+    stripped = name.strip().rstrip(":")
+    if len(stripped) < 3:
+        return False
+    if stripped.upper() in KNOWN_ACRONYM_ENTITIES:
+        return False
+    if stripped.upper() != stripped:
+        return False
+    if name.strip().endswith(":"):
+        return True
+    if re.match(r"^[A-Z][A-Z\s\'\u2019&,\-:]{3,}$", name.strip()):
+        words_in_name = len(name.split())
+        words_in_para = len(para_text.split())
+        if words_in_name >= (words_in_para * 0.4):
+            return True
+    return False
+
+
+def _classify_entity_type(name: str, context: str) -> str:
+    for pattern in ORG_INDICATORS:
+        if re.search(pattern, name, re.I):
+            return "organization"
+
+    name_parts = name.strip().split()
+    name_parts_filtered = [p for p in name_parts if p.lower() not in ("the", "of", "and", "for", "de", "van", "von", "al", "el")]
+
+    has_no_org_words = not re.search(
+        r"\b(Inc|Corp|LLC|Association|Institute|Foundation|Committee|Partners|Group|Alliance|Coalition|Center|Club|Bureau|Agency|Council|Company|Fund|Society|Network|Strategies|Advisors|Consulting|Solutions|Services|Labs|Technologies|Media)\b",
+        name, re.I
+    )
+
+    if has_no_org_words and 1 <= len(name_parts_filtered) <= 4:
+        all_title = all(
+            p[0].isupper()
+            for p in name_parts_filtered
+            if len(p) > 1
+        )
+        if all_title:
+            for pattern in PERSON_INDICATORS:
+                if re.search(pattern, context, re.I):
+                    return "person"
+
+    if re.search(r"\b(company|firm|corporation|organization|lobby|lobbying firm|trade group|tech giant|bank|lender|insurer|carrier)\b", context, re.I):
+        if name in context:
+            idx = context.index(name)
+            surrounding = context[max(0, idx-50):idx+len(name)+50]
+            if re.search(r"\b(company|firm|corporation|organization|lobby|lobbying firm|trade group|tech giant|bank|lender|insurer|carrier)\b", surrounding, re.I):
+                return "organization"
+
+    return "unknown"
+
+
 def extract_bold_entities_from_html(body_html: str) -> list[dict]:
     """
     Extract bold entities from newsletter HTML.
@@ -204,6 +276,7 @@ def extract_bold_entities_from_html(body_html: str) -> list[dict]:
     - name: the entity name
     - paragraph_index: which paragraph it appeared in
     - context: the paragraph text
+    - is_section_heading: whether this is a section heading
     """
     soup = BeautifulSoup(body_html, "lxml")
     entities = []
@@ -235,10 +308,13 @@ def extract_bold_entities_from_html(body_html: str) -> list[dict]:
             if len(name) > 100:
                 continue
 
+            is_heading = _is_section_heading(name, para_text)
+
             entities.append({
                 "name": name,
                 "paragraph_index": para_idx,
                 "context": para_text[:500],
+                "is_section_heading": is_heading,
             })
 
     return entities
@@ -316,12 +392,8 @@ def detect_affiliations(entities_in_paragraph: list[dict], paragraph_text: str) 
 def _get_or_create_entity(session, name: str, entity_type: str = "unknown",
                           display_name: Optional[str] = None,
                           date: Optional[datetime] = None) -> Entity:
-    """Get or create an entity by name and type."""
-    entity = (
-        session.query(Entity)
-        .filter(Entity.name == name, Entity.entity_type == entity_type)
-        .first()
-    )
+    """Get or create an entity by name. Respects user_override for type."""
+    entity = session.query(Entity).filter(Entity.name == name).first()
     if not entity:
         entity = Entity(
             name=name,
@@ -330,10 +402,15 @@ def _get_or_create_entity(session, name: str, entity_type: str = "unknown",
             first_seen=date,
             last_seen=date,
             mention_count=0,
+            user_override=False,
         )
         session.add(entity)
         session.flush()
     else:
+        if not entity.user_override and entity_type != "unknown":
+            entity.entity_type = entity_type
+        if display_name and not entity.user_override:
+            entity.display_name = display_name
         if date:
             if not entity.first_seen or date < entity.first_seen:
                 entity.first_seen = date
@@ -389,6 +466,10 @@ def _upsert_relationship(session, entity_a: Entity, entity_b: Entity,
 def process_newsletter_entities(session, newsletter: Newsletter):
     """
     Extract entities from a newsletter and build the relationship graph.
+
+    Section headings (all-caps bold text) are captured as metadata but not
+    as entities. Entities within the same section but different paragraphs
+    get half the edge weight of same-paragraph co-mentions.
     """
     if not newsletter.body_html:
         return
@@ -396,8 +477,17 @@ def process_newsletter_entities(session, newsletter: Newsletter):
     bold_entities = extract_bold_entities_from_html(newsletter.body_html)
 
     para_groups: dict[int, list[dict]] = {}
+    current_section = None
+    section_map: dict[int, str] = {}
+    section_entities: dict[str, list] = {}
+
     for ent in bold_entities:
         para_idx = ent["paragraph_index"]
+        if ent.get("is_section_heading"):
+            current_section = ent["name"].strip().rstrip(":")
+            continue
+        if current_section:
+            section_map[para_idx] = current_section
         if para_idx not in para_groups:
             para_groups[para_idx] = []
         para_groups[para_idx].append(ent)
@@ -406,6 +496,7 @@ def process_newsletter_entities(session, newsletter: Newsletter):
 
     for para_idx, para_entities in para_groups.items():
         context = para_entities[0]["context"] if para_entities else ""
+        section = section_map.get(para_idx)
 
         affiliations = detect_affiliations(para_entities, context)
         affiliated_persons = set()
@@ -413,7 +504,7 @@ def process_newsletter_entities(session, newsletter: Newsletter):
         for aff in affiliations:
             person_entity = _get_or_create_entity(
                 session, aff["person"], "person",
-                display_name=f"{aff['person']} ({aff['company']})",
+                display_name=aff["person"],
                 date=pub_date,
             )
             person_entity.mention_count += 1
@@ -434,12 +525,14 @@ def process_newsletter_entities(session, newsletter: Newsletter):
                 newsletter_id=newsletter.id,
                 paragraph_index=para_idx,
                 context_text=context[:500],
+                section_heading=section,
             ))
             session.add(EntityMention(
                 entity_id=company_entity.id,
                 newsletter_id=newsletter.id,
                 paragraph_index=para_idx,
                 context_text=context[:500],
+                section_heading=section,
             ))
 
             affiliated_persons.add(aff["person"])
@@ -449,8 +542,9 @@ def process_newsletter_entities(session, newsletter: Newsletter):
             if ent["name"] in affiliated_persons:
                 continue
 
+            classified_type = _classify_entity_type(ent["name"], context)
             entity_obj = _get_or_create_entity(
-                session, ent["name"], "unknown", date=pub_date,
+                session, ent["name"], classified_type, date=pub_date,
             )
             entity_obj.mention_count += 1
             para_entity_objs.append(entity_obj)
@@ -460,18 +554,19 @@ def process_newsletter_entities(session, newsletter: Newsletter):
                 newsletter_id=newsletter.id,
                 paragraph_index=para_idx,
                 context_text=context[:500],
+                section_heading=section,
             ))
 
         all_entities_in_para = para_entity_objs.copy()
         for aff in affiliations:
             person_ent = (
                 session.query(Entity)
-                .filter(Entity.name == aff["person"], Entity.entity_type == "person")
+                .filter(Entity.name == aff["person"])
                 .first()
             )
             company_ent = (
                 session.query(Entity)
-                .filter(Entity.name == aff["company"], Entity.entity_type == "organization")
+                .filter(Entity.name == aff["company"])
                 .first()
             )
             if person_ent:
@@ -505,6 +600,42 @@ def process_newsletter_entities(session, newsletter: Newsletter):
             _upsert_relationship(
                 session, ent_a, ent_b, "co_mention", context, pub_date,
             )
+
+        if section:
+            if section not in section_entities:
+                section_entities[section] = []
+            section_entities[section].extend(unique_entities)
+
+    for section_name, entities_in_section in section_entities.items():
+        seen_ids = set()
+        unique_section_ents = []
+        for e in entities_in_section:
+            if e.id not in seen_ids:
+                seen_ids.add(e.id)
+                unique_section_ents.append(e)
+
+        for ent_a, ent_b in combinations(unique_section_ents, 2):
+            a_id, b_id = min(ent_a.id, ent_b.id), max(ent_a.id, ent_b.id)
+            existing = (
+                session.query(Relationship)
+                .filter(
+                    Relationship.entity_a_id == a_id,
+                    Relationship.entity_b_id == b_id,
+                )
+                .first()
+            )
+            if existing:
+                continue
+            rel = Relationship(
+                entity_a_id=a_id,
+                entity_b_id=b_id,
+                relationship_type="section_co_mention",
+                weight=0.5,
+                first_seen=pub_date,
+                last_seen=pub_date,
+                context_snippets=json.dumps([f"Section: {section_name}"]),
+            )
+            session.add(rel)
 
     newsletter.entities_extracted = True
 
@@ -589,17 +720,41 @@ def scrape_and_store(
         session.close()
 
 
-def reprocess_entities(db_url: str = None) -> dict:
+def reprocess_all_entities(db_url: str = None) -> dict:
     """
-    Re-extract entities from all newsletters that haven't been processed yet.
+    Clear all entity data (preserving user overrides) and re-extract from all newsletters.
     """
     engine = init_db(db_url)
     session = get_session(engine)
 
     try:
+        overrides = {}
+        user_entities = session.query(Entity).filter(Entity.user_override == True).all()
+        for ent in user_entities:
+            overrides[ent.name] = {
+                "entity_type": ent.entity_type,
+                "display_name": ent.display_name,
+            }
+
+        session.query(EntityMention).delete()
+        session.query(Relationship).delete()
+        session.query(Entity).delete()
+        session.query(Newsletter).update({Newsletter.entities_extracted: False})
+        session.commit()
+
+        for name, data in overrides.items():
+            ent = Entity(
+                name=name,
+                entity_type=data["entity_type"],
+                display_name=data["display_name"],
+                mention_count=0,
+                user_override=True,
+            )
+            session.add(ent)
+        session.commit()
+
         newsletters = (
             session.query(Newsletter)
-            .filter(Newsletter.entities_extracted == False)
             .order_by(Newsletter.published_date)
             .all()
         )

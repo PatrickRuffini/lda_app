@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
-import { Search, FileText, Tag, BarChart3, RefreshCw, Building2, Users, ChevronLeft, ChevronRight, ExternalLink, DollarSign, Calendar, Loader2, Network, Newspaper, User, Briefcase, Menu, X, Download, Square } from 'lucide-react';
+import { Search, FileText, Tag, BarChart3, RefreshCw, Building2, Users, ChevronLeft, ChevronRight, ExternalLink, DollarSign, Calendar, Loader2, Network, Newspaper, User, Briefcase, Menu, X, Download, Square, ChevronDown } from 'lucide-react';
 import { api, type FilingSummary, type FilingDetail, type IssueSummary, type Stats, type SyncStatus, type SyncCoverage, type SearchParams, type TopEntity, type NewsletterSummary, type NewsletterDetail, type EntitySummary, type EntityDetail, type NetworkData, type InfluenceStats } from './api';
 import { formatDistanceToNow, format } from 'date-fns';
 import NetworkGraph from './NetworkGraph';
@@ -963,10 +963,26 @@ function NetworkMapPage({ onNavigate, centerEntityId }: { onNavigate: (page: Pag
 function EntityDetailPage({ entityId, onBack, onNavigate }: { entityId: number; onBack: () => void; onNavigate: (page: Page, ctx?: unknown) => void }) {
   const [entity, setEntity] = useState<EntityDetail | null>(null);
   const [loading, setLoading] = useState(true);
+  const [updatingType, setUpdatingType] = useState(false);
 
-  useEffect(() => {
+  const loadEntity = useCallback(() => {
+    setLoading(true);
     api.getEntity(entityId).then(e => { setEntity(e); setLoading(false); }).catch(() => setLoading(false));
   }, [entityId]);
+
+  useEffect(() => { loadEntity(); }, [loadEntity]);
+
+  const handleTypeChange = async (newType: string) => {
+    if (!entity || newType === entity.entity_type) return;
+    setUpdatingType(true);
+    try {
+      await api.updateEntityType(entity.id, newType);
+      loadEntity();
+    } catch (err) {
+      console.error(err);
+    }
+    setUpdatingType(false);
+  };
 
   if (loading) return <div className="flex items-center justify-center h-64"><Loader2 className="animate-spin text-indigo-600" size={32} /></div>;
   if (!entity) return <div className="text-center py-12 text-gray-500">Entity not found.</div>;
@@ -989,10 +1005,24 @@ function EntityDetailPage({ entityId, onBack, onNavigate }: { entityId: number; 
                <Tag size={20} className="text-gray-400" />}
               <h1 className="text-xl font-bold text-gray-900">{entity.display_name || entity.name}</h1>
             </div>
-            <p className="text-sm text-gray-500">
-              {entity.entity_type} · {entity.mention_count} mentions ·
-              First seen {formatDate(entity.first_seen)} · Last seen {formatDate(entity.last_seen)}
-            </p>
+            <div className="flex items-center gap-3 text-sm text-gray-500">
+              <span>{entity.mention_count} mentions · First seen {formatDate(entity.first_seen)} · Last seen {formatDate(entity.last_seen)}</span>
+            </div>
+            <div className="flex items-center gap-2 mt-2">
+              <span className="text-xs text-gray-400">Type:</span>
+              <select
+                value={entity.entity_type}
+                onChange={(e) => handleTypeChange(e.target.value)}
+                disabled={updatingType}
+                data-testid="select-entity-type"
+                className="text-xs border border-gray-200 rounded px-2 py-1 bg-white text-gray-700 cursor-pointer focus:outline-none focus:ring-1 focus:ring-indigo-300"
+              >
+                <option value="person">Person</option>
+                <option value="organization">Organization</option>
+                <option value="unknown">Unknown</option>
+              </select>
+              {updatingType && <Loader2 size={12} className="animate-spin text-gray-400" />}
+            </div>
           </div>
           <button
             onClick={() => onNavigate('network', entity.id)}
@@ -1128,16 +1158,20 @@ function NewsletterReaderPage({ newsletterId, onBack, onNavigate }: { newsletter
           : 'bg-gray-100 text-gray-700 border-gray-200 hover:bg-gray-200';
         const IconComponent = match.entity_type === 'person' ? User : match.entity_type === 'organization' ? Briefcase : Tag;
         return (
-          <button
+          <span
             key={i}
+            role="button"
+            tabIndex={0}
             onClick={(ev) => { ev.stopPropagation(); onNavigate('entity', match.id); }}
+            onKeyDown={(ev) => { if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); onNavigate('entity', match.id); } }}
             data-testid={`badge-entity-${match.id}`}
-            className={`inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded-md text-xs font-medium border cursor-pointer transition ${colorClass}`}
+            className={`inline-flex items-center gap-0.5 px-1 py-0 rounded border text-xs font-medium cursor-pointer transition align-baseline ${colorClass}`}
+            style={{ lineHeight: 'inherit' }}
             title={`${match.display_name} (${match.entity_type})`}
           >
-            <IconComponent size={10} />
-            <span>{part}</span>
-          </button>
+            <IconComponent size={9} className="inline" />
+            {part}
+          </span>
         );
       }
       return part;
