@@ -68,13 +68,17 @@ def _get_session():
 @app.on_event("startup")
 def _run_startup_migrations():
     engine = _get_engine()
-    if run_migrations(engine):
-        logger.info("Migration applied (added 'role' column). Triggering entity reprocess...")
-        try:
-            result = reprocess_all_entities(DB_URL)
-            logger.info(f"Startup reprocess complete: {result}")
-        except Exception as e:
-            logger.error(f"Startup reprocess failed: {e}")
+    applied = run_migrations(engine)
+    if applied:
+        logger.info(f"Migrations applied: {applied}")
+        # Only reprocess if entity extraction logic changed (role migration)
+        if "role_to_booleans" in applied:
+            logger.info("Role migration applied — triggering full entity reprocess...")
+            try:
+                result = reprocess_all_entities(DB_URL)
+                logger.info(f"Startup reprocess complete: {result}")
+            except Exception as e:
+                logger.error(f"Startup reprocess failed: {e}")
 
 
 # ---------- Pydantic schemas ----------

@@ -170,118 +170,78 @@ def init_db(db_url=None):
 
 
 def run_migrations(engine):
-    """Run schema migrations. Returns True if any migration was applied."""
+    """Run schema migrations. Returns a set of migration names that were applied."""
     from sqlalchemy import inspect, text as sa_text
     inspector = inspect(engine)
-    migrated = False
+    applied = set()
 
-    if "entities" in inspector.get_table_names():
-        columns = {c["name"] for c in inspector.get_columns("entities")}
+    table_names = set(inspector.get_table_names())
+
+    if "entities" in table_names:
+        ent_cols = {c["name"] for c in inspector.get_columns("entities")}
 
         # Migration: replace single 'role' column with is_consultant/is_client booleans
-        if "role" in columns:
+        if "role" in ent_cols:
             with engine.begin() as conn:
-                conn.execute(sa_text(
-                    "ALTER TABLE entities ADD COLUMN is_consultant BOOLEAN DEFAULT FALSE"
-                ))
-                conn.execute(sa_text(
-                    "ALTER TABLE entities ADD COLUMN is_client BOOLEAN DEFAULT FALSE"
-                ))
-                conn.execute(sa_text(
-                    "UPDATE entities SET is_consultant = TRUE WHERE role = 'consultant'"
-                ))
-                conn.execute(sa_text(
-                    "UPDATE entities SET is_client = TRUE WHERE role = 'client'"
-                ))
+                conn.execute(sa_text("ALTER TABLE entities ADD COLUMN is_consultant BOOLEAN DEFAULT FALSE"))
+                conn.execute(sa_text("ALTER TABLE entities ADD COLUMN is_client BOOLEAN DEFAULT FALSE"))
+                conn.execute(sa_text("UPDATE entities SET is_consultant = TRUE WHERE role = 'consultant'"))
+                conn.execute(sa_text("UPDATE entities SET is_client = TRUE WHERE role = 'client'"))
                 conn.execute(sa_text("ALTER TABLE entities DROP COLUMN role"))
-                conn.execute(sa_text(
-                    "CREATE INDEX ix_entities_is_consultant ON entities (is_consultant)"
-                ))
-                conn.execute(sa_text(
-                    "CREATE INDEX ix_entities_is_client ON entities (is_client)"
-                ))
-            migrated = True
-        elif "is_consultant" not in columns:
+                conn.execute(sa_text("CREATE INDEX ix_entities_is_consultant ON entities (is_consultant)"))
+                conn.execute(sa_text("CREATE INDEX ix_entities_is_client ON entities (is_client)"))
+            ent_cols.discard("role")
+            ent_cols.update({"is_consultant", "is_client"})
+            applied.add("role_to_booleans")
+        elif "is_consultant" not in ent_cols:
             with engine.begin() as conn:
-                conn.execute(sa_text(
-                    "ALTER TABLE entities ADD COLUMN is_consultant BOOLEAN DEFAULT FALSE"
-                ))
-                conn.execute(sa_text(
-                    "ALTER TABLE entities ADD COLUMN is_client BOOLEAN DEFAULT FALSE"
-                ))
-                conn.execute(sa_text(
-                    "CREATE INDEX ix_entities_is_consultant ON entities (is_consultant)"
-                ))
-                conn.execute(sa_text(
-                    "CREATE INDEX ix_entities_is_client ON entities (is_client)"
-                ))
-            migrated = True
+                conn.execute(sa_text("ALTER TABLE entities ADD COLUMN is_consultant BOOLEAN DEFAULT FALSE"))
+                conn.execute(sa_text("ALTER TABLE entities ADD COLUMN is_client BOOLEAN DEFAULT FALSE"))
+                conn.execute(sa_text("CREATE INDEX ix_entities_is_consultant ON entities (is_consultant)"))
+                conn.execute(sa_text("CREATE INDEX ix_entities_is_client ON entities (is_client)"))
+            ent_cols.update({"is_consultant", "is_client"})
+            applied.add("role_to_booleans")
 
-    # Migration: add registrant_id/client_id to entities for LDA linking
-    if "entities" in inspector.get_table_names():
-        columns = {c["name"] for c in inspector.get_columns("entities")}
-        if "registrant_id" not in columns:
+        # Migration: add registrant_id/client_id for LDA linking
+        if "registrant_id" not in ent_cols:
             with engine.begin() as conn:
-                conn.execute(sa_text(
-                    "ALTER TABLE entities ADD COLUMN registrant_id INTEGER REFERENCES registrants(id)"
-                ))
-                conn.execute(sa_text(
-                    "ALTER TABLE entities ADD COLUMN client_id INTEGER REFERENCES clients(id)"
-                ))
-                conn.execute(sa_text(
-                    "CREATE INDEX ix_entities_registrant_id ON entities (registrant_id)"
-                ))
-                conn.execute(sa_text(
-                    "CREATE INDEX ix_entities_client_id ON entities (client_id)"
-                ))
-            migrated = True
+                conn.execute(sa_text("ALTER TABLE entities ADD COLUMN registrant_id INTEGER REFERENCES registrants(id)"))
+                conn.execute(sa_text("ALTER TABLE entities ADD COLUMN client_id INTEGER REFERENCES clients(id)"))
+                conn.execute(sa_text("CREATE INDEX ix_entities_registrant_id ON entities (registrant_id)"))
+                conn.execute(sa_text("CREATE INDEX ix_entities_client_id ON entities (client_id)"))
+            applied.add("lda_fk_columns")
 
-    # Migration: add is_lobbyist/lobbyist_senate_id/lda_match_method to entities
-    if "entities" in inspector.get_table_names():
-        columns = {c["name"] for c in inspector.get_columns("entities")}
-        if "lda_match_method" not in columns:
+        # Migration: add is_lobbyist/lobbyist_senate_id
+        if "is_lobbyist" not in ent_cols:
             with engine.begin() as conn:
-                conn.execute(sa_text(
-                    "ALTER TABLE entities ADD COLUMN lda_match_method VARCHAR(20)"
-                ))
-            migrated = True
-        if "is_lobbyist" not in columns:
-            with engine.begin() as conn:
-                conn.execute(sa_text(
-                    "ALTER TABLE entities ADD COLUMN is_lobbyist BOOLEAN DEFAULT FALSE"
-                ))
-                conn.execute(sa_text(
-                    "ALTER TABLE entities ADD COLUMN lobbyist_senate_id INTEGER"
-                ))
-                conn.execute(sa_text(
-                    "CREATE INDEX ix_entities_is_lobbyist ON entities (is_lobbyist)"
-                ))
-            migrated = True
+                conn.execute(sa_text("ALTER TABLE entities ADD COLUMN is_lobbyist BOOLEAN DEFAULT FALSE"))
+                conn.execute(sa_text("ALTER TABLE entities ADD COLUMN lobbyist_senate_id INTEGER"))
+                conn.execute(sa_text("CREATE INDEX ix_entities_is_lobbyist ON entities (is_lobbyist)"))
+            applied.add("lobbyist_columns")
 
-    # Migration: add filing_id to relationships for LDA linking
-    if "relationships" in inspector.get_table_names():
-        rel_columns = {c["name"] for c in inspector.get_columns("relationships")}
-        if "filing_id" not in rel_columns:
+        # Migration: add lda_match_method
+        if "lda_match_method" not in ent_cols:
             with engine.begin() as conn:
-                conn.execute(sa_text(
-                    "ALTER TABLE relationships ADD COLUMN filing_id INTEGER REFERENCES filings(id)"
-                ))
-                conn.execute(sa_text(
-                    "CREATE INDEX ix_relationships_filing_id ON relationships (filing_id)"
-                ))
-            migrated = True
+                conn.execute(sa_text("ALTER TABLE entities ADD COLUMN lda_match_method VARCHAR(20)"))
+            applied.add("lda_match_method")
 
-    # Migration: add match_confidence to relationships
-    if "relationships" in inspector.get_table_names():
-        rel_columns = {c["name"] for c in inspector.get_columns("relationships")}
-        if "match_confidence" not in rel_columns:
+    if "relationships" in table_names:
+        rel_cols = {c["name"] for c in inspector.get_columns("relationships")}
+
+        # Migration: add filing_id
+        if "filing_id" not in rel_cols:
             with engine.begin() as conn:
-                conn.execute(sa_text(
-                    "ALTER TABLE relationships ADD COLUMN match_confidence VARCHAR(20)"
-                ))
-            migrated = True
+                conn.execute(sa_text("ALTER TABLE relationships ADD COLUMN filing_id INTEGER REFERENCES filings(id)"))
+                conn.execute(sa_text("CREATE INDEX ix_relationships_filing_id ON relationships (filing_id)"))
+            applied.add("relationship_filing_id")
 
-    return migrated
+        # Migration: add match_confidence
+        if "match_confidence" not in rel_cols:
+            with engine.begin() as conn:
+                conn.execute(sa_text("ALTER TABLE relationships ADD COLUMN match_confidence VARCHAR(20)"))
+            applied.add("relationship_match_confidence")
+
+    return applied
 
 
 def get_session(engine):
