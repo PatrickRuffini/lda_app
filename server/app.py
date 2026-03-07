@@ -687,9 +687,22 @@ def get_entity(entity_id: int):
             .join(Newsletter, EntityMention.newsletter_id == Newsletter.id)
             .filter(EntityMention.entity_id == entity_id)
             .order_by(desc(Newsletter.published_date))
-            .limit(20)
             .all()
         )
+
+        seen_nl_ids = set()
+        unique_mentions = []
+        for mention, nl in mentions:
+            if nl.id not in seen_nl_ids:
+                seen_nl_ids.add(nl.id)
+                unique_mentions.append({
+                    "newsletter_id": nl.id,
+                    "newsletter_title": nl.title,
+                    "published_date": nl.published_date.isoformat() if nl.published_date else None,
+                    "context": mention.context_text,
+                })
+            if len(unique_mentions) >= 20:
+                break
 
         return {
             "id": entity.id,
@@ -700,15 +713,7 @@ def get_entity(entity_id: int):
             "first_seen": entity.first_seen.isoformat() if entity.first_seen else None,
             "last_seen": entity.last_seen.isoformat() if entity.last_seen else None,
             "connections": connections,
-            "newsletter_mentions": [
-                {
-                    "newsletter_id": nl.id,
-                    "newsletter_title": nl.title,
-                    "published_date": nl.published_date.isoformat() if nl.published_date else None,
-                    "context": mention.context_text,
-                }
-                for mention, nl in mentions
-            ],
+            "newsletter_mentions": unique_mentions,
         }
     finally:
         session.close()
