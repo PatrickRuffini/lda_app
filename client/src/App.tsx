@@ -1203,14 +1203,14 @@ function NewsletterReaderPage({ newsletterId, onBack, onNavigate }: { newsletter
     });
   };
 
-  const sectionHeadingRe = /^([A-Z][A-Z\s'\u2019&,\-]+:)\s*/;
+  const sectionHeadingRe = /^([A-Z][A-Z\s'\u2019&,\-]+(?::|(?=\s?\u2014)))\s*\u2014?\s*/;
 
   const paragraphs = newsletter.body_text.split('\n\n').filter(p => p.trim().length > 0);
 
   const renderParagraph = (para: string, i: number) => {
     const headingMatch = para.match(sectionHeadingRe);
     if (headingMatch) {
-      const heading = headingMatch[1];
+      const heading = headingMatch[1].trim();
       const rest = para.slice(headingMatch[0].length).trim();
       return (
         <div key={i} data-testid={`text-paragraph-${i}`}>
