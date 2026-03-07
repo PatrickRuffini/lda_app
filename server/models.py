@@ -106,7 +106,8 @@ class Entity(Base):
     id = Column(Integer, primary_key=True)
     name = Column(String(500), nullable=False, index=True)
     entity_type = Column(String(50), index=True)
-    role = Column(String(50), index=True)  # "consultant", "client", or None
+    is_consultant = Column(Boolean, default=False, index=True)
+    is_client = Column(Boolean, default=False, index=True)
     display_name = Column(String(500))
     first_seen = Column(DateTime)
     last_seen = Column(DateTime)
@@ -169,13 +170,43 @@ def run_migrations(engine):
 
     if "entities" in inspector.get_table_names():
         columns = {c["name"] for c in inspector.get_columns("entities")}
-        if "role" not in columns:
+
+        # Migration: replace single 'role' column with is_consultant/is_client booleans
+        if "role" in columns:
             with engine.begin() as conn:
                 conn.execute(sa_text(
-                    "ALTER TABLE entities ADD COLUMN role VARCHAR(50)"
+                    "ALTER TABLE entities ADD COLUMN is_consultant BOOLEAN DEFAULT FALSE"
                 ))
                 conn.execute(sa_text(
-                    "CREATE INDEX ix_entities_role ON entities (role)"
+                    "ALTER TABLE entities ADD COLUMN is_client BOOLEAN DEFAULT FALSE"
+                ))
+                conn.execute(sa_text(
+                    "UPDATE entities SET is_consultant = TRUE WHERE role = 'consultant'"
+                ))
+                conn.execute(sa_text(
+                    "UPDATE entities SET is_client = TRUE WHERE role = 'client'"
+                ))
+                conn.execute(sa_text("ALTER TABLE entities DROP COLUMN role"))
+                conn.execute(sa_text(
+                    "CREATE INDEX ix_entities_is_consultant ON entities (is_consultant)"
+                ))
+                conn.execute(sa_text(
+                    "CREATE INDEX ix_entities_is_client ON entities (is_client)"
+                ))
+            migrated = True
+        elif "is_consultant" not in columns:
+            with engine.begin() as conn:
+                conn.execute(sa_text(
+                    "ALTER TABLE entities ADD COLUMN is_consultant BOOLEAN DEFAULT FALSE"
+                ))
+                conn.execute(sa_text(
+                    "ALTER TABLE entities ADD COLUMN is_client BOOLEAN DEFAULT FALSE"
+                ))
+                conn.execute(sa_text(
+                    "CREATE INDEX ix_entities_is_consultant ON entities (is_consultant)"
+                ))
+                conn.execute(sa_text(
+                    "CREATE INDEX ix_entities_is_client ON entities (is_client)"
                 ))
             migrated = True
 

@@ -158,7 +158,8 @@ export interface NewsletterDetail {
     id: number;
     name: string;
     entity_type: string;
-    role: string | null;
+    is_consultant: boolean;
+    is_client: boolean;
     display_name: string;
     paragraph_index: number;
     context: string;

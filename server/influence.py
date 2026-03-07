@@ -568,14 +568,16 @@ def detect_affiliations(entities_in_paragraph: list[dict], paragraph_text: str) 
 def _get_or_create_entity(session, name: str, entity_type: str = "unknown",
                           display_name: Optional[str] = None,
                           date: Optional[datetime] = None,
-                          role: Optional[str] = None) -> Entity:
+                          is_consultant: bool = False,
+                          is_client: bool = False) -> Entity:
     """Get or create an entity by name. Respects user_override for type."""
     entity = session.query(Entity).filter(Entity.name == name).first()
     if not entity:
         entity = Entity(
             name=name,
             entity_type=entity_type,
-            role=role,
+            is_consultant=is_consultant,
+            is_client=is_client,
             display_name=display_name or name,
             first_seen=date,
             last_seen=date,
@@ -587,8 +589,10 @@ def _get_or_create_entity(session, name: str, entity_type: str = "unknown",
     else:
         if not entity.user_override and entity_type != "unknown":
             entity.entity_type = entity_type
-        if role and not entity.role:
-            entity.role = role
+        if is_consultant:
+            entity.is_consultant = True
+        if is_client:
+            entity.is_client = True
         if display_name and not entity.user_override:
             entity.display_name = display_name
         if date:
@@ -786,13 +790,13 @@ def process_newsletter_entities(session, newsletter: Newsletter):
     for pair in reg_pairs:
         registrant = _get_or_create_entity(
             session, pair["registrant"], "organization", date=pub_date,
-            role="consultant",
+            is_consultant=True,
         )
         registrant.mention_count += 1
 
         client_ent = _get_or_create_entity(
             session, pair["client"], "organization", date=pub_date,
-            role="client",
+            is_client=True,
         )
         client_ent.mention_count += 1
 
@@ -804,7 +808,7 @@ def process_newsletter_entities(session, newsletter: Newsletter):
         if pair.get("on_behalf_of"):
             obo_ent = _get_or_create_entity(
                 session, pair["on_behalf_of"], "organization", date=pub_date,
-                role="consultant",
+                is_consultant=True,
             )
             obo_ent.mention_count += 1
             line_entities.append(obo_ent)
@@ -945,7 +949,7 @@ def reprocess_all_entities(db_url: str = None) -> dict:
     try:
         session.query(EntityMention).delete()
         session.query(Relationship).delete()
-        session.execute(Entity.__table__.update().values(mention_count=0, role=None))
+        session.execute(Entity.__table__.update().values(mention_count=0, is_consultant=False, is_client=False))
         session.query(Newsletter).update({Newsletter.entities_extracted: False})
         session.commit()
 

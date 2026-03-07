@@ -855,11 +855,8 @@ function InfluencePage({ onNavigate }: { onNavigate: (page: Page, ctx?: unknown)
                        <Tag size={14} className="text-gray-400 shrink-0" />}
                       <span className="truncate">{e.display_name || e.name}</span>
                       <span className="text-xs text-gray-400 bg-gray-100 rounded px-1.5 py-0.5 shrink-0">{e.entity_type}</span>
-                      {e.role && (
-                        <span className={`text-xs px-1.5 py-0.5 rounded-full shrink-0 ${e.role === 'consultant' ? 'text-blue-700 bg-blue-50' : 'text-emerald-700 bg-emerald-50'}`}>
-                          {e.role === 'consultant' ? 'Consultant' : 'Client'}
-                        </span>
-                      )}
+                      {e.is_consultant && <span className="text-xs px-1.5 py-0.5 rounded-full shrink-0 text-blue-700 bg-blue-50">Consultant</span>}
+                      {e.is_client && <span className="text-xs px-1.5 py-0.5 rounded-full shrink-0 text-emerald-700 bg-emerald-50">Client</span>}
                     </div>
                     <span className="text-xs text-gray-400 shrink-0 ml-2">{e.mention_count} mentions</span>
                   </button>
@@ -978,11 +975,8 @@ function InfluencePage({ onNavigate }: { onNavigate: (page: Page, ctx?: unknown)
                    e.entity_type === 'organization' ? <Briefcase size={14} className="text-amber-500 shrink-0" /> :
                    <Tag size={14} className="text-gray-400 shrink-0" />}
                   <span className="truncate">{e.display_name || e.name}</span>
-                  {e.role && (
-                    <span className={`text-xs px-1.5 py-0.5 rounded-full shrink-0 ${e.role === 'consultant' ? 'text-blue-700 bg-blue-50' : 'text-emerald-700 bg-emerald-50'}`}>
-                      {e.role === 'consultant' ? 'Consultant' : 'Client'}
-                    </span>
-                  )}
+                  {e.is_consultant && <span className="text-xs px-1.5 py-0.5 rounded-full shrink-0 text-blue-700 bg-blue-50">Consultant</span>}
+                  {e.is_client && <span className="text-xs px-1.5 py-0.5 rounded-full shrink-0 text-emerald-700 bg-emerald-50">Client</span>}
                 </div>
                 <span className="text-xs text-gray-400 shrink-0 ml-2">{e.mention_count}</span>
               </button>
@@ -1191,11 +1185,8 @@ function EntityDetailPage({ entityId, onBack, onNavigate }: { entityId: number; 
                 <option value="unknown">Unknown</option>
               </select>
               {updatingType && <Loader2 size={12} className="animate-spin text-gray-400" />}
-              {entity.role && (
-                <span className={`text-xs px-2 py-0.5 rounded-full ${entity.role === 'consultant' ? 'text-blue-700 bg-blue-50' : 'text-emerald-700 bg-emerald-50'}`}>
-                  {entity.role === 'consultant' ? 'Consultant' : 'Client'}
-                </span>
-              )}
+              {entity.is_consultant && <span className="text-xs px-2 py-0.5 rounded-full text-blue-700 bg-blue-50">Consultant</span>}
+              {entity.is_client && <span className="text-xs px-2 py-0.5 rounded-full text-emerald-700 bg-emerald-50">Client</span>}
             </div>
           </div>
           <button
@@ -1563,11 +1554,8 @@ function EntityLeaderboard({ entityType, onBack, onNavigate }: { entityType: str
                 <span className="text-sm font-mono text-gray-400 w-8 text-right">{(page - 1) * pageSize + idx + 1}</span>
                 <div className="flex-1 min-w-0 flex items-center gap-2">
                   <span className="text-sm font-medium text-gray-900 truncate">{e.display_name || e.name}</span>
-                  {e.role && (
-                    <span className={`text-xs px-1.5 py-0.5 rounded-full shrink-0 ${e.role === 'consultant' ? 'text-blue-700 bg-blue-50' : 'text-emerald-700 bg-emerald-50'}`}>
-                      {e.role === 'consultant' ? 'Consultant' : 'Client'}
-                    </span>
-                  )}
+                  {e.is_consultant && <span className="text-xs px-1.5 py-0.5 rounded-full shrink-0 text-blue-700 bg-blue-50">Consultant</span>}
+                  {e.is_client && <span className="text-xs px-1.5 py-0.5 rounded-full shrink-0 text-emerald-700 bg-emerald-50">Client</span>}
                 </div>
                 <span className={isPerson ? 'text-sm font-semibold text-indigo-600' : 'text-sm font-semibold text-amber-600'}>{e.mention_count}</span>
                 <span className="text-xs text-gray-400">mentions</span>
