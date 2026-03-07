@@ -852,40 +852,122 @@ def _normalize_org_name(name: str) -> str:
     return n
 
 
+def _normalize_org_aggressive(name: str) -> str:
+    """More aggressive normalization: strip parentheticals, Mr./Mrs., commas between name parts."""
+    n = _normalize_org_name(name)
+    # Strip parenthetical suffixes like (FKA ...) or (FORMERLY ...) or (DC)
+    n = re.sub(r"\s*\(.*$", "", n).strip()
+    # Strip Mr./Mrs./Ms. prefix
+    n = re.sub(r"^(MR\.?|MRS\.?|MS\.?)\s+", "", n)
+    # Strip commas between name parts ("AKIN, GUMP, STRAUSS" -> "AKIN GUMP STRAUSS")
+    n = n.replace(",", " ")
+    n = re.sub(r"\s+", " ", n).strip()
+    return n
+
+
+# Known aliases: informal name -> formal LDA name (both UPPER CASE after normalization)
+# These are manually curated for cases where the short name in Politico Influence
+# doesn't mechanically reduce to the full LDA registrant name.
+ENTITY_ALIASES: dict[str, str] = {
+    "AKIN GUMP": "AKIN GUMP STRAUSS HAUER & FELD",
+    "FAEGRE DRINKER": "FAEGRE DRINKER BIDDLE & REATH",
+    "DUANE MORRIS": "DUANE MORRIS GOVERNMENT STRATEGIES",
+    "ICE MILLER STRATEGIES": "ICE MILLER",
+    "BROWNSTEIN HYATT": "BROWNSTEIN HYATT FARBER SCHRECK",
+    "BROWNSTEIN HYATT FARBER AND SCHRECK": "BROWNSTEIN HYATT FARBER SCHRECK",
+    "COVINGTON & BURLING": "COVINGTON & BURLING",
+    "SQUIRE PATTON BOGGS": "SQUIRE PATTON BOGGS (US)",
+    "HOGAN LOVELLS": "HOGAN LOVELLS US",
+    "KING & SPALDING": "KING & SPALDING",
+    "INVARIANT": "INVARIANT",
+    "ERVIN GRAVES STRATEGY": "ERVIN GRAVES STRATEGY GROUP",
+    "FORWARD GLOBAL US": "FORWARD GLOBAL",
+    "MONTICELLO GROUP": "MONTICELLO ADVISORY GROUP",
+    "FGH HOLDINGS": "FGS GLOBAL (US) LLC (FKA FGH HOLDINGS LLC)",
+    "JEFFREY J. KIMBELL AND ASSOCIATES": "JEFFREY J. KIMBELL & ASSOCIATES",
+    "SMITH GARSON FKS SMITH DAWSON & ANDREWS": "SMITH GARSON FKA SMITH DAWSON & ANDREWS",
+}
+
+
 def link_entities_to_lda(session) -> dict:
     """
-    Match newsletter entities to LDA registrant/client records by normalized name.
+    Match newsletter entities to LDA registrant/client records using 3-tier matching:
+    1. Exact normalized name match (strip legal suffixes)
+    2. Aggressive normalization (also strip parentheticals, Mr./Mrs., commas)
+    3. Alias table lookup
+
     Also match lobbying_registration/termination relationships to specific filings.
     Returns counts of matches made.
     """
-    # Build normalized name -> id lookups
-    registrant_lookup: dict[str, int] = {}
+    # Build normalized name -> id lookups for registrants (both tiers)
+    reg_by_norm: dict[str, int] = {}
+    reg_by_agg: dict[str, int] = {}
     for r in session.query(Registrant).all():
-        registrant_lookup[_normalize_org_name(r.name)] = r.id
+        reg_by_norm[_normalize_org_name(r.name)] = r.id
+        reg_by_agg[_normalize_org_aggressive(r.name)] = r.id
 
-    client_lookup: dict[str, int] = {}
+    # Build normalized name -> id lookups for clients (both tiers)
+    cli_by_norm: dict[str, int] = {}
+    cli_by_agg: dict[str, int] = {}
     for c in session.query(Client).all():
-        client_lookup[_normalize_org_name(c.name)] = c.id
+        cli_by_norm[_normalize_org_name(c.name)] = c.id
+        cli_by_agg[_normalize_org_aggressive(c.name)] = c.id
+
+    def _match_registrant(name: str) -> tuple[int, str] | None:
+        """Try 3-tier matching against registrants. Returns (id, method) or None."""
+        norm = _normalize_org_name(name)
+        if norm in reg_by_norm:
+            return (reg_by_norm[norm], "exact")
+        agg = _normalize_org_aggressive(name)
+        if agg in reg_by_agg:
+            return (reg_by_agg[agg], "aggressive")
+        alias_target = ENTITY_ALIASES.get(norm) or ENTITY_ALIASES.get(agg)
+        if alias_target:
+            if alias_target in reg_by_norm:
+                return (reg_by_norm[alias_target], "alias")
+            if alias_target in reg_by_agg:
+                return (reg_by_agg[alias_target], "alias")
+        return None
+
+    def _match_client(name: str) -> tuple[int, str] | None:
+        """Try 3-tier matching against clients. Returns (id, method) or None."""
+        norm = _normalize_org_name(name)
+        if norm in cli_by_norm:
+            return (cli_by_norm[norm], "exact")
+        agg = _normalize_org_aggressive(name)
+        if agg in cli_by_agg:
+            return (cli_by_agg[agg], "aggressive")
+        alias_target = ENTITY_ALIASES.get(norm) or ENTITY_ALIASES.get(agg)
+        if alias_target:
+            if alias_target in cli_by_norm:
+                return (cli_by_norm[alias_target], "alias")
+            if alias_target in cli_by_agg:
+                return (cli_by_agg[alias_target], "alias")
+        return None
 
     entity_matches = 0
 
     # Link consultant entities to registrants
     consultants = session.query(Entity).filter(Entity.is_consultant == True).all()
     for ent in consultants:
-        norm = _normalize_org_name(ent.name)
-        rid = registrant_lookup.get(norm)
-        if rid and ent.registrant_id != rid:
-            ent.registrant_id = rid
-            entity_matches += 1
+        match = _match_registrant(ent.name)
+        if match:
+            rid, method = match
+            if ent.registrant_id != rid:
+                ent.registrant_id = rid
+                ent.lda_match_method = method
+                entity_matches += 1
 
     # Link client entities to clients
     clients = session.query(Entity).filter(Entity.is_client == True).all()
     for ent in clients:
-        norm = _normalize_org_name(ent.name)
-        cid = client_lookup.get(norm)
-        if cid and ent.client_id != cid:
-            ent.client_id = cid
-            entity_matches += 1
+        match = _match_client(ent.name)
+        if match:
+            cid, method = match
+            if ent.client_id != cid:
+                ent.client_id = cid
+                ent.lda_match_method = method
+                entity_matches += 1
 
     session.flush()
 

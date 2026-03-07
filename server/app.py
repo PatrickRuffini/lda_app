@@ -783,6 +783,7 @@ def get_entity(entity_id: int):
             "last_seen": entity.last_seen.isoformat() if entity.last_seen else None,
             "registrant_id": entity.registrant_id,
             "client_id": entity.client_id,
+            "lda_match_method": entity.lda_match_method,
             "connections": connections,
             "newsletter_mentions": unique_mentions,
             "lda_filings": lda_filings,

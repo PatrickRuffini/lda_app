@@ -197,6 +197,7 @@ export interface LdaFilingSummary {
 export interface EntityDetail extends EntitySummary {
   registrant_id: number | null;
   client_id: number | null;
+  lda_match_method: string | null;
   connections: Array<{
     entity: EntitySummary;
     relationship_type: string;

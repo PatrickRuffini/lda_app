@@ -117,6 +117,7 @@ class Entity(Base):
     client_id = Column(Integer, ForeignKey("clients.id"), nullable=True, index=True)
     is_lobbyist = Column(Boolean, default=False, index=True)
     lobbyist_senate_id = Column(Integer, nullable=True)
+    lda_match_method = Column(String(20), nullable=True)
 
     __table_args__ = (
         Index("ix_entities_name", "name", unique=True),
@@ -235,9 +236,15 @@ def run_migrations(engine):
                 ))
             migrated = True
 
-    # Migration: add is_lobbyist/lobbyist_senate_id to entities
+    # Migration: add is_lobbyist/lobbyist_senate_id/lda_match_method to entities
     if "entities" in inspector.get_table_names():
         columns = {c["name"] for c in inspector.get_columns("entities")}
+        if "lda_match_method" not in columns:
+            with engine.begin() as conn:
+                conn.execute(sa_text(
+                    "ALTER TABLE entities ADD COLUMN lda_match_method VARCHAR(20)"
+                ))
+            migrated = True
         if "is_lobbyist" not in columns:
             with engine.begin() as conn:
                 conn.execute(sa_text(
