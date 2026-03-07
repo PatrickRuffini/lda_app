@@ -20,8 +20,8 @@ from bs4 import BeautifulSoup, Tag
 from sqlalchemy import text
 
 from .models import (
-    Client, Entity, EntityMention, Filing, Newsletter, Registrant, Relationship,
-    get_engine, get_session, init_db,
+    Client, Entity, EntityMention, Filing, LobbyingActivity, Newsletter,
+    Registrant, Relationship, get_engine, get_session, init_db,
 )
 
 logger = logging.getLogger(__name__)
@@ -950,6 +950,209 @@ def link_entities_to_lda(session) -> dict:
     return {"entity_matches": entity_matches, "filing_matches": filing_matches}
 
 
+def _title_case_name(name: str) -> str:
+    """Convert ALL CAPS name to Title Case, handling suffixes like Jr., III."""
+    parts = name.strip().split()
+    result = []
+    no_capitalize = {"II", "III", "IV", "JR.", "SR.", "JR", "SR"}
+    for p in parts:
+        if p.upper() in no_capitalize:
+            result.append(p.upper() if p.upper() in {"II", "III", "IV"} else p.capitalize())
+        else:
+            result.append(p.capitalize())
+    return " ".join(result)
+
+
+def link_lobbyists_to_entities(session) -> dict:
+    """
+    Extract individual lobbyists from LDA filing data and create/match
+    entity records + affiliation edges to their registrant firms.
+
+    Match confidence:
+    - "high": lobbyist name already exists as an entity connected to the firm via Politico Influence
+    - "low": lobbyist name exists as an entity but not connected to this firm, or is newly created
+
+    Returns counts of new entities created, matches made, and edges created.
+    """
+    # Build registrant_id -> Entity lookup (firms that have entity records)
+    firm_entities: dict[int, Entity] = {}
+    for ent in session.query(Entity).filter(Entity.registrant_id != None).all():
+        firm_entities[ent.registrant_id] = ent
+
+    # Build lowercase name -> Entity lookup for existing entities
+    existing_by_name: dict[str, Entity] = {}
+    for ent in session.query(Entity).all():
+        existing_by_name[ent.name.lower()] = ent
+
+    # Track existing affiliation pairs (entity_a_id, entity_b_id) for confidence check
+    existing_affiliations: set[tuple[int, int]] = set()
+    for rel in session.query(Relationship).filter(
+        Relationship.relationship_type == "affiliation"
+    ).all():
+        existing_affiliations.add((rel.entity_a_id, rel.entity_b_id))
+
+    # Parse all lobbyists from all filing activities
+    activities = (
+        session.query(LobbyingActivity)
+        .filter(LobbyingActivity.lobbyists != None)
+        .all()
+    )
+
+    new_entities = 0
+    matched_entities = 0
+    edges_created = 0
+    edges_updated = 0
+
+    # Collect unique lobbyist records per registrant
+    # Key: (registrant_id, lobbyist_name_lower) -> lobbyist info
+    seen: set[tuple[int, str]] = set()
+
+    for activity in activities:
+        filing = session.query(Filing).get(activity.filing_id)
+        if not filing or not filing.registrant_id:
+            continue
+
+        firm_entity = firm_entities.get(filing.registrant_id)
+        if not firm_entity:
+            continue
+
+        try:
+            lobbyists_data = json.loads(activity.lobbyists)
+        except (json.JSONDecodeError, TypeError):
+            continue
+
+        if not isinstance(lobbyists_data, list):
+            continue
+
+        for lob_record in lobbyists_data:
+            lob = lob_record.get("lobbyist", {}) if isinstance(lob_record, dict) else {}
+            first_name = (lob.get("first_name") or "").strip()
+            last_name = (lob.get("last_name") or "").strip()
+            if not first_name or not last_name:
+                continue
+
+            senate_id = lob.get("id")
+            covered_position = (lob_record.get("covered_position") or "").strip() if isinstance(lob_record, dict) else ""
+
+            # Build name: title case from ALL CAPS
+            full_name_display = f"{_title_case_name(first_name)} {_title_case_name(last_name)}"
+            full_name_lower = f"{first_name} {last_name}".lower()
+
+            # Deduplicate per registrant
+            dedup_key = (filing.registrant_id, full_name_lower)
+            if dedup_key in seen:
+                continue
+            seen.add(dedup_key)
+
+            # Try to match to existing entity (lowercase match)
+            existing_ent = existing_by_name.get(full_name_lower)
+            # Also try title case match
+            if not existing_ent:
+                existing_ent = existing_by_name.get(full_name_display.lower())
+
+            confidence = "low"
+
+            if existing_ent:
+                # Check if there's already an affiliation/edge to this firm
+                pair = (min(existing_ent.id, firm_entity.id), max(existing_ent.id, firm_entity.id))
+                if pair in existing_affiliations:
+                    confidence = "high"
+                matched_entities += 1
+
+                # Update flags
+                existing_ent.is_lobbyist = True
+                if senate_id:
+                    existing_ent.lobbyist_senate_id = senate_id
+                if not existing_ent.user_override:
+                    existing_ent.entity_type = "person"
+
+                lobbyist_entity = existing_ent
+            else:
+                # Create new entity with title-cased name
+                lobbyist_entity = Entity(
+                    name=full_name_display,
+                    entity_type="person",
+                    is_lobbyist=True,
+                    lobbyist_senate_id=senate_id,
+                    display_name=full_name_display,
+                    mention_count=0,
+                    user_override=False,
+                )
+                session.add(lobbyist_entity)
+                session.flush()
+                new_entities += 1
+                # Add to lookup for future iterations
+                existing_by_name[full_name_display.lower()] = lobbyist_entity
+
+            # Create/update affiliation edge (weight=2 for formal employer relationship)
+            a_id = min(lobbyist_entity.id, firm_entity.id)
+            b_id = max(lobbyist_entity.id, firm_entity.id)
+
+            rel = (
+                session.query(Relationship)
+                .filter(
+                    Relationship.entity_a_id == a_id,
+                    Relationship.entity_b_id == b_id,
+                )
+                .first()
+            )
+
+            ctx = f"Registered lobbyist at {firm_entity.display_name or firm_entity.name}"
+            if covered_position:
+                ctx += f" — Covered position: {covered_position}"
+
+            if not rel:
+                rel = Relationship(
+                    entity_a_id=a_id,
+                    entity_b_id=b_id,
+                    relationship_type="affiliation",
+                    weight=2,
+                    first_seen=filing.dt_posted,
+                    last_seen=filing.dt_posted,
+                    context_snippets=json.dumps([ctx[:500]]),
+                    match_confidence=confidence,
+                )
+                session.add(rel)
+                edges_created += 1
+                existing_affiliations.add((a_id, b_id))
+            else:
+                # Update existing edge
+                if rel.weight < 2:
+                    rel.weight = 2
+                if filing.dt_posted:
+                    if not rel.first_seen or filing.dt_posted < rel.first_seen:
+                        rel.first_seen = filing.dt_posted
+                    if not rel.last_seen or filing.dt_posted > rel.last_seen:
+                        rel.last_seen = filing.dt_posted
+                # Upgrade confidence if we now have a high-confidence match
+                if confidence == "high" and rel.match_confidence != "high":
+                    rel.match_confidence = "high"
+                elif not rel.match_confidence:
+                    rel.match_confidence = confidence
+                # Append covered position context
+                if covered_position:
+                    try:
+                        snippets = json.loads(rel.context_snippets or "[]")
+                    except (json.JSONDecodeError, TypeError):
+                        snippets = []
+                    if ctx[:500] not in snippets:
+                        snippets.append(ctx[:500])
+                        rel.context_snippets = json.dumps(snippets[-10:])
+                edges_updated += 1
+
+    session.commit()
+    logger.info(
+        f"Lobbyist linking: {new_entities} new entities, {matched_entities} matched, "
+        f"{edges_created} edges created, {edges_updated} edges updated"
+    )
+    return {
+        "new_entities": new_entities,
+        "matched_entities": matched_entities,
+        "edges_created": edges_created,
+        "edges_updated": edges_updated,
+    }
+
+
 _scrape_progress: dict = {}
 _reprocess_progress: dict = {}
 
@@ -1030,6 +1233,7 @@ def scrape_and_store(
 
         # Link newly extracted entities to LDA records
         link_result = link_entities_to_lda(session)
+        lobbyist_result = link_lobbyists_to_entities(session)
 
         _scrape_progress = {}
         return {
@@ -1038,6 +1242,7 @@ def scrape_and_store(
             "errors": errors,
             "total_urls": len(urls),
             "lda_links": link_result,
+            "lobbyist_links": lobbyist_result,
         }
 
     except Exception as e:
@@ -1116,10 +1321,11 @@ def reprocess_all_entities(db_url: str = None) -> dict:
 
         # Link entities to LDA records after reprocessing
         link_result = link_entities_to_lda(session)
+        lobbyist_result = link_lobbyists_to_entities(session)
 
         logger.info(f"Reprocess complete: {processed} newsletters")
         _reprocess_progress = {"status": "done", "processed": processed, "total": total}
-        return {"processed": processed, "orphans_removed": orphans, "lda_links": link_result}
+        return {"processed": processed, "orphans_removed": orphans, "lda_links": link_result, "lobbyist_links": lobbyist_result}
     except Exception as e:
         _reprocess_progress = {"status": "error", "error": str(e)}
         session.rollback()

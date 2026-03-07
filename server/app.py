@@ -19,7 +19,7 @@ from .models import (
     get_engine, get_session, init_db, run_migrations,
 )
 from .sync import sync_filings, sync_incremental, sync_backfill, sync_year, get_sync_progress, _update_progress
-from .influence import scrape_and_store, reprocess_all_entities, get_scrape_progress, get_reprocess_progress, link_entities_to_lda
+from .influence import scrape_and_store, reprocess_all_entities, get_scrape_progress, get_reprocess_progress, link_entities_to_lda, link_lobbyists_to_entities
 
 logger = logging.getLogger(__name__)
 
@@ -690,6 +690,7 @@ def get_entity(entity_id: int):
                         "entity_type": other.entity_type,
                         "is_consultant": other.is_consultant,
                         "is_client": other.is_client,
+                        "is_lobbyist": other.is_lobbyist,
                         "display_name": other.display_name,
                         "mention_count": other.mention_count,
                     },
@@ -698,6 +699,7 @@ def get_entity(entity_id: int):
                     "first_seen": rel.first_seen.isoformat() if rel.first_seen else None,
                     "last_seen": rel.last_seen.isoformat() if rel.last_seen else None,
                     "context_snippets": _safe_json_loads(rel.context_snippets),
+                    "match_confidence": rel.match_confidence,
                     "filing_id": None,
                     "filing_uuid": None,
                     "filing_type": None,
@@ -774,6 +776,7 @@ def get_entity(entity_id: int):
             "entity_type": entity.entity_type,
             "is_consultant": entity.is_consultant,
             "is_client": entity.is_client,
+            "is_lobbyist": entity.is_lobbyist,
             "display_name": entity.display_name,
             "mention_count": entity.mention_count,
             "first_seen": entity.first_seen.isoformat() if entity.first_seen else None,
@@ -848,11 +851,12 @@ def reprocess_status_endpoint():
 
 @app.post("/api/influence/link-lda")
 def link_lda_endpoint():
-    """Manually trigger LDA entity linking without full reprocess."""
+    """Manually trigger LDA entity + lobbyist linking without full reprocess."""
     session = _get_session()
     try:
         result = link_entities_to_lda(session)
-        return {"status": "done", **result}
+        lobbyist_result = link_lobbyists_to_entities(session)
+        return {"status": "done", **result, "lobbyist_links": lobbyist_result}
     except Exception as e:
         logger.error(f"LDA linking error: {e}")
         raise HTTPException(status_code=500, detail=str(e))

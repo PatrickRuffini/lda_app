@@ -173,6 +173,7 @@ export interface EntitySummary {
   entity_type: string;
   is_consultant?: boolean;
   is_client?: boolean;
+  is_lobbyist?: boolean;
   display_name: string;
   mention_count: number;
   first_seen: string | null;
@@ -203,6 +204,7 @@ export interface EntityDetail extends EntitySummary {
     first_seen: string | null;
     last_seen: string | null;
     context_snippets: string[];
+    match_confidence: string | null;
     filing_id: number | null;
     filing_uuid: string | null;
     filing_type: string | null;

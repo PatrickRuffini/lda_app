@@ -115,6 +115,8 @@ class Entity(Base):
     user_override = Column(Boolean, default=False)
     registrant_id = Column(Integer, ForeignKey("registrants.id"), nullable=True, index=True)
     client_id = Column(Integer, ForeignKey("clients.id"), nullable=True, index=True)
+    is_lobbyist = Column(Boolean, default=False, index=True)
+    lobbyist_senate_id = Column(Integer, nullable=True)
 
     __table_args__ = (
         Index("ix_entities_name", "name", unique=True),
@@ -144,6 +146,7 @@ class Relationship(Base):
     last_seen = Column(DateTime)
     context_snippets = Column(Text)
     filing_id = Column(Integer, ForeignKey("filings.id"), nullable=True, index=True)
+    match_confidence = Column(String(20), nullable=True)
 
     __table_args__ = (
         Index("ix_relationships_pair", "entity_a_id", "entity_b_id", unique=True),
@@ -232,6 +235,22 @@ def run_migrations(engine):
                 ))
             migrated = True
 
+    # Migration: add is_lobbyist/lobbyist_senate_id to entities
+    if "entities" in inspector.get_table_names():
+        columns = {c["name"] for c in inspector.get_columns("entities")}
+        if "is_lobbyist" not in columns:
+            with engine.begin() as conn:
+                conn.execute(sa_text(
+                    "ALTER TABLE entities ADD COLUMN is_lobbyist BOOLEAN DEFAULT FALSE"
+                ))
+                conn.execute(sa_text(
+                    "ALTER TABLE entities ADD COLUMN lobbyist_senate_id INTEGER"
+                ))
+                conn.execute(sa_text(
+                    "CREATE INDEX ix_entities_is_lobbyist ON entities (is_lobbyist)"
+                ))
+            migrated = True
+
     # Migration: add filing_id to relationships for LDA linking
     if "relationships" in inspector.get_table_names():
         rel_columns = {c["name"] for c in inspector.get_columns("relationships")}
@@ -242,6 +261,16 @@ def run_migrations(engine):
                 ))
                 conn.execute(sa_text(
                     "CREATE INDEX ix_relationships_filing_id ON relationships (filing_id)"
+                ))
+            migrated = True
+
+    # Migration: add match_confidence to relationships
+    if "relationships" in inspector.get_table_names():
+        rel_columns = {c["name"] for c in inspector.get_columns("relationships")}
+        if "match_confidence" not in rel_columns:
+            with engine.begin() as conn:
+                conn.execute(sa_text(
+                    "ALTER TABLE relationships ADD COLUMN match_confidence VARCHAR(20)"
                 ))
             migrated = True
 

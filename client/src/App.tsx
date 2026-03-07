@@ -1308,6 +1308,7 @@ function EntityDetailPage({ entityId, onBack, onNavigate }: { entityId: number; 
               {updatingType && <Loader2 size={12} className="animate-spin text-gray-400" />}
               {entity.is_consultant && <span className="text-xs px-2 py-0.5 rounded-full text-blue-700 bg-blue-50">Consultant</span>}
               {entity.is_client && <span className="text-xs px-2 py-0.5 rounded-full text-emerald-700 bg-emerald-50">Client</span>}
+              {entity.is_lobbyist && <span className="text-xs px-2 py-0.5 rounded-full text-purple-700 bg-purple-50">Registered Lobbyist</span>}
             </div>
           </div>
           <button
@@ -1324,19 +1325,42 @@ function EntityDetailPage({ entityId, onBack, onNavigate }: { entityId: number; 
         <div>
           <h2 className="text-lg font-semibold text-gray-900 mb-3">Affiliations</h2>
           <div className="bg-white rounded-lg border border-gray-200 divide-y divide-gray-100">
-            {affiliations.map(c => (
-              <button
-                key={c.entity.id}
-                onClick={() => onNavigate('entity', c.entity.id)}
-                className="w-full text-left px-4 py-2 hover:bg-gray-50 cursor-pointer transition flex items-center justify-between"
-              >
-                <div className="flex items-center gap-2">
-                  {c.entity.entity_type === 'person' ? <User size={14} className="text-indigo-500" /> : <Briefcase size={14} className="text-amber-500" />}
-                  <span className="text-sm font-medium text-gray-900">{c.entity.display_name || c.entity.name}</span>
+            {affiliations.map(c => {
+              // Extract covered positions from context snippets
+              const coveredPositions = c.context_snippets
+                .filter(s => s.includes('Covered position:'))
+                .map(s => s.split('Covered position:')[1]?.trim())
+                .filter(Boolean);
+              return (
+                <div key={c.entity.id} className="px-4 py-2 hover:bg-gray-50 transition">
+                  <div className="flex items-center justify-between">
+                    <button
+                      onClick={() => onNavigate('entity', c.entity.id)}
+                      className="flex items-center gap-2 cursor-pointer min-w-0"
+                    >
+                      {c.entity.entity_type === 'person' ? <User size={14} className="text-indigo-500" /> : <Briefcase size={14} className="text-amber-500" />}
+                      <span className="text-sm font-medium text-gray-900">{c.entity.display_name || c.entity.name}</span>
+                      {c.entity.is_lobbyist && <span className="text-xs px-1.5 py-0.5 rounded-full text-purple-700 bg-purple-50">Lobbyist</span>}
+                    </button>
+                    <div className="flex items-center gap-2 shrink-0">
+                      {c.match_confidence && (
+                        <span className={`text-xs px-1.5 py-0.5 rounded-full ${c.match_confidence === 'high' ? 'text-green-700 bg-green-50' : 'text-yellow-700 bg-yellow-50'}`}>
+                          {c.match_confidence === 'high' ? 'High match' : 'Low match'}
+                        </span>
+                      )}
+                      <span className="text-xs text-amber-600 bg-amber-50 px-2 py-0.5 rounded-full">{c.weight}x</span>
+                    </div>
+                  </div>
+                  {coveredPositions.length > 0 && (
+                    <div className="mt-1 ml-6">
+                      {coveredPositions.map((pos, i) => (
+                        <p key={i} className="text-xs text-gray-500 italic">{pos}</p>
+                      ))}
+                    </div>
+                  )}
                 </div>
-                <span className="text-xs text-amber-600 bg-amber-50 px-2 py-0.5 rounded-full">{c.weight}x</span>
-              </button>
-            ))}
+              );
+            })}
           </div>
         </div>
       )}
