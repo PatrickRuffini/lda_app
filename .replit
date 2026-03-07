@@ -38,4 +38,4 @@ waitForPort = 8000
 
 [nix]
 channel = "stable-25_05"
-packages = ["libxcrypt", "xcodebuild", "zlib"]
+packages = ["alsa-lib", "at-spi2-atk", "cairo", "cups", "dbus", "expat", "gitFull", "glib", "gtk3", "libdrm", "libxcrypt", "libxkbcommon", "mesa", "nspr", "nss", "pango", "playwright-driver", "xcodebuild", "xorg.libX11", "xorg.libXcomposite", "xorg.libXdamage", "xorg.libXext", "xorg.libXfixes", "xorg.libXrandr", "xorg.libxcb", "zlib"]

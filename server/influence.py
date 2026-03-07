@@ -3,9 +3,12 @@
 Fetches newsletters from politico.com/newsletters/politico-influence,
 extracts bold entities, detects relationships from co-occurrences,
 and stores everything in the local database.
+
+Uses Playwright (headless Chromium) to bypass Cloudflare protection.
 """
 import json
 import logging
+import os
 import re
 import time
 from datetime import datetime, timedelta
@@ -13,7 +16,6 @@ from itertools import combinations
 from typing import Optional
 from urllib.parse import urljoin
 
-import requests
 from bs4 import BeautifulSoup, Tag
 from sqlalchemy import text
 
@@ -26,115 +28,127 @@ logger = logging.getLogger(__name__)
 
 BASE_URL = "https://www.politico.com"
 NEWSLETTER_LIST_URL = f"{BASE_URL}/newsletters/politico-influence"
-USER_AGENT = (
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-    "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+CHROMIUM_PATH = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+    ".cache", "ms-playwright", "chromium-1208", "chrome-linux64", "chrome"
 )
-
-
-def _fetch(url: str, retries: int = 3) -> Optional[str]:
-    """Fetch a URL with retries and return HTML content."""
-    headers = {"User-Agent": USER_AGENT, "Accept": "text/html,application/xhtml+xml"}
-    for attempt in range(retries):
-        try:
-            resp = requests.get(url, headers=headers, timeout=30)
-            if resp.status_code == 429:
-                wait = 2 ** (attempt + 1)
-                logger.warning(f"Rate limited on {url}, waiting {wait}s...")
-                time.sleep(wait)
-                continue
-            if resp.status_code == 404:
-                logger.info(f"Not found: {url}")
-                return None
-            resp.raise_for_status()
-            return resp.text
-        except requests.RequestException as e:
-            logger.error(f"Fetch error (attempt {attempt + 1}): {e}")
-            if attempt < retries - 1:
-                time.sleep(2 ** (attempt + 1))
-    return None
-
-
-def discover_newsletter_urls(max_pages: int = 5) -> list[str]:
-    """
-    Discover newsletter edition URLs from the listing page.
-
-    Politico newsletters follow the URL pattern:
-    /newsletters/politico-influence/YYYY/MM/DD/slug-NNNNNNNN
-    """
-    urls = []
-    page_url = NEWSLETTER_LIST_URL
-
-    for page_num in range(max_pages):
-        html = _fetch(page_url)
-        if not html:
+GBM_LIB_DIR = None
+for entry in os.listdir("/nix/store") if os.path.exists("/nix/store") else []:
+    if "mesa-libgbm" in entry:
+        candidate = os.path.join("/nix/store", entry, "lib")
+        if os.path.exists(os.path.join(candidate, "libgbm.so.1")):
+            GBM_LIB_DIR = candidate
             break
 
-        soup = BeautifulSoup(html, "lxml")
 
-        # Find all newsletter article links
-        for link in soup.find_all("a", href=True):
-            href = link["href"]
-            # Match the newsletter URL pattern
-            if re.search(r"/newsletters/politico-influence/\d{4}/\d{2}/\d{2}/", href):
+def _get_browser_page():
+    """Launch a headless Chromium browser and return (playwright, browser, page)."""
+    from playwright.sync_api import sync_playwright
+
+    if GBM_LIB_DIR:
+        ld_path = os.environ.get("LD_LIBRARY_PATH", "")
+        if GBM_LIB_DIR not in ld_path:
+            os.environ["LD_LIBRARY_PATH"] = f"{GBM_LIB_DIR}:{ld_path}"
+
+    pw = sync_playwright().start()
+    browser = pw.chromium.launch(
+        headless=True,
+        args=["--no-sandbox", "--disable-blink-features=AutomationControlled"],
+        chromium_sandbox=False,
+        executable_path=CHROMIUM_PATH,
+    )
+    ctx = browser.new_context(
+        user_agent=(
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+            "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+        ),
+        viewport={"width": 1920, "height": 1080},
+    )
+    page = ctx.new_page()
+    page.add_init_script('Object.defineProperty(navigator, "webdriver", {get: () => undefined})')
+    return pw, browser, page
+
+
+def _fetch_with_browser(page, url: str, wait_ms: int = 5000) -> Optional[str]:
+    """Fetch a URL using the browser page and return HTML content."""
+    try:
+        page.goto(url, timeout=30000, wait_until="domcontentloaded")
+        page.wait_for_timeout(wait_ms)
+        title = page.title()
+        if "just a moment" in title.lower():
+            logger.warning(f"Cloudflare challenge on {url}, waiting longer...")
+            page.wait_for_timeout(10000)
+            title = page.title()
+            if "just a moment" in title.lower():
+                logger.error(f"Could not bypass Cloudflare for {url}")
+                return None
+        return page.content()
+    except Exception as e:
+        logger.error(f"Browser fetch error for {url}: {e}")
+        return None
+
+
+def discover_newsletter_urls(page, max_pages: int = 5) -> list[str]:
+    """
+    Discover newsletter edition URLs from the listing page using the browser.
+    """
+    urls = []
+
+    html = _fetch_with_browser(page, NEWSLETTER_LIST_URL, wait_ms=5000)
+    if not html:
+        return urls
+
+    link_matches = re.findall(
+        r'/newsletters/politico-influence/\d{4}/\d{2}/\d{2}/[^"<>\s]+',
+        html,
+    )
+    for href in link_matches:
+        full_url = urljoin(BASE_URL, href)
+        if full_url not in urls:
+            urls.append(full_url)
+
+    logger.info(f"Discovered {len(urls)} newsletter URLs from listing page")
+
+    if max_pages > 1:
+        soup = BeautifulSoup(html, "lxml")
+        for page_num in range(1, max_pages):
+            next_link = soup.find("a", {"class": re.compile(r"next|load-more|pagination", re.I)})
+            if not next_link or not next_link.get("href"):
+                break
+
+            next_url = urljoin(BASE_URL, next_link["href"])
+            html = _fetch_with_browser(page, next_url, wait_ms=3000)
+            if not html:
+                break
+
+            more_links = re.findall(
+                r'/newsletters/politico-influence/\d{4}/\d{2}/\d{2}/[^"<>\s]+',
+                html,
+            )
+            for href in more_links:
                 full_url = urljoin(BASE_URL, href)
                 if full_url not in urls:
                     urls.append(full_url)
 
-        # Look for pagination / "load more" links
-        next_link = soup.find("a", {"class": re.compile(r"next|load-more|pagination", re.I)})
-        if next_link and next_link.get("href"):
-            page_url = urljoin(BASE_URL, next_link["href"])
-        else:
-            break
-
-        time.sleep(1)
+            soup = BeautifulSoup(html, "lxml")
+            time.sleep(1)
 
     return urls
 
 
-def generate_date_urls(start_date: datetime, end_date: Optional[datetime] = None,
-                       skip_weekends: bool = True) -> list[str]:
+def scrape_newsletter(page, url: str) -> Optional[dict]:
     """
-    Generate potential newsletter URLs by date range.
-    Politico Influence publishes on weekdays. We generate candidate URLs
-    and try to fetch them; 404s are skipped.
+    Scrape a single newsletter page using the browser and return structured data.
     """
-    if end_date is None:
-        end_date = datetime.utcnow()
-
-    urls = []
-    current = start_date
-    while current <= end_date:
-        if skip_weekends and current.weekday() >= 5:
-            current += timedelta(days=1)
-            continue
-        # We don't know the slug, so we'll need to discover from the listing page
-        # This function is used as a fallback date range for discovery
-        date_prefix = f"{BASE_URL}/newsletters/politico-influence/{current.strftime('%Y/%m/%d')}/"
-        urls.append(date_prefix)
-        current += timedelta(days=1)
-
-    return urls
-
-
-def scrape_newsletter(url: str) -> Optional[dict]:
-    """
-    Scrape a single newsletter page and return structured data.
-
-    Returns dict with keys: url, title, published_date, body_text, body_html, bold_entities
-    """
-    html = _fetch(url)
+    html = _fetch_with_browser(page, url, wait_ms=3000)
     if not html:
         return None
 
     soup = BeautifulSoup(html, "lxml")
 
-    # Extract title
     title_tag = soup.find("h1") or soup.find("title")
     title = title_tag.get_text(strip=True) if title_tag else "Untitled"
 
-    # Extract publication date from URL pattern /YYYY/MM/DD/
     date_match = re.search(r"/(\d{4})/(\d{2})/(\d{2})/", url)
     published_date = None
     if date_match:
@@ -147,7 +161,6 @@ def scrape_newsletter(url: str) -> Optional[dict]:
         except ValueError:
             pass
 
-    # Also try meta tags for date
     if not published_date:
         date_meta = soup.find("meta", {"property": "article:published_time"})
         if date_meta and date_meta.get("content"):
@@ -158,8 +171,6 @@ def scrape_newsletter(url: str) -> Optional[dict]:
             except ValueError:
                 pass
 
-    # Find the article body
-    # Politico uses various container classes - try common ones
     body = (
         soup.find("div", {"class": re.compile(r"story-text|article-body|newsletter-body|content-body", re.I)})
         or soup.find("article")
@@ -167,7 +178,6 @@ def scrape_newsletter(url: str) -> Optional[dict]:
     )
 
     if not body:
-        # Fallback: find the main content area
         body = soup.find("main") or soup.find("div", {"id": "main"})
 
     if not body:
@@ -205,14 +215,12 @@ def extract_bold_entities_from_html(body_html: str) -> list[dict]:
         if not para_text or len(para_text) < 10:
             continue
 
-        # Find all bold elements within this paragraph
         bold_tags = para.find_all(["strong", "b"])
         for bold_tag in bold_tags:
             name = bold_tag.get_text(strip=True)
             if not name or len(name) < 2:
                 continue
 
-            # Skip common non-entity bold text
             skip_patterns = [
                 r"^(Read|More|Click|Subscribe|Sign up|Good|POLITICO|Influence|Happy|NEW|HAPPENING|ICYMI|SPOTTED|FIRST IN)",
                 r"^(Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday)",
@@ -224,7 +232,6 @@ def extract_bold_entities_from_html(body_html: str) -> list[dict]:
             if any(re.match(pat, name, re.I) for pat in skip_patterns):
                 continue
 
-            # Skip if it's a very long phrase (probably a heading, not an entity)
             if len(name) > 100:
                 continue
 
@@ -242,20 +249,16 @@ def detect_affiliations(entities_in_paragraph: list[dict], paragraph_text: str) 
     Detect professional affiliations from patterns like:
     - "<Bold Person> of <Bold Company>"
     - "<Bold Company>'s <Bold Person>"
-
-    Returns list of dicts with keys: person, company, pattern
     """
     affiliations = []
     if len(entities_in_paragraph) < 2:
         return affiliations
 
-    # Sort by position in text for proximity detection
     for i, ent_a in enumerate(entities_in_paragraph):
         for ent_b in entities_in_paragraph[i + 1:]:
             name_a = ent_a["name"]
             name_b = ent_b["name"]
 
-            # Pattern: "Name of Company"
             pattern1 = re.search(
                 re.escape(name_a) + r"\s+of\s+" + re.escape(name_b),
                 paragraph_text,
@@ -269,7 +272,6 @@ def detect_affiliations(entities_in_paragraph: list[dict], paragraph_text: str) 
                 })
                 continue
 
-            # Reverse: "Company of Name" is less common but check
             pattern1r = re.search(
                 re.escape(name_b) + r"\s+of\s+" + re.escape(name_a),
                 paragraph_text,
@@ -283,7 +285,6 @@ def detect_affiliations(entities_in_paragraph: list[dict], paragraph_text: str) 
                 })
                 continue
 
-            # Pattern: "Company's Name" (handles smart quotes and space before 's)
             pattern2 = re.search(
                 re.escape(name_a) + r"\s*['\u2019]\s*s\s+" + re.escape(name_b),
                 paragraph_text,
@@ -345,7 +346,6 @@ def _upsert_relationship(session, entity_a: Entity, entity_b: Entity,
                          rel_type: str, context: str,
                          date: Optional[datetime] = None):
     """Create or update a relationship between two entities."""
-    # Ensure consistent ordering
     if entity_a.id > entity_b.id:
         entity_a, entity_b = entity_b, entity_a
 
@@ -376,14 +376,12 @@ def _upsert_relationship(session, entity_a: Entity, entity_b: Entity,
                 rel.first_seen = date
             if not rel.last_seen or date > rel.last_seen:
                 rel.last_seen = date
-        # Append context (keep last 10 snippets)
         try:
             snippets = json.loads(rel.context_snippets or "[]")
         except (json.JSONDecodeError, TypeError):
             snippets = []
         snippets.append(context[:300])
         rel.context_snippets = json.dumps(snippets[-10:])
-        # Upgrade type if affiliation detected
         if rel_type == "affiliation":
             rel.relationship_type = "affiliation"
 
@@ -397,7 +395,6 @@ def process_newsletter_entities(session, newsletter: Newsletter):
 
     bold_entities = extract_bold_entities_from_html(newsletter.body_html)
 
-    # Group entities by paragraph
     para_groups: dict[int, list[dict]] = {}
     for ent in bold_entities:
         para_idx = ent["paragraph_index"]
@@ -407,11 +404,9 @@ def process_newsletter_entities(session, newsletter: Newsletter):
 
     pub_date = newsletter.published_date
 
-    # Process each paragraph
     for para_idx, para_entities in para_groups.items():
         context = para_entities[0]["context"] if para_entities else ""
 
-        # Detect affiliations first
         affiliations = detect_affiliations(para_entities, context)
         affiliated_persons = set()
 
@@ -429,13 +424,11 @@ def process_newsletter_entities(session, newsletter: Newsletter):
             )
             company_entity.mention_count += 1
 
-            # Create affiliation relationship
             _upsert_relationship(
                 session, person_entity, company_entity,
                 "affiliation", context, pub_date,
             )
 
-            # Create entity mentions
             session.add(EntityMention(
                 entity_id=person_entity.id,
                 newsletter_id=newsletter.id,
@@ -451,13 +444,11 @@ def process_newsletter_entities(session, newsletter: Newsletter):
 
             affiliated_persons.add(aff["person"])
 
-        # Process remaining entities (not already handled by affiliation detection)
         para_entity_objs = []
         for ent in para_entities:
             if ent["name"] in affiliated_persons:
                 continue
 
-            # Default type is "unknown" — could be person or org
             entity_obj = _get_or_create_entity(
                 session, ent["name"], "unknown", date=pub_date,
             )
@@ -471,9 +462,7 @@ def process_newsletter_entities(session, newsletter: Newsletter):
                 context_text=context[:500],
             ))
 
-        # Create co-mention relationships for all entity pairs in the same paragraph
         all_entities_in_para = para_entity_objs.copy()
-        # Also include affiliated entities for co-mention purposes
         for aff in affiliations:
             person_ent = (
                 session.query(Entity)
@@ -490,7 +479,6 @@ def process_newsletter_entities(session, newsletter: Newsletter):
             if company_ent:
                 all_entities_in_para.append(company_ent)
 
-        # Deduplicate
         seen_ids = set()
         unique_entities = []
         for e in all_entities_in_para:
@@ -499,7 +487,6 @@ def process_newsletter_entities(session, newsletter: Newsletter):
                 unique_entities.append(e)
 
         for ent_a, ent_b in combinations(unique_entities, 2):
-            # Skip if already an affiliation (don't downgrade)
             existing = (
                 session.query(Relationship)
                 .filter(
@@ -510,7 +497,6 @@ def process_newsletter_entities(session, newsletter: Newsletter):
                 .first()
             )
             if existing:
-                # Still bump the weight for co-mentions
                 existing.weight += 1
                 if pub_date and (not existing.last_seen or pub_date > existing.last_seen):
                     existing.last_seen = pub_date
@@ -530,16 +516,19 @@ def scrape_and_store(
 ) -> dict:
     """
     Main entry point: discover, scrape, extract, and store newsletters.
-
-    Returns summary stats.
+    Uses a headless browser to bypass Cloudflare.
     """
     engine = init_db(db_url)
     session = get_session(engine)
 
+    pw = None
+    browser = None
+
     try:
-        # Discover newsletter URLs
+        pw, browser, page = _get_browser_page()
+
         logger.info("Discovering newsletter URLs...")
-        urls = discover_newsletter_urls(max_pages=max_discovery_pages)
+        urls = discover_newsletter_urls(page, max_pages=max_discovery_pages)
         logger.info(f"Found {len(urls)} newsletter URLs")
 
         stored = 0
@@ -547,14 +536,13 @@ def scrape_and_store(
         errors = 0
 
         for url in urls[:max_newsletters]:
-            # Check if already scraped
             existing = session.query(Newsletter).filter_by(url=url).first()
             if existing:
                 skipped += 1
                 continue
 
             logger.info(f"Scraping: {url}")
-            data = scrape_newsletter(url)
+            data = scrape_newsletter(page, url)
             if not data:
                 errors += 1
                 continue
@@ -570,12 +558,11 @@ def scrape_and_store(
             session.add(newsletter)
             session.flush()
 
-            # Extract entities and relationships
             process_newsletter_entities(session, newsletter)
             session.commit()
 
             stored += 1
-            time.sleep(1)  # Be polite
+            time.sleep(2)
 
         return {
             "stored": stored,
@@ -589,13 +576,22 @@ def scrape_and_store(
         logger.error(f"Scrape error: {e}")
         raise
     finally:
+        if browser:
+            try:
+                browser.close()
+            except Exception:
+                pass
+        if pw:
+            try:
+                pw.stop()
+            except Exception:
+                pass
         session.close()
 
 
 def reprocess_entities(db_url: str = None) -> dict:
     """
     Re-extract entities from all newsletters that haven't been processed yet.
-    Useful after updating the extraction logic.
     """
     engine = init_db(db_url)
     session = get_session(engine)
