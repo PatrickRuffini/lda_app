@@ -1886,14 +1886,37 @@ function ChatPage({ onNavigate, initialConversationId }: { onNavigate: (page: Pa
     loadConversations();
   };
 
+  const formatInline = (text: string): (string | React.ReactElement)[] => {
+    const parts: (string | React.ReactElement)[] = [];
+    let remaining = text;
+    let key = 0;
+    while (remaining) {
+      const boldMatch = remaining.match(/\*\*(.+?)\*\*/);
+      if (boldMatch && boldMatch.index !== undefined) {
+        if (boldMatch.index > 0) parts.push(remaining.slice(0, boldMatch.index));
+        parts.push(<strong key={key++} className="font-semibold">{boldMatch[1]}</strong>);
+        remaining = remaining.slice(boldMatch.index + boldMatch[0].length);
+      } else {
+        parts.push(remaining);
+        break;
+      }
+    }
+    return parts;
+  };
+
   const renderMarkdown = (text: string) => {
-    return text.split('\n').map((line, i) => {
-      if (!line.trim()) return <br key={i} />;
-      if (line.startsWith('## ')) return <h3 key={i} className="text-sm font-bold text-gray-900 mt-3 mb-1">{line.slice(3)}</h3>;
-      if (line.startsWith('### ')) return <h4 key={i} className="text-sm font-semibold text-gray-900 mt-2 mb-1">{line.slice(4)}</h4>;
-      if (line.startsWith('**') && line.endsWith('**')) return <p key={i} className="text-sm font-semibold text-gray-900 mt-2 mb-1">{line.slice(2, -2)}</p>;
-      if (line.startsWith('- ')) return <li key={i} className="text-sm ml-4 list-disc">{line.slice(2)}</li>;
-      return <p key={i} className="text-sm mb-1">{line}</p>;
+    const paragraphs = text.split(/\n\n+/);
+    return paragraphs.map((block, pi) => {
+      const lines = block.split('\n');
+      return <div key={pi} className={pi > 0 ? 'mt-2' : ''}>
+        {lines.map((line, i) => {
+          if (!line.trim()) return null;
+          if (line.startsWith('## ')) return <h3 key={i} className="text-sm font-bold text-gray-900 mt-2 mb-1">{formatInline(line.slice(3))}</h3>;
+          if (line.startsWith('### ')) return <h4 key={i} className="text-sm font-semibold text-gray-900 mt-1 mb-1">{formatInline(line.slice(4))}</h4>;
+          if (line.startsWith('- ')) return <li key={i} className="text-sm ml-4 list-disc">{formatInline(line.slice(2))}</li>;
+          return <p key={i} className="text-sm">{formatInline(line)}</p>;
+        })}
+      </div>;
     });
   };
 
