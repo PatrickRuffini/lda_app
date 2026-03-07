@@ -19,7 +19,7 @@ from .models import (
     get_engine, get_session, init_db,
 )
 from .sync import sync_filings, sync_incremental, sync_backfill, sync_year, get_sync_progress, _update_progress
-from .influence import scrape_and_store, reprocess_all_entities
+from .influence import scrape_and_store, reprocess_all_entities, get_scrape_progress
 
 logger = logging.getLogger(__name__)
 
@@ -512,7 +512,10 @@ def trigger_influence_scrape(req: InfluenceScrapeRequest, background_tasks: Back
 
 @app.get("/api/influence/scrape/status")
 def get_influence_status():
-    return _influence_status
+    result = dict(_influence_status)
+    if result.get("status") == "running":
+        result["progress"] = get_scrape_progress()
+    return result
 
 
 @app.get("/api/influence/newsletters")
