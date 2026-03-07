@@ -1338,18 +1338,18 @@ function EntityDetailPage({ entityId, onBack, onNavigate }: { entityId: number; 
                 .filter(Boolean);
               return (
                 <div key={c.entity.id} className="px-4 py-2 hover:bg-gray-50 transition">
-                  <div className="flex items-center justify-between">
+                  <div className="flex items-start justify-between gap-2">
                     <button
                       onClick={() => onNavigate('entity', c.entity.id)}
-                      className="flex items-center gap-2 cursor-pointer min-w-0"
+                      className="flex items-center gap-2 cursor-pointer min-w-0 flex-wrap"
                     >
-                      {c.entity.entity_type === 'person' ? <User size={14} className="text-indigo-500" /> : <Briefcase size={14} className="text-amber-500" />}
-                      <span className="text-sm font-medium text-gray-900">{c.entity.display_name || c.entity.name}</span>
-                      {c.entity.is_lobbyist && <span className="text-xs px-1.5 py-0.5 rounded-full text-purple-700 bg-purple-50">Lobbyist</span>}
+                      {c.entity.entity_type === 'person' ? <User size={14} className="text-indigo-500 shrink-0" /> : <Briefcase size={14} className="text-amber-500 shrink-0" />}
+                      <span className="text-sm font-medium text-gray-900 text-left break-words">{c.entity.display_name || c.entity.name}</span>
+                      {c.entity.is_lobbyist && <span className="text-xs px-1.5 py-0.5 rounded-full text-purple-700 bg-purple-50 shrink-0">Lobbyist</span>}
                     </button>
                     <div className="flex items-center gap-2 shrink-0">
                       {c.match_confidence && (
-                        <span className={`text-xs px-1.5 py-0.5 rounded-full ${c.match_confidence === 'high' ? 'text-green-700 bg-green-50' : 'text-yellow-700 bg-yellow-50'}`}>
+                        <span className={`text-xs px-1.5 py-0.5 rounded-full whitespace-nowrap ${c.match_confidence === 'high' ? 'text-green-700 bg-green-50' : 'text-yellow-700 bg-yellow-50'}`}>
                           {c.match_confidence === 'high' ? 'High match' : 'Low match'}
                         </span>
                       )}
