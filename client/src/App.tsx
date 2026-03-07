@@ -1292,7 +1292,7 @@ function EntityDetailPage({ entityId, onBack, onNavigate }: { entityId: number; 
             <div className="text-sm text-gray-500">
               <span>{entity.mention_count} mentions · First seen {formatDate(entity.first_seen)} · Last seen {formatDate(entity.last_seen)}</span>
             </div>
-            <div className="flex items-center gap-2 mt-2">
+            <div className="flex flex-wrap items-center gap-2 mt-2">
               <span className="text-xs text-gray-400">Type:</span>
               <select
                 value={entity.entity_type}
@@ -1309,11 +1309,6 @@ function EntityDetailPage({ entityId, onBack, onNavigate }: { entityId: number; 
               {entity.is_consultant && <span className="text-xs px-2 py-0.5 rounded-full text-blue-700 bg-blue-50">Consultant</span>}
               {entity.is_client && <span className="text-xs px-2 py-0.5 rounded-full text-emerald-700 bg-emerald-50">Client</span>}
               {entity.is_lobbyist && <span className="text-xs px-2 py-0.5 rounded-full text-purple-700 bg-purple-50">Registered Lobbyist</span>}
-              {(entity.registrant_id || entity.client_id) && (
-                <span className="text-xs px-2 py-0.5 rounded-full text-indigo-700 bg-indigo-50">
-                  LDA Linked{entity.lda_match_method && entity.lda_match_method !== 'exact' ? ` (${entity.lda_match_method})` : ''}
-                </span>
-              )}
             </div>
           </div>
           <button
