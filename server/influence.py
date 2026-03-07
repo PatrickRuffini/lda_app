@@ -88,50 +88,41 @@ def _fetch_with_browser(page, url: str, wait_ms: int = 5000) -> Optional[str]:
         return None
 
 
+ARCHIVE_URL = f"{BASE_URL}/newsletters/politico-influence/archive"
+
+
 def discover_newsletter_urls(page, max_pages: int = 5) -> list[str]:
     """
-    Discover newsletter edition URLs from the listing page using the browser.
+    Discover newsletter edition URLs from the archive page using the browser.
+    Archive pages are numbered: /archive, /archive/2, /archive/3, etc.
+    Each page has ~10 newsletter links.
     """
     urls = []
 
-    html = _fetch_with_browser(page, NEWSLETTER_LIST_URL, wait_ms=5000)
-    if not html:
-        return urls
+    for page_num in range(1, max_pages + 1):
+        archive_page_url = ARCHIVE_URL if page_num == 1 else f"{ARCHIVE_URL}/{page_num}"
+        html = _fetch_with_browser(page, archive_page_url, wait_ms=5000 if page_num == 1 else 3000)
+        if not html:
+            logger.warning(f"Failed to fetch archive page {page_num}")
+            break
 
-    link_matches = re.findall(
-        r'/newsletters/politico-influence/\d{4}/\d{2}/\d{2}/[^"<>\s]+',
-        html,
-    )
-    for href in link_matches:
-        full_url = urljoin(BASE_URL, href)
-        if full_url not in urls:
-            urls.append(full_url)
+        link_matches = re.findall(
+            r'/newsletters/politico-influence/\d{4}/\d{2}/\d{2}/[^"<>\s]+',
+            html,
+        )
+        new_count = 0
+        for href in link_matches:
+            full_url = urljoin(BASE_URL, href)
+            if full_url not in urls:
+                urls.append(full_url)
+                new_count += 1
 
-    logger.info(f"Discovered {len(urls)} newsletter URLs from listing page")
+        logger.info(f"Archive page {page_num}: found {new_count} new URLs (total: {len(urls)})")
 
-    if max_pages > 1:
-        soup = BeautifulSoup(html, "lxml")
-        for page_num in range(1, max_pages):
-            next_link = soup.find("a", {"class": re.compile(r"next|load-more|pagination", re.I)})
-            if not next_link or not next_link.get("href"):
-                break
+        if new_count == 0:
+            break
 
-            next_url = urljoin(BASE_URL, next_link["href"])
-            html = _fetch_with_browser(page, next_url, wait_ms=3000)
-            if not html:
-                break
-
-            more_links = re.findall(
-                r'/newsletters/politico-influence/\d{4}/\d{2}/\d{2}/[^"<>\s]+',
-                html,
-            )
-            for href in more_links:
-                full_url = urljoin(BASE_URL, href)
-                if full_url not in urls:
-                    urls.append(full_url)
-
-            soup = BeautifulSoup(html, "lxml")
-            time.sleep(1)
+        time.sleep(1)
 
     return urls
 
@@ -779,15 +770,23 @@ def process_newsletter_entities(session, newsletter: Newsletter):
     newsletter.entities_extracted = True
 
 
+_scrape_progress: dict = {}
+
+
+def get_scrape_progress() -> dict:
+    return dict(_scrape_progress)
+
+
 def scrape_and_store(
-    max_newsletters: int = 50,
-    max_discovery_pages: int = 5,
+    max_newsletters: int = 100,
+    max_discovery_pages: int = 10,
     db_url: str = None,
 ) -> dict:
     """
     Main entry point: discover, scrape, extract, and store newsletters.
     Uses a headless browser to bypass Cloudflare.
     """
+    global _scrape_progress
     engine = init_db(db_url)
     session = get_session(engine)
 
@@ -797,6 +796,7 @@ def scrape_and_store(
     try:
         pw, browser, page = _get_browser_page()
 
+        _scrape_progress = {"phase": "discovering", "stored": 0, "skipped": 0, "errors": 0}
         logger.info("Discovering newsletter URLs...")
         urls = discover_newsletter_urls(page, max_pages=max_discovery_pages)
         logger.info(f"Found {len(urls)} newsletter URLs")
@@ -804,17 +804,25 @@ def scrape_and_store(
         stored = 0
         skipped = 0
         errors = 0
+        to_process = urls[:max_newsletters]
+        total = len(to_process)
 
-        for url in urls[:max_newsletters]:
+        _scrape_progress = {"phase": "scraping", "stored": 0, "skipped": 0, "errors": 0, "total": total, "current": 0}
+
+        for i, url in enumerate(to_process):
             existing = session.query(Newsletter).filter_by(url=url).first()
             if existing:
                 skipped += 1
+                _scrape_progress.update({"skipped": skipped, "current": i + 1})
                 continue
 
-            logger.info(f"Scraping: {url}")
+            logger.info(f"Scraping ({i+1}/{total}): {url}")
+            _scrape_progress.update({"current": i + 1, "current_url": url.split("/")[-1][:50]})
+
             data = scrape_newsletter(page, url)
             if not data:
                 errors += 1
+                _scrape_progress["errors"] = errors
                 continue
 
             newsletter = Newsletter(
@@ -832,8 +840,10 @@ def scrape_and_store(
             session.commit()
 
             stored += 1
+            _scrape_progress["stored"] = stored
             time.sleep(2)
 
+        _scrape_progress = {}
         return {
             "stored": stored,
             "skipped": skipped,
@@ -842,6 +852,7 @@ def scrape_and_store(
         }
 
     except Exception as e:
+        _scrape_progress = {}
         session.rollback()
         logger.error(f"Scrape error: {e}")
         raise

@@ -697,21 +697,29 @@ function InfluencePage({ onNavigate }: { onNavigate: (page: Page, ctx?: unknown)
 
   useEffect(() => { load(); }, [load]);
 
+  const [scrapeProgress, setScrapeProgress] = useState<any>(null);
+
   const handleScrape = async () => {
     setScraping(true);
+    setScrapeProgress(null);
     try {
-      await api.triggerInfluenceScrape({ max_newsletters: 30, max_discovery_pages: 3 });
+      await api.triggerInfluenceScrape({ max_newsletters: 100, max_discovery_pages: 10 });
       const poll = setInterval(async () => {
         const s = await api.getInfluenceScrapeStatus();
+        if (s.status === 'running' && s.progress) {
+          setScrapeProgress(s.progress);
+        }
         if (s.status !== 'running') {
           clearInterval(poll);
           setScraping(false);
+          setScrapeProgress(null);
           load();
         }
       }, 3000);
     } catch (err) {
       console.error(err);
       setScraping(false);
+      setScrapeProgress(null);
     }
   };
 
@@ -728,14 +736,23 @@ function InfluencePage({ onNavigate }: { onNavigate: (page: Page, ctx?: unknown)
             {stats?.latest_newsletter && ` · Latest: ${formatDate(stats.latest_newsletter)}`}
           </p>
         </div>
-        <button
-          onClick={handleScrape}
-          disabled={scraping}
-          className="flex items-center gap-2 bg-amber-600 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-amber-700 disabled:opacity-50 cursor-pointer"
-        >
-          {scraping ? <Loader2 size={16} className="animate-spin" /> : <RefreshCw size={16} />}
-          {scraping ? 'Scraping...' : 'Scrape Newsletters'}
-        </button>
+        <div className="flex items-center gap-3">
+          {scraping && scrapeProgress && (
+            <span className="text-xs text-gray-500" data-testid="text-scrape-progress">
+              {scrapeProgress.phase === 'discovering' ? 'Discovering archive...' :
+                `${scrapeProgress.stored} stored, ${scrapeProgress.skipped} skipped${scrapeProgress.total ? ` / ${scrapeProgress.total} total` : ''}`}
+            </span>
+          )}
+          <button
+            onClick={handleScrape}
+            disabled={scraping}
+            className="flex items-center gap-2 bg-amber-600 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-amber-700 disabled:opacity-50 cursor-pointer"
+            data-testid="button-scrape"
+          >
+            {scraping ? <Loader2 size={16} className="animate-spin" /> : <RefreshCw size={16} />}
+            {scraping ? 'Scraping...' : 'Scrape Newsletters'}
+          </button>
+        </div>
       </div>
 
       {/* Stats */}
