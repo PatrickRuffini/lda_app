@@ -185,7 +185,14 @@ def scrape_newsletter(page, url: str) -> Optional[dict]:
         return None
 
     body_html = str(body)
-    body_text = body.get_text(separator="\n", strip=True)
+
+    paragraphs = body.find_all(["p", "li", "h2", "h3", "h4"])
+    para_texts = []
+    for p in paragraphs:
+        text = p.get_text(separator=" ", strip=True)
+        if text:
+            para_texts.append(text)
+    body_text = "\n\n".join(para_texts)
 
     return {
         "url": url,
@@ -761,6 +768,16 @@ def reprocess_all_entities(db_url: str = None) -> dict:
 
         processed = 0
         for nl in newsletters:
+            if nl.body_html:
+                soup = BeautifulSoup(nl.body_html, "lxml")
+                paras = soup.find_all(["p", "li", "h2", "h3", "h4"])
+                para_texts = []
+                for p in paras:
+                    t = p.get_text(separator=" ", strip=True)
+                    if t:
+                        para_texts.append(t)
+                nl.body_text = "\n\n".join(para_texts)
+
             process_newsletter_entities(session, nl)
             session.commit()
             processed += 1
