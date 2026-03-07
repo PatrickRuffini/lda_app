@@ -17,7 +17,7 @@ from .models import (
     Entity, EntityMention, Newsletter, Relationship,
     get_engine, get_session, init_db,
 )
-from .sync import sync_filings, sync_incremental, sync_backfill, get_sync_progress, _update_progress
+from .sync import sync_filings, sync_incremental, sync_backfill, sync_year, get_sync_progress, _update_progress
 from .influence import scrape_and_store, reprocess_entities
 
 logger = logging.getLogger(__name__)
@@ -51,6 +51,7 @@ def _get_session():
 
 class SyncRequest(BaseModel):
     mode: str = "incremental"
+    filing_year: Optional[int] = None
     max_pages: int = 200
 
 
@@ -70,6 +71,20 @@ def trigger_sync(req: SyncRequest, background_tasks: BackgroundTasks):
         try:
             if req.mode == "backfill":
                 sync_backfill(db_url=DB_URL)
+            elif req.filing_year:
+                from datetime import datetime as dt
+                _update_progress(
+                    status="running", mode="year",
+                    stored=0, skipped=0, duplicates=0, pages=0,
+                    current_year=req.filing_year, years_completed=[], error=None,
+                    started_at=dt.utcnow().isoformat(), finished_at=None,
+                )
+                result = sync_year(req.filing_year, db_url=DB_URL, max_pages=req.max_pages)
+                _update_progress(
+                    status="completed", finished_at=dt.utcnow().isoformat(),
+                    stored=result["stored"], duplicates=result["duplicates"],
+                    pages=result["pages"],
+                )
             else:
                 sync_incremental(db_url=DB_URL, max_pages=req.max_pages)
         except Exception as e:
