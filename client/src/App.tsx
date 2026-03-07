@@ -1212,6 +1212,7 @@ function NewsletterReaderPage({ newsletterId, onBack, onNavigate }: { newsletter
   };
 
   const knownSectionHeadings = ['jobs report'];
+  const firstInPiRe = /^(FIRST IN PI(?:\s*I+)?(?:\s*(?:\u2014|\u2013|[\-–—])\s*[^:]+)?)\s*:\s*/;
   const sectionHeadingRe = /^([A-Z][A-Z\s'\u2019&,\-]+(?::|(?=\s?\u2014)))\s*\u2014?\s*/;
 
   const paragraphs = newsletter.body_text.split('\n\n').filter(p => p.trim().length > 0);
@@ -1221,6 +1222,17 @@ function NewsletterReaderPage({ newsletterId, onBack, onNavigate }: { newsletter
       return (
         <div key={i} data-testid={`text-paragraph-${i}`}>
           <h3 className="text-sm font-bold text-gray-900 uppercase tracking-wide mt-5 mb-1 pt-3 border-t border-gray-100">{para.trim()}</h3>
+        </div>
+      );
+    }
+    const piMatch = para.match(firstInPiRe);
+    if (piMatch) {
+      const heading = piMatch[1].trim();
+      const rest = para.slice(piMatch[0].length).trim();
+      return (
+        <div key={i} data-testid={`text-paragraph-${i}`}>
+          <h3 className="text-sm font-bold text-gray-900 uppercase tracking-wide mt-5 mb-1 pt-3 border-t border-gray-100">{heading}</h3>
+          {rest && <p className="text-gray-800 leading-relaxed text-sm">{annotateText(rest)}</p>}
         </div>
       );
     }
