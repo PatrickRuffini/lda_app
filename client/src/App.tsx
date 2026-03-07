@@ -1211,11 +1211,19 @@ function NewsletterReaderPage({ newsletterId, onBack, onNavigate }: { newsletter
     });
   };
 
+  const knownSectionHeadings = ['jobs report'];
   const sectionHeadingRe = /^([A-Z][A-Z\s'\u2019&,\-]+(?::|(?=\s?\u2014)))\s*\u2014?\s*/;
 
   const paragraphs = newsletter.body_text.split('\n\n').filter(p => p.trim().length > 0);
 
   const renderParagraph = (para: string, i: number) => {
+    if (knownSectionHeadings.includes(para.trim().toLowerCase())) {
+      return (
+        <div key={i} data-testid={`text-paragraph-${i}`}>
+          <h3 className="text-sm font-bold text-gray-900 uppercase tracking-wide mt-5 mb-1 pt-3 border-t border-gray-100">{para.trim()}</h3>
+        </div>
+      );
+    }
     const headingMatch = para.match(sectionHeadingRe);
     if (headingMatch) {
       const heading = headingMatch[1].trim();
