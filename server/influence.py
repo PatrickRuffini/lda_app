@@ -322,7 +322,7 @@ def extract_registration_pairs(body_text: str) -> list[dict]:
         stripped = line.strip()
         lower = stripped.lower()
 
-        if re.match(r"^new lobbying\s+(registrations?|terminations?)$", lower):
+        if re.match(r"^new lobbying\s+(registrations?|terminations?):?\s*$", lower):
             in_section = True
             section_type = "registration" if "registr" in lower else "termination"
             continue

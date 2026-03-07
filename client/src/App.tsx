@@ -1317,7 +1317,7 @@ function NewsletterReaderPage({ newsletterId, onBack, onNavigate }: { newsletter
     if (sortedNames.length === 0) return [text];
 
     const escapedNames = sortedNames.map(n => n.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
-    const regex = new RegExp(`\\b(${escapedNames.join('|')})\\b`, 'gi');
+    const regex = new RegExp(`(?<!\\w)(${escapedNames.join('|')})(?!\\w)`, 'gi');
     const parts = text.split(regex);
 
     return parts.map((part, i) => {
