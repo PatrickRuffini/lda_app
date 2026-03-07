@@ -938,6 +938,14 @@ def influence_stats():
     return _cached("influence_stats", _fetch)
 
 
+@app.get("/api/db-dump")
+async def download_db_dump():
+    dump_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "db_dump.tar.gz")
+    if not os.path.isfile(dump_path):
+        raise HTTPException(status_code=404, detail="No database dump available")
+    return FileResponse(dump_path, media_type="application/gzip", filename="db_dump.tar.gz")
+
+
 # Serve React frontend in production
 static_dir = os.path.join(os.path.dirname(__file__), "..", "client", "dist")
 if os.path.isdir(static_dir):
