@@ -1032,6 +1032,157 @@ def link_entities_to_lda(session) -> dict:
     return {"entity_matches": entity_matches, "filing_matches": filing_matches}
 
 
+def merge_duplicate_entities(session) -> dict:
+    """
+    Merge entity records that resolve to the same normalized name.
+
+    For each group of duplicates, keeps the entity with the highest mention_count
+    as the primary record (the "winner"). All other entities in the group have
+    their mentions, relationships, and metadata folded into the winner, then
+    are deleted.
+
+    Uses aggressive normalization so "Ballard Partners, LLC" and "Ballard Partners"
+    and "Ballard Partners (FKA Foo)" all collapse to the same key.
+
+    Returns counts of merges performed and entities removed.
+    """
+    all_entities = session.query(Entity).all()
+
+    # Group by aggressive-normalized name
+    groups: dict[str, list[Entity]] = {}
+    for ent in all_entities:
+        key = _normalize_org_aggressive(ent.name)
+        if not key:
+            continue
+        groups.setdefault(key, []).append(ent)
+
+    merged_groups = 0
+    entities_removed = 0
+
+    for key, group in groups.items():
+        if len(group) < 2:
+            continue
+
+        # Pick winner: prefer user_override, then highest mention_count, then lowest id
+        group.sort(key=lambda e: (
+            -int(e.user_override or False),
+            -e.mention_count,
+            e.id,
+        ))
+        winner = group[0]
+        losers = group[1:]
+
+        for loser in losers:
+            # Merge metadata: accumulate mention counts
+            winner.mention_count += loser.mention_count
+
+            # Keep earliest first_seen
+            if loser.first_seen:
+                if not winner.first_seen or loser.first_seen < winner.first_seen:
+                    winner.first_seen = loser.first_seen
+            # Keep latest last_seen
+            if loser.last_seen:
+                if not winner.last_seen or loser.last_seen > winner.last_seen:
+                    winner.last_seen = loser.last_seen
+
+            # Merge flags (OR logic)
+            if loser.is_consultant:
+                winner.is_consultant = True
+            if loser.is_client:
+                winner.is_client = True
+            if loser.is_lobbyist:
+                winner.is_lobbyist = True
+
+            # Prefer non-null LDA links
+            if loser.registrant_id and not winner.registrant_id:
+                winner.registrant_id = loser.registrant_id
+                winner.lda_match_method = loser.lda_match_method
+            if loser.client_id and not winner.client_id:
+                winner.client_id = loser.client_id
+                if not winner.lda_match_method:
+                    winner.lda_match_method = loser.lda_match_method
+            if loser.lobbyist_senate_id and not winner.lobbyist_senate_id:
+                winner.lobbyist_senate_id = loser.lobbyist_senate_id
+
+            # Reassign entity mentions from loser to winner
+            session.query(EntityMention).filter(
+                EntityMention.entity_id == loser.id
+            ).update({EntityMention.entity_id: winner.id})
+
+            # Reassign relationships: merge edges
+            loser_rels = session.query(Relationship).filter(
+                (Relationship.entity_a_id == loser.id) |
+                (Relationship.entity_b_id == loser.id)
+            ).all()
+
+            for rel in loser_rels:
+                # Determine the "other" entity in this relationship
+                other_id = rel.entity_b_id if rel.entity_a_id == loser.id else rel.entity_a_id
+
+                # Skip self-loops (loser connected to winner)
+                if other_id == winner.id:
+                    session.delete(rel)
+                    continue
+
+                # Check if winner already has a relationship with this other entity
+                a_id = min(winner.id, other_id)
+                b_id = max(winner.id, other_id)
+                existing = session.query(Relationship).filter(
+                    Relationship.entity_a_id == a_id,
+                    Relationship.entity_b_id == b_id,
+                ).first()
+
+                if existing:
+                    # Merge into existing: sum weights, widen date range
+                    existing.weight += rel.weight
+                    if rel.first_seen:
+                        if not existing.first_seen or rel.first_seen < existing.first_seen:
+                            existing.first_seen = rel.first_seen
+                    if rel.last_seen:
+                        if not existing.last_seen or rel.last_seen > existing.last_seen:
+                            existing.last_seen = rel.last_seen
+                    # Merge context snippets
+                    try:
+                        existing_snips = json.loads(existing.context_snippets or "[]")
+                    except (json.JSONDecodeError, TypeError):
+                        existing_snips = []
+                    try:
+                        loser_snips = json.loads(rel.context_snippets or "[]")
+                    except (json.JSONDecodeError, TypeError):
+                        loser_snips = []
+                    combined = existing_snips + [s for s in loser_snips if s not in existing_snips]
+                    existing.context_snippets = json.dumps(combined[-10:])
+                    # Prefer non-null filing_id
+                    if rel.filing_id and not existing.filing_id:
+                        existing.filing_id = rel.filing_id
+                    # Upgrade match confidence
+                    if rel.match_confidence == "high":
+                        existing.match_confidence = "high"
+                    # Keep more specific relationship_type
+                    if existing.relationship_type == "co_mention" and rel.relationship_type != "co_mention":
+                        existing.relationship_type = rel.relationship_type
+                    session.delete(rel)
+                else:
+                    # Reassign the relationship to point to winner
+                    if rel.entity_a_id == loser.id:
+                        rel.entity_a_id = winner.id
+                    else:
+                        rel.entity_b_id = winner.id
+                    # Ensure a_id < b_id ordering
+                    if rel.entity_a_id > rel.entity_b_id:
+                        rel.entity_a_id, rel.entity_b_id = rel.entity_b_id, rel.entity_a_id
+
+            # Delete the loser entity
+            session.delete(loser)
+            entities_removed += 1
+
+        merged_groups += 1
+
+    session.commit()
+    logger.info(f"Entity merge: {merged_groups} groups merged, {entities_removed} entities removed")
+    return {"merged_groups": merged_groups, "entities_removed": entities_removed}
+
+
 def _title_case_name(name: str) -> str:
     """Convert ALL CAPS name to Title Case, handling suffixes like Jr., III."""
     parts = name.strip().split()
@@ -1313,7 +1464,8 @@ def scrape_and_store(
             _scrape_progress["stored"] = stored
             time.sleep(2)
 
-        # Link newly extracted entities to LDA records
+        # Merge duplicates, then link to LDA records
+        merge_result = merge_duplicate_entities(session)
         link_result = link_entities_to_lda(session)
         lobbyist_result = link_lobbyists_to_entities(session)
 
@@ -1323,6 +1475,7 @@ def scrape_and_store(
             "skipped": skipped,
             "errors": errors,
             "total_urls": len(urls),
+            "merge": merge_result,
             "lda_links": link_result,
             "lobbyist_links": lobbyist_result,
         }
@@ -1401,13 +1554,14 @@ def reprocess_all_entities(db_url: str = None) -> dict:
             session.commit()
             logger.info(f"Cleaned up {orphans} orphaned entities with no mentions")
 
-        # Link entities to LDA records after reprocessing
+        # Merge duplicates, then link to LDA records
+        merge_result = merge_duplicate_entities(session)
         link_result = link_entities_to_lda(session)
         lobbyist_result = link_lobbyists_to_entities(session)
 
         logger.info(f"Reprocess complete: {processed} newsletters")
         _reprocess_progress = {"status": "done", "processed": processed, "total": total}
-        return {"processed": processed, "orphans_removed": orphans, "lda_links": link_result, "lobbyist_links": lobbyist_result}
+        return {"processed": processed, "orphans_removed": orphans, "merge": merge_result, "lda_links": link_result, "lobbyist_links": lobbyist_result}
     except Exception as e:
         _reprocess_progress = {"status": "error", "error": str(e)}
         session.rollback()

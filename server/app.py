@@ -19,7 +19,7 @@ from .models import (
     get_engine, get_session, init_db, run_migrations,
 )
 from .sync import sync_filings, sync_incremental, sync_backfill, sync_year, get_sync_progress, _update_progress
-from .influence import scrape_and_store, reprocess_all_entities, get_scrape_progress, get_reprocess_progress, link_entities_to_lda, link_lobbyists_to_entities
+from .influence import scrape_and_store, reprocess_all_entities, get_scrape_progress, get_reprocess_progress, link_entities_to_lda, link_lobbyists_to_entities, merge_duplicate_entities
 
 logger = logging.getLogger(__name__)
 
@@ -852,12 +852,13 @@ def reprocess_status_endpoint():
 
 @app.post("/api/influence/link-lda")
 def link_lda_endpoint():
-    """Manually trigger LDA entity + lobbyist linking without full reprocess."""
+    """Manually trigger entity merge + LDA linking without full reprocess."""
     session = _get_session()
     try:
+        merge_result = merge_duplicate_entities(session)
         result = link_entities_to_lda(session)
         lobbyist_result = link_lobbyists_to_entities(session)
-        return {"status": "done", **result, "lobbyist_links": lobbyist_result}
+        return {"status": "done", "merge": merge_result, **result, "lobbyist_links": lobbyist_result}
     except Exception as e:
         logger.error(f"LDA linking error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
