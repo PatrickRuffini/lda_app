@@ -311,7 +311,18 @@ def extract_registration_pairs(body_text: str) -> list[dict]:
     Extract lobbying registration/termination pairs from newsletter body text.
 
     These appear under headers like "New Lobbying Registrations" or
-    "New Lobbying Terminations" in the format: Company1: Company2
+    "New Lobbying Terminations" in the format:
+      Company1: Company2
+      Company1: Company2 On Behalf Of Company3
+
+    When "On Behalf Of" appears in the client portion, the part before is
+    a second consultant and the part after is the actual client.
+
+    Returns a list of dicts with keys:
+    - registrant: str (always present, role=consultant)
+    - client: str (always present, role=client)
+    - on_behalf_of: str | None (second consultant when present, role=consultant)
+    - section_type: "registration" | "termination"
     """
     pairs = []
     lines = body_text.split("\n\n")
@@ -344,9 +355,24 @@ def extract_registration_pairs(body_text: str) -> list[dict]:
                 in_section = False
                 continue
 
+            # Check for "On Behalf Of" in the client portion
+            obo_match = re.split(r"\s+[Oo]n\s+[Bb]ehalf\s+[Oo]f\s+", company_b, maxsplit=1)
+            if len(obo_match) == 2:
+                second_consultant = obo_match[0].strip()
+                actual_client = obo_match[1].strip()
+                if second_consultant and actual_client and len(second_consultant) >= 2 and len(actual_client) >= 2:
+                    pairs.append({
+                        "registrant": company_a,
+                        "client": actual_client,
+                        "on_behalf_of": second_consultant,
+                        "section_type": section_type,
+                    })
+                    continue
+
             pairs.append({
                 "registrant": company_a,
                 "client": company_b,
+                "on_behalf_of": None,
                 "section_type": section_type,
             })
 
@@ -770,55 +796,39 @@ def process_newsletter_entities(session, newsletter: Newsletter):
         )
         client_ent.mention_count += 1
 
-        section_label = f"New Lobbying {'Registrations' if pair['section_type'] == 'registration' else 'Terminations'}"
-        ctx = f"{pair['registrant']}: {pair['client']}"
+        # Collect all entities on this line for pairwise relationships
+        line_entities = [registrant, client_ent]
 
-        session.add(EntityMention(
-            entity_id=registrant.id,
-            newsletter_id=newsletter.id,
-            paragraph_index=9000,
-            context_text=ctx,
-            section_heading=section_label,
-        ))
-        session.add(EntityMention(
-            entity_id=client_ent.id,
-            newsletter_id=newsletter.id,
-            paragraph_index=9000,
-            context_text=ctx,
-            section_heading=section_label,
-        ))
-
-        if pair["section_type"] == "registration":
-            a_id, b_id = (registrant, client_ent) if registrant.id < client_ent.id else (client_ent, registrant)
-            existing = (
-                session.query(Relationship)
-                .filter(
-                    Relationship.entity_a_id == a_id.id,
-                    Relationship.entity_b_id == b_id.id,
-                )
-                .first()
+        # Handle "On Behalf Of" — second consultant entity
+        obo_ent = None
+        if pair.get("on_behalf_of"):
+            obo_ent = _get_or_create_entity(
+                session, pair["on_behalf_of"], "organization", date=pub_date,
+                role="consultant",
             )
-            if existing:
-                existing.weight = max(existing.weight, 1.5)
-                if pub_date and (not existing.last_seen or pub_date > existing.last_seen):
-                    existing.last_seen = pub_date
-                try:
-                    snippets = json.loads(existing.context_snippets or "[]")
-                except (json.JSONDecodeError, TypeError):
-                    snippets = []
-                snippets.append(ctx)
-                existing.context_snippets = json.dumps(snippets[-10:])
-            else:
-                rel = Relationship(
-                    entity_a_id=a_id.id,
-                    entity_b_id=b_id.id,
-                    relationship_type="lobbying_registration",
-                    weight=1.5,
-                    first_seen=pub_date,
-                    last_seen=pub_date,
-                    context_snippets=json.dumps([ctx]),
-                )
-                session.add(rel)
+            obo_ent.mention_count += 1
+            line_entities.append(obo_ent)
+
+        section_label = f"New Lobbying {'Registrations' if pair['section_type'] == 'registration' else 'Terminations'}"
+        if obo_ent:
+            ctx = f"{pair['registrant']}: {pair['on_behalf_of']} On Behalf Of {pair['client']}"
+        else:
+            ctx = f"{pair['registrant']}: {pair['client']}"
+
+        # Create mentions for all entities on this line
+        for ent in line_entities:
+            session.add(EntityMention(
+                entity_id=ent.id,
+                newsletter_id=newsletter.id,
+                paragraph_index=9000,
+                context_text=ctx,
+                section_heading=section_label,
+            ))
+
+        # Create pairwise relationships between all entities on this line
+        rel_type = "lobbying_registration" if pair["section_type"] == "registration" else "lobbying_termination"
+        for ent_a, ent_b in combinations(line_entities, 2):
+            _upsert_relationship(session, ent_a, ent_b, rel_type, ctx, pub_date)
 
     newsletter.entities_extracted = True
 
