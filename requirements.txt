@@ -8,3 +8,9 @@ lxml>=5.0.0
 python-dotenv>=1.0.0
 fastapi
 uvicorn[standard]
+fastapi
+pydantic
+python-dotenv
+requests
+sqlalchemy
+uvicorn[standard]

@@ -35,9 +35,16 @@ app.add_middleware(
 )
 
 
+_engine = None
+
+def _get_engine():
+    global _engine
+    if _engine is None:
+        _engine = init_db(DB_PATH)
+    return _engine
+
 def _get_session():
-    engine = init_db(DB_PATH)
-    return get_session(engine)
+    return get_session(_get_engine())
 
 
 # ---------- Pydantic schemas ----------

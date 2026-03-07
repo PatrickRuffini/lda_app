@@ -152,7 +152,7 @@ def get_engine(db_path="lda_filings.db"):
 
 def init_db(db_path="lda_filings.db"):
     engine = get_engine(db_path)
-    Base.metadata.create_all(engine)
+    Base.metadata.create_all(engine, checkfirst=True)
 
     # Create FTS5 virtual table for full-text search
     with engine.connect() as conn:
