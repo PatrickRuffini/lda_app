@@ -238,12 +238,21 @@ KNOWN_ACRONYM_ENTITIES = {
 }
 
 
+KNOWN_SECTION_HEADINGS = {
+    "JOBS REPORT", "INFLUENCE AD WATCH", "FIRST IN PI",
+    "K STREET FILES", "NEW LOBBYING REGISTRATIONS",
+    "NEW LOBBYING TERMINATIONS", "SPOTTED",
+}
+
+
 def _is_section_heading(name: str, para_text: str) -> bool:
     stripped = name.strip().rstrip(":")
     if len(stripped) < 3:
         return False
     if stripped.upper() in KNOWN_ACRONYM_ENTITIES:
         return False
+    if stripped.upper() in KNOWN_SECTION_HEADINGS:
+        return True
     if stripped.upper() != stripped:
         return False
     if name.strip().endswith(":"):
@@ -318,9 +327,10 @@ def extract_registration_pairs(body_text: str) -> list[dict]:
             if ":" not in stripped:
                 in_section = False
                 continue
-            first_colon = stripped.index(":")
-            company_a = stripped[:first_colon].strip()
-            company_b = stripped[first_colon + 1:].strip()
+
+            last_colon = stripped.rfind(":")
+            company_a = stripped[:last_colon].strip()
+            company_b = stripped[last_colon + 1:].strip()
 
             if not company_a or not company_b:
                 continue
@@ -339,6 +349,52 @@ def extract_registration_pairs(body_text: str) -> list[dict]:
     return pairs
 
 
+def _merge_consecutive_bold_tags(para) -> list:
+    """
+    Merge consecutive bold tags into single entities.
+    E.g. <b>Donald</b> <b>Trump</b> becomes "Donald Trump".
+    Returns list of merged bold text strings with their positions preserved.
+    """
+    bold_tags = para.find_all(["strong", "b"])
+    if not bold_tags:
+        return []
+
+    merged = []
+    current_parts = []
+    prev_tag = None
+
+    for tag in bold_tags:
+        text = tag.get_text(strip=True)
+        if not text:
+            continue
+
+        if prev_tag is not None:
+            between = ""
+            node = prev_tag.next_sibling
+            while node and node != tag:
+                if hasattr(node, 'get_text'):
+                    between += node.get_text()
+                elif isinstance(node, str):
+                    between += node
+                node = node.next_sibling
+
+            if between.strip() == "" and len(between) <= 2:
+                current_parts.append(text)
+            else:
+                if current_parts:
+                    merged.append(" ".join(current_parts))
+                current_parts = [text]
+        else:
+            current_parts = [text]
+
+        prev_tag = tag
+
+    if current_parts:
+        merged.append(" ".join(current_parts))
+
+    return merged
+
+
 def extract_bold_entities_from_html(body_html: str) -> list[dict]:
     """
     Extract bold entities from newsletter HTML.
@@ -354,25 +410,25 @@ def extract_bold_entities_from_html(body_html: str) -> list[dict]:
 
     paragraphs = soup.find_all(["p", "li"])
 
+    skip_patterns = [
+        r"^(Read|More|Click|Subscribe|Sign up|Good|POLITICO|Influence|Happy|NEW|HAPPENING|ICYMI|SPOTTED|FIRST IN)",
+        r"^(Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday)",
+        r"^(January|February|March|April|May|June|July|August|September|October|November|December)",
+        r"^(Q[1-4]|FY\d|H[1-2])",
+        r"^\d+$",
+        r"^https?://",
+    ]
+
     for para_idx, para in enumerate(paragraphs):
         para_text = para.get_text(separator=" ", strip=True)
         if not para_text or len(para_text) < 10:
             continue
 
-        bold_tags = para.find_all(["strong", "b"])
-        for bold_tag in bold_tags:
-            name = bold_tag.get_text(strip=True)
+        merged_names = _merge_consecutive_bold_tags(para)
+        for name in merged_names:
             if not name or len(name) < 2:
                 continue
 
-            skip_patterns = [
-                r"^(Read|More|Click|Subscribe|Sign up|Good|POLITICO|Influence|Happy|NEW|HAPPENING|ICYMI|SPOTTED|FIRST IN)",
-                r"^(Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday)",
-                r"^(January|February|March|April|May|June|July|August|September|October|November|December)",
-                r"^(Q[1-4]|FY\d|H[1-2])",
-                r"^\d+$",
-                r"^https?://",
-            ]
             if any(re.match(pat, name, re.I) for pat in skip_patterns):
                 continue
 
@@ -538,9 +594,11 @@ def process_newsletter_entities(session, newsletter: Newsletter):
     """
     Extract entities from a newsletter and build the relationship graph.
 
-    Section headings (all-caps bold text) are captured as metadata but not
-    as entities. Entities within the same section but different paragraphs
-    get half the edge weight of same-paragraph co-mentions.
+    Only entities within the SAME PARAGRAPH are related (co-mentions).
+    Section headings are captured as metadata but not as entities.
+    No cross-paragraph section-level relationships are created.
+    Lobbying terminations create entities/mentions but no relationships.
+    Lobbying registrations create entities/mentions and registration relationships.
     """
     if not newsletter.body_html:
         return
@@ -550,7 +608,6 @@ def process_newsletter_entities(session, newsletter: Newsletter):
     para_groups: dict[int, list[dict]] = {}
     current_section = None
     section_map: dict[int, str] = {}
-    section_entities: dict[str, list] = {}
 
     for ent in bold_entities:
         para_idx = ent["paragraph_index"]
@@ -672,42 +729,6 @@ def process_newsletter_entities(session, newsletter: Newsletter):
                 session, ent_a, ent_b, "co_mention", context, pub_date,
             )
 
-        if section:
-            if section not in section_entities:
-                section_entities[section] = []
-            section_entities[section].extend(unique_entities)
-
-    for section_name, entities_in_section in section_entities.items():
-        seen_ids = set()
-        unique_section_ents = []
-        for e in entities_in_section:
-            if e.id not in seen_ids:
-                seen_ids.add(e.id)
-                unique_section_ents.append(e)
-
-        for ent_a, ent_b in combinations(unique_section_ents, 2):
-            a_id, b_id = min(ent_a.id, ent_b.id), max(ent_a.id, ent_b.id)
-            existing = (
-                session.query(Relationship)
-                .filter(
-                    Relationship.entity_a_id == a_id,
-                    Relationship.entity_b_id == b_id,
-                )
-                .first()
-            )
-            if existing:
-                continue
-            rel = Relationship(
-                entity_a_id=a_id,
-                entity_b_id=b_id,
-                relationship_type="section_co_mention",
-                weight=0.5,
-                first_seen=pub_date,
-                last_seen=pub_date,
-                context_snippets=json.dumps([f"Section: {section_name}"]),
-            )
-            session.add(rel)
-
     reg_pairs = extract_registration_pairs(newsletter.body_text or "")
     for pair in reg_pairs:
         registrant = _get_or_create_entity(
@@ -738,37 +759,37 @@ def process_newsletter_entities(session, newsletter: Newsletter):
             section_heading=section_label,
         ))
 
-        a_id, b_id = (registrant, client_ent) if registrant.id < client_ent.id else (client_ent, registrant)
-        existing = (
-            session.query(Relationship)
-            .filter(
-                Relationship.entity_a_id == a_id.id,
-                Relationship.entity_b_id == b_id.id,
+        if pair["section_type"] == "registration":
+            a_id, b_id = (registrant, client_ent) if registrant.id < client_ent.id else (client_ent, registrant)
+            existing = (
+                session.query(Relationship)
+                .filter(
+                    Relationship.entity_a_id == a_id.id,
+                    Relationship.entity_b_id == b_id.id,
+                )
+                .first()
             )
-            .first()
-        )
-        if existing:
-            existing.weight = max(existing.weight, 1.5)
-            if pub_date and (not existing.last_seen or pub_date > existing.last_seen):
-                existing.last_seen = pub_date
-            try:
-                snippets = json.loads(existing.context_snippets or "[]")
-            except (json.JSONDecodeError, TypeError):
-                snippets = []
-            snippets.append(ctx)
-            existing.context_snippets = json.dumps(snippets[-10:])
-        else:
-            rel_type = "lobbying_registration" if pair["section_type"] == "registration" else "lobbying_termination"
-            rel = Relationship(
-                entity_a_id=a_id.id,
-                entity_b_id=b_id.id,
-                relationship_type=rel_type,
-                weight=1.5,
-                first_seen=pub_date,
-                last_seen=pub_date,
-                context_snippets=json.dumps([ctx]),
-            )
-            session.add(rel)
+            if existing:
+                existing.weight = max(existing.weight, 1.5)
+                if pub_date and (not existing.last_seen or pub_date > existing.last_seen):
+                    existing.last_seen = pub_date
+                try:
+                    snippets = json.loads(existing.context_snippets or "[]")
+                except (json.JSONDecodeError, TypeError):
+                    snippets = []
+                snippets.append(ctx)
+                existing.context_snippets = json.dumps(snippets[-10:])
+            else:
+                rel = Relationship(
+                    entity_a_id=a_id.id,
+                    entity_b_id=b_id.id,
+                    relationship_type="lobbying_registration",
+                    weight=1.5,
+                    first_seen=pub_date,
+                    last_seen=pub_date,
+                    context_snippets=json.dumps([ctx]),
+                )
+                session.add(rel)
 
     newsletter.entities_extracted = True
 
