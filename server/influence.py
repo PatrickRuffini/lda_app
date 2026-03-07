@@ -249,6 +249,9 @@ def _is_section_heading(name: str, para_text: str) -> bool:
     if name.strip().endswith(":"):
         return True
     if re.match(r"^[A-Z][A-Z\s\'\u2019&,\-:]{3,}$", name.strip()):
+        em_dash_pat = re.escape(name.strip()) + r"\s*\u2014"
+        if re.search(em_dash_pat, para_text):
+            return True
         words_in_name = len(name.split())
         words_in_para = len(para_text.split())
         if words_in_name >= (words_in_para * 0.4):
@@ -872,36 +875,21 @@ def scrape_and_store(
 
 def reprocess_all_entities(db_url: str = None) -> dict:
     """
-    Clear all entity data (preserving user overrides) and re-extract from all newsletters.
+    Rebuild relationships and mentions from stored newsletter HTML.
+    Keeps existing entities in place (preserving types/overrides),
+    resets mention counts, and re-extracts all relationships.
     """
     engine = init_db(db_url)
     session = get_session(engine)
 
     try:
-        overrides = {}
-        user_entities = session.query(Entity).filter(Entity.user_override == True).all()
-        for ent in user_entities:
-            overrides[ent.name] = {
-                "entity_type": ent.entity_type,
-                "display_name": ent.display_name,
-            }
-
         session.query(EntityMention).delete()
         session.query(Relationship).delete()
-        session.query(Entity).delete()
+        session.execute(Entity.__table__.update().values(mention_count=0))
         session.query(Newsletter).update({Newsletter.entities_extracted: False})
         session.commit()
 
-        for name, data in overrides.items():
-            ent = Entity(
-                name=name,
-                entity_type=data["entity_type"],
-                display_name=data["display_name"],
-                mention_count=0,
-                user_override=True,
-            )
-            session.add(ent)
-        session.commit()
+        logger.info("Cleared mentions, relationships, and reset mention counts. Entities preserved.")
 
         newsletters = (
             session.query(Newsletter)
@@ -924,8 +912,17 @@ def reprocess_all_entities(db_url: str = None) -> dict:
             process_newsletter_entities(session, nl)
             session.commit()
             processed += 1
+            if processed % 10 == 0:
+                logger.info(f"Reprocessed {processed}/{len(newsletters)} newsletters")
 
-        return {"processed": processed}
+        orphans = session.query(Entity).filter(Entity.mention_count == 0).count()
+        if orphans:
+            session.query(Entity).filter(Entity.mention_count == 0).delete()
+            session.commit()
+            logger.info(f"Cleaned up {orphans} orphaned entities with no mentions")
+
+        logger.info(f"Reprocess complete: {processed} newsletters")
+        return {"processed": processed, "orphans_removed": orphans}
     except Exception as e:
         session.rollback()
         raise
