@@ -1178,7 +1178,28 @@ function NewsletterReaderPage({ newsletterId, onBack, onNavigate }: { newsletter
     });
   };
 
-  const paragraphs = newsletter.body_text.split('\n').filter(p => p.trim().length > 0);
+  const sectionHeadingRe = /^([A-Z][A-Z\s'\u2019&,\-]+:)\s*/;
+
+  const paragraphs = newsletter.body_text.split('\n\n').filter(p => p.trim().length > 0);
+
+  const renderParagraph = (para: string, i: number) => {
+    const headingMatch = para.match(sectionHeadingRe);
+    if (headingMatch) {
+      const heading = headingMatch[1];
+      const rest = para.slice(headingMatch[0].length).trim();
+      return (
+        <div key={i} data-testid={`text-paragraph-${i}`}>
+          <h3 className="text-sm font-bold text-gray-900 uppercase tracking-wide mt-5 mb-1 pt-3 border-t border-gray-100">{heading}</h3>
+          {rest && <p className="text-gray-800 leading-relaxed text-sm">{annotateText(rest)}</p>}
+        </div>
+      );
+    }
+    return (
+      <p key={i} className="text-gray-800 leading-relaxed mb-3 text-sm" data-testid={`text-paragraph-${i}`}>
+        {annotateText(para)}
+      </p>
+    );
+  };
 
   return (
     <div className="space-y-4">
@@ -1221,12 +1242,8 @@ function NewsletterReaderPage({ newsletterId, onBack, onNavigate }: { newsletter
           </div>
         )}
 
-        <div className="px-6 py-5 prose prose-sm max-w-none">
-          {paragraphs.map((para, i) => (
-            <p key={i} className="text-gray-800 leading-relaxed mb-3 text-sm" data-testid={`text-paragraph-${i}`}>
-              {annotateText(para)}
-            </p>
-          ))}
+        <div className="px-6 py-5 max-w-none">
+          {paragraphs.map((para, i) => renderParagraph(para, i))}
         </div>
 
         <div className="px-6 py-3 border-t border-gray-100 bg-gray-50">
