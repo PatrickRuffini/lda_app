@@ -4,6 +4,14 @@
 # Install Python deps
 pip install -r requirements.txt 2>/dev/null
 
+# Set LD_LIBRARY_PATH for Playwright Chromium (libgbm)
+for dir in /nix/store/*mesa-libgbm*/lib; do
+  if [ -f "$dir/libgbm.so.1" ]; then
+    export LD_LIBRARY_PATH="$dir:${LD_LIBRARY_PATH:-}"
+    break
+  fi
+done
+
 # Start FastAPI backend on internal-only port
 uvicorn server.app:app --host 127.0.0.1 --port 8001 --reload &
 BACKEND_PID=$!

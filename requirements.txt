@@ -15,3 +15,6 @@ requests
 sqlalchemy
 uvicorn[standard]
 psycopg2-binary
+playwright
+curl_cffi
+cloudscraper

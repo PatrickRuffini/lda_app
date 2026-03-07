@@ -28,7 +28,7 @@ Preferred communication style: Simple, everyday language.
   - `server/app.py` — main FastAPI app, route definitions, CORS middleware, serves static frontend files via `StaticFiles`.
   - `server/models.py` — SQLAlchemy ORM models (declarative base). Tables: `registrants`, `clients`, `filings` (includes `added_to_db` timestamp), `lobbying_activities`, `entities`, `entity_mentions`, `newsletters`, `relationships`. Connects to PostgreSQL via `DATABASE_URL`.
   - `server/sync.py` — fetches filings from the Senate LDA API (`https://lda.senate.gov/api/v1`) with pagination, retry logic, and optional API key auth. Supports two modes: **incremental** (grabs newest filings, stops at duplicates) and **backfill** (year-by-year from present to 1999, skips years already complete). Thread-safe progress tracking via `get_sync_progress()`. Stores results into PostgreSQL with `added_to_db` timestamp.
-  - `server/influence.py` — scrapes Politico Influence newsletter HTML, extracts bold entities, detects person↔organization affiliations via regex patterns, builds co-occurrence relationships, stores to PostgreSQL.
+  - `server/influence.py` — scrapes Politico Influence newsletter using Playwright headless Chromium (to bypass Cloudflare), extracts bold entities, detects person↔organization affiliations via regex patterns, builds co-occurrence relationships, stores to PostgreSQL. Requires `LD_LIBRARY_PATH` set for `libgbm` (handled in `start.sh`).
 - **Full-text search:** PostgreSQL `to_tsvector`/`to_tsquery` for full-text search across registrant names, client names, and filing fields.
 - **Database:** PostgreSQL via Replit's built-in database. Connected through `DATABASE_URL` environment variable.
 - **Auth:** Optional Senate LDA API key via `LDA_API_KEY` environment variable (falls back to anonymous access).
@@ -96,6 +96,7 @@ Navigation is managed via a `Page` type union and `useState` in `App.tsx` (not U
 | `pydantic` | Request/response data validation |
 | `requests` | HTTP client for API and scraping |
 | `beautifulsoup4` + `lxml` | HTML parsing for newsletter scraper |
+| `playwright` | Headless Chromium browser for Cloudflare bypass |
 | `python-dotenv` | `.env` file loading for config |
 
 ### Node / Frontend Libraries
