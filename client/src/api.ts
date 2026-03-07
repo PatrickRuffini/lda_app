@@ -323,4 +323,26 @@ export const api = {
 
   linkLda: () =>
     fetch(`${BASE}/influence/link-lda`, { method: 'POST' }).then(r => r.json()),
+
+  // AI
+  getAiStatus: () =>
+    fetchJson<{ available: boolean }>(`${BASE}/ai/status`),
+
+  getEntitySummary: (id: number) =>
+    postJson<{ summary: string }>(`${BASE}/ai/entity-summary/${id}`, {}),
+
+  aiChat: (message: string, conversationId?: number, entityId?: number) =>
+    postJson<{ response: string; conversation_id: number; message_id: number }>(
+      `${BASE}/ai/chat`,
+      { message, conversation_id: conversationId, entity_id: entityId },
+    ),
+
+  getConversations: (page = 1) =>
+    fetchJson<{ results: Array<{ id: number; title: string; entity_id: number | null; message_count: number; created_at: string | null; updated_at: string | null }>; total: number; page: number; page_size: number }>(`${BASE}/ai/conversations?page=${page}`),
+
+  getConversation: (id: number) =>
+    fetchJson<{ id: number; title: string; entity_id: number | null; created_at: string | null; updated_at: string | null; messages: Array<{ id: number; role: string; content: string; created_at: string | null }> }>(`${BASE}/ai/conversations/${id}`),
+
+  deleteConversation: (id: number) =>
+    fetch(`${BASE}/ai/conversations/${id}`, { method: 'DELETE' }).then(r => r.json()),
 };

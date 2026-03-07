@@ -154,6 +154,30 @@ class Relationship(Base):
     )
 
 
+class ChatConversation(Base):
+    __tablename__ = "chat_conversations"
+
+    id = Column(Integer, primary_key=True)
+    title = Column(String(500), nullable=False, default="New conversation")
+    created_at = Column(DateTime, default=datetime.datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.datetime.utcnow, onupdate=datetime.datetime.utcnow)
+    entity_id = Column(Integer, ForeignKey("entities.id"), nullable=True)
+
+    messages = relationship("ChatMessage", back_populates="conversation", order_by="ChatMessage.created_at")
+
+
+class ChatMessage(Base):
+    __tablename__ = "chat_messages"
+
+    id = Column(Integer, primary_key=True)
+    conversation_id = Column(Integer, ForeignKey("chat_conversations.id"), nullable=False, index=True)
+    role = Column(String(20), nullable=False)  # 'user' or 'assistant'
+    content = Column(Text, nullable=False)
+    created_at = Column(DateTime, default=datetime.datetime.utcnow)
+
+    conversation = relationship("ChatConversation", back_populates="messages")
+
+
 def get_engine(db_url=None):
     if db_url is None:
         db_url = os.environ.get("DATABASE_URL")
@@ -240,6 +264,12 @@ def run_migrations(engine):
             with engine.begin() as conn:
                 conn.execute(sa_text("ALTER TABLE relationships ADD COLUMN match_confidence VARCHAR(20)"))
             applied.add("relationship_match_confidence")
+
+    # Migration: create chat tables
+    if "chat_conversations" not in table_names:
+        ChatConversation.__table__.create(engine, checkfirst=True)
+        ChatMessage.__table__.create(engine, checkfirst=True)
+        applied.add("chat_tables")
 
     return applied
 

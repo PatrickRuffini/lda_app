@@ -16,10 +16,12 @@ from sqlalchemy import text, func, desc
 from .models import (
     Filing, LobbyingActivity, Registrant, Client,
     Entity, EntityMention, Newsletter, Relationship,
+    ChatConversation, ChatMessage,
     get_engine, get_session, init_db, run_migrations,
 )
 from .sync import sync_filings, sync_incremental, sync_backfill, sync_year, get_sync_progress, _update_progress
 from .influence import scrape_and_store, reprocess_all_entities, get_scrape_progress, get_reprocess_progress, link_entities_to_lda, link_lobbyists_to_entities, merge_duplicate_entities
+from .ai import generate_entity_summary, chat as ai_chat
 
 logger = logging.getLogger(__name__)
 
@@ -1009,6 +1011,183 @@ def influence_stats():
         finally:
             session.close()
     return _cached("influence_stats", _fetch)
+
+
+# ---------- AI Endpoints ----------
+
+class ChatRequest(BaseModel):
+    message: str
+    conversation_id: Optional[int] = None
+    entity_id: Optional[int] = None
+
+
+@app.post("/api/ai/entity-summary/{entity_id}")
+def ai_entity_summary(entity_id: int):
+    """Generate an AI-powered summary for an entity."""
+    try:
+        summary = generate_entity_summary(entity_id)
+        return {"summary": summary}
+    except RuntimeError as e:
+        raise HTTPException(status_code=503, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        logger.exception("AI entity summary failed")
+        raise HTTPException(status_code=500, detail=f"AI summary generation failed: {str(e)}")
+
+
+@app.post("/api/ai/chat")
+def ai_chat_endpoint(req: ChatRequest):
+    """Chat with the dataset using AI. Persists messages to conversation history."""
+    session = _get_session()
+    try:
+        # Get or create conversation
+        if req.conversation_id:
+            convo = session.query(ChatConversation).get(req.conversation_id)
+            if not convo:
+                raise HTTPException(status_code=404, detail="Conversation not found")
+        else:
+            convo = ChatConversation(
+                title=req.message[:100],
+                entity_id=req.entity_id,
+            )
+            session.add(convo)
+            session.flush()
+
+        # Save user message
+        user_msg = ChatMessage(conversation_id=convo.id, role="user", content=req.message)
+        session.add(user_msg)
+        session.flush()
+
+        # Build message history from DB
+        db_messages = (
+            session.query(ChatMessage)
+            .filter(ChatMessage.conversation_id == convo.id)
+            .order_by(ChatMessage.created_at)
+            .all()
+        )
+        messages = [{"role": m.role, "content": m.content} for m in db_messages]
+
+        # Call AI
+        response_text = ai_chat(messages, req.message)
+
+        # Save assistant response
+        assistant_msg = ChatMessage(conversation_id=convo.id, role="assistant", content=response_text)
+        session.add(assistant_msg)
+
+        # Update conversation title on first message
+        msg_count = session.query(ChatMessage).filter(ChatMessage.conversation_id == convo.id).count()
+        if msg_count <= 2:
+            convo.title = req.message[:100]
+
+        session.commit()
+
+        return {
+            "response": response_text,
+            "conversation_id": convo.id,
+            "message_id": assistant_msg.id,
+        }
+    except HTTPException:
+        raise
+    except RuntimeError as e:
+        session.rollback()
+        raise HTTPException(status_code=503, detail=str(e))
+    except Exception as e:
+        session.rollback()
+        logger.exception("AI chat failed")
+        raise HTTPException(status_code=500, detail=f"AI chat failed: {str(e)}")
+    finally:
+        session.close()
+
+
+@app.get("/api/ai/conversations")
+def list_conversations(page: int = 1, page_size: int = 20):
+    """List all chat conversations, most recent first."""
+    session = _get_session()
+    try:
+        total = session.query(func.count(ChatConversation.id)).scalar() or 0
+        convos = (
+            session.query(ChatConversation)
+            .order_by(desc(ChatConversation.updated_at))
+            .offset((page - 1) * page_size)
+            .limit(page_size)
+            .all()
+        )
+        results = []
+        for c in convos:
+            msg_count = session.query(func.count(ChatMessage.id)).filter(ChatMessage.conversation_id == c.id).scalar() or 0
+            results.append({
+                "id": c.id,
+                "title": c.title,
+                "entity_id": c.entity_id,
+                "message_count": msg_count,
+                "created_at": c.created_at.isoformat() if c.created_at else None,
+                "updated_at": c.updated_at.isoformat() if c.updated_at else None,
+            })
+        return {"results": results, "total": total, "page": page, "page_size": page_size}
+    finally:
+        session.close()
+
+
+@app.get("/api/ai/conversations/{conversation_id}")
+def get_conversation(conversation_id: int):
+    """Get a conversation with all messages."""
+    session = _get_session()
+    try:
+        convo = session.query(ChatConversation).get(conversation_id)
+        if not convo:
+            raise HTTPException(status_code=404, detail="Conversation not found")
+
+        messages = (
+            session.query(ChatMessage)
+            .filter(ChatMessage.conversation_id == conversation_id)
+            .order_by(ChatMessage.created_at)
+            .all()
+        )
+        return {
+            "id": convo.id,
+            "title": convo.title,
+            "entity_id": convo.entity_id,
+            "created_at": convo.created_at.isoformat() if convo.created_at else None,
+            "updated_at": convo.updated_at.isoformat() if convo.updated_at else None,
+            "messages": [
+                {
+                    "id": m.id,
+                    "role": m.role,
+                    "content": m.content,
+                    "created_at": m.created_at.isoformat() if m.created_at else None,
+                }
+                for m in messages
+            ],
+        }
+    finally:
+        session.close()
+
+
+@app.delete("/api/ai/conversations/{conversation_id}")
+def delete_conversation(conversation_id: int):
+    """Delete a conversation and all its messages."""
+    session = _get_session()
+    try:
+        convo = session.query(ChatConversation).get(conversation_id)
+        if not convo:
+            raise HTTPException(status_code=404, detail="Conversation not found")
+        session.query(ChatMessage).filter(ChatMessage.conversation_id == conversation_id).delete()
+        session.delete(convo)
+        session.commit()
+        return {"status": "deleted"}
+    except Exception:
+        session.rollback()
+        raise
+    finally:
+        session.close()
+
+
+@app.get("/api/ai/status")
+def ai_status():
+    """Check if AI features are available (API key configured)."""
+    has_key = bool(os.environ.get("ANTHROPIC_API_KEY"))
+    return {"available": has_key}
 
 
 @app.get("/api/db-dump")

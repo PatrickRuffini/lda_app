@@ -1,10 +1,10 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
-import { Search, FileText, Tag, BarChart3, RefreshCw, Building2, Users, ChevronLeft, ChevronRight, ExternalLink, DollarSign, Calendar, Loader2, Network, Newspaper, User, Briefcase, Menu, X, Download, Square, ChevronDown, Target } from 'lucide-react';
+import { Search, FileText, Tag, BarChart3, RefreshCw, Building2, Users, ChevronLeft, ChevronRight, ExternalLink, DollarSign, Calendar, Loader2, Network, Newspaper, User, Briefcase, Menu, X, Download, Square, ChevronDown, Target, Sparkles, Send, MessageCircle, Bot } from 'lucide-react';
 import { api, type FilingSummary, type FilingDetail, type IssueSummary, type Stats, type SyncStatus, type SyncCoverage, type SearchParams, type TopEntity, type NewsletterSummary, type NewsletterDetail, type EntitySummary, type EntityDetail, type NetworkData, type InfluenceStats } from './api';
 import { formatDistanceToNow, format } from 'date-fns';
 import NetworkGraph, { computeEigenvectorCentrality, type SizeMode } from './NetworkGraph';
 
-type Page = 'dashboard' | 'search' | 'issues' | 'filing' | 'influence' | 'network' | 'entity' | 'newsletter' | 'leaderboard';
+type Page = 'dashboard' | 'search' | 'issues' | 'filing' | 'influence' | 'network' | 'entity' | 'newsletter' | 'leaderboard' | 'chat';
 
 function formatMoney(val: number | null | undefined): string {
   if (val === null || val === undefined) return '-';
@@ -30,6 +30,7 @@ function Nav({ page, setPage }: { page: Page; setPage: (p: Page) => void }) {
     { id: 'issues', label: 'Issues', icon: <Tag size={18} /> },
     { id: 'influence', label: 'Influence', icon: <Newspaper size={18} /> },
     { id: 'network', label: 'Network', icon: <Network size={18} /> },
+    { id: 'chat', label: 'AI Chat', icon: <Bot size={18} /> },
   ];
   const handleNav = (p: Page) => { setPage(p); setMobileOpen(false); };
   return (
@@ -1247,6 +1248,12 @@ function EntityDetailPage({ entityId, onBack, onNavigate }: { entityId: number; 
   const [entity, setEntity] = useState<EntityDetail | null>(null);
   const [loading, setLoading] = useState(true);
   const [updatingType, setUpdatingType] = useState(false);
+  const [aiSummary, setAiSummary] = useState<string | null>(null);
+  const [aiLoading, setAiLoading] = useState(false);
+  const [aiError, setAiError] = useState<string | null>(null);
+  const [aiAvailable, setAiAvailable] = useState(false);
+
+  useEffect(() => { api.getAiStatus().then(s => setAiAvailable(s.available)).catch(() => {}); }, []);
 
   const loadEntity = useCallback(() => {
     setLoading(true);
@@ -1265,6 +1272,20 @@ function EntityDetailPage({ entityId, onBack, onNavigate }: { entityId: number; 
       console.error(err);
     }
     setUpdatingType(false);
+  };
+
+  const generateSummary = async () => {
+    if (!entity) return;
+    setAiLoading(true);
+    setAiError(null);
+    setAiSummary(null);
+    try {
+      const result = await api.getEntitySummary(entity.id);
+      setAiSummary(result.summary);
+    } catch (err: unknown) {
+      setAiError(err instanceof Error ? err.message : 'Failed to generate summary');
+    }
+    setAiLoading(false);
   };
 
   if (loading) return <div className="flex items-center justify-center h-64"><Loader2 className="animate-spin text-indigo-600" size={32} /></div>;
@@ -1311,14 +1332,56 @@ function EntityDetailPage({ entityId, onBack, onNavigate }: { entityId: number; 
               {entity.is_lobbyist && <span className="text-xs px-2 py-0.5 rounded-full text-purple-700 bg-purple-50">Registered Lobbyist</span>}
             </div>
           </div>
-          <button
-            onClick={() => onNavigate('network', entity.id)}
-            className="text-sm text-indigo-600 border border-indigo-200 px-3 py-1.5 rounded-lg hover:bg-indigo-50 cursor-pointer flex items-center gap-1 shrink-0 self-start"
-          >
-            <Network size={14} /> View in network
-          </button>
+          <div className="flex gap-2 shrink-0 self-start">
+            {aiAvailable && (
+              <button
+                onClick={generateSummary}
+                disabled={aiLoading}
+                className="text-sm text-purple-600 border border-purple-200 px-3 py-1.5 rounded-lg hover:bg-purple-50 cursor-pointer flex items-center gap-1 disabled:opacity-50"
+              >
+                {aiLoading ? <Loader2 size={14} className="animate-spin" /> : <Sparkles size={14} />}
+                {aiLoading ? 'Analyzing...' : 'AI Summary'}
+              </button>
+            )}
+            <button
+              onClick={() => onNavigate('network', entity.id)}
+              className="text-sm text-indigo-600 border border-indigo-200 px-3 py-1.5 rounded-lg hover:bg-indigo-50 cursor-pointer flex items-center gap-1"
+            >
+              <Network size={14} /> View in network
+            </button>
+          </div>
         </div>
       </div>
+
+      {/* AI Summary */}
+      {(aiSummary || aiLoading || aiError) && (
+        <div className="bg-gradient-to-br from-purple-50 to-indigo-50 rounded-lg border border-purple-200 p-5">
+          <div className="flex items-center gap-2 mb-3">
+            <Sparkles size={16} className="text-purple-600" />
+            <h2 className="text-sm font-semibold text-purple-900">AI Intelligence Brief</h2>
+          </div>
+          {aiLoading && (
+            <div className="flex items-center gap-2 text-sm text-purple-600">
+              <Loader2 size={14} className="animate-spin" /> Analyzing entity data, network connections, and filing history...
+            </div>
+          )}
+          {aiError && (
+            <p className="text-sm text-red-600">{aiError}</p>
+          )}
+          {aiSummary && (
+            <div className="prose prose-sm max-w-none text-gray-800">
+              {aiSummary.split('\n').map((line, i) => {
+                if (!line.trim()) return <br key={i} />;
+                if (line.startsWith('## ')) return <h3 key={i} className="text-sm font-bold text-gray-900 mt-3 mb-1">{line.slice(3)}</h3>;
+                if (line.startsWith('### ')) return <h4 key={i} className="text-sm font-semibold text-gray-900 mt-2 mb-1">{line.slice(4)}</h4>;
+                if (line.startsWith('**') && line.endsWith('**')) return <p key={i} className="text-sm font-semibold text-gray-900 mt-2 mb-1">{line.slice(2, -2)}</p>;
+                if (line.startsWith('- ')) return <li key={i} className="text-sm text-gray-700 ml-4">{line.slice(2)}</li>;
+                return <p key={i} className="text-sm text-gray-700 mb-1">{line}</p>;
+              })}
+            </div>
+          )}
+        </div>
+      )}
 
       {/* Affiliations */}
       {affiliations.length > 0 && (
@@ -1756,9 +1819,239 @@ function EntityLeaderboard({ entityType, onBack, onNavigate }: { entityType: str
 }
 
 
+// ---------- Chat Page ----------
+function ChatPage({ onNavigate, initialConversationId }: { onNavigate: (page: Page, ctx?: unknown) => void; initialConversationId?: number }) {
+  const [conversations, setConversations] = useState<Array<{ id: number; title: string; entity_id: number | null; message_count: number; created_at: string | null; updated_at: string | null }>>([]);
+  const [activeConvoId, setActiveConvoId] = useState<number | undefined>(initialConversationId);
+  const [messages, setMessages] = useState<Array<{ id?: number; role: string; content: string; created_at?: string | null }>>([]);
+  const [input, setInput] = useState('');
+  const [sending, setSending] = useState(false);
+  const [aiAvailable, setAiAvailable] = useState(false);
+  const [sidebarOpen, setSidebarOpen] = useState(true);
+  const messagesEndRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => { api.getAiStatus().then(s => setAiAvailable(s.available)).catch(() => {}); }, []);
+
+  const loadConversations = useCallback(() => {
+    api.getConversations().then(r => setConversations(r.results)).catch(() => {});
+  }, []);
+
+  useEffect(() => { loadConversations(); }, [loadConversations]);
+
+  const loadConversation = useCallback((id: number) => {
+    api.getConversation(id).then(c => {
+      setMessages(c.messages);
+      setActiveConvoId(c.id);
+    }).catch(() => {});
+  }, []);
+
+  useEffect(() => {
+    if (initialConversationId) loadConversation(initialConversationId);
+  }, [initialConversationId, loadConversation]);
+
+  useEffect(() => {
+    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [messages]);
+
+  const handleSend = async () => {
+    const text = input.trim();
+    if (!text || sending) return;
+    setInput('');
+    setSending(true);
+
+    // Optimistically add user message
+    setMessages(prev => [...prev, { role: 'user', content: text }]);
+
+    try {
+      const result = await api.aiChat(text, activeConvoId);
+      setActiveConvoId(result.conversation_id);
+      setMessages(prev => [...prev, { role: 'assistant', content: result.response, id: result.message_id }]);
+      loadConversations();
+    } catch (err: unknown) {
+      setMessages(prev => [...prev, { role: 'assistant', content: `Error: ${err instanceof Error ? err.message : 'Failed to get response'}` }]);
+    }
+    setSending(false);
+  };
+
+  const startNewChat = () => {
+    setActiveConvoId(undefined);
+    setMessages([]);
+    setInput('');
+  };
+
+  const deleteConvo = async (id: number, e: React.MouseEvent) => {
+    e.stopPropagation();
+    await api.deleteConversation(id);
+    if (activeConvoId === id) startNewChat();
+    loadConversations();
+  };
+
+  const renderMarkdown = (text: string) => {
+    return text.split('\n').map((line, i) => {
+      if (!line.trim()) return <br key={i} />;
+      if (line.startsWith('## ')) return <h3 key={i} className="text-sm font-bold text-gray-900 mt-3 mb-1">{line.slice(3)}</h3>;
+      if (line.startsWith('### ')) return <h4 key={i} className="text-sm font-semibold text-gray-900 mt-2 mb-1">{line.slice(4)}</h4>;
+      if (line.startsWith('**') && line.endsWith('**')) return <p key={i} className="text-sm font-semibold text-gray-900 mt-2 mb-1">{line.slice(2, -2)}</p>;
+      if (line.startsWith('- ')) return <li key={i} className="text-sm ml-4 list-disc">{line.slice(2)}</li>;
+      return <p key={i} className="text-sm mb-1">{line}</p>;
+    });
+  };
+
+  if (!aiAvailable) {
+    return (
+      <div className="flex items-center justify-center h-[70vh]">
+        <div className="text-center">
+          <Bot size={48} className="mx-auto text-gray-300 mb-4" />
+          <h2 className="text-lg font-semibold text-gray-700 mb-2">AI Chat Not Available</h2>
+          <p className="text-sm text-gray-500">Set the ANTHROPIC_API_KEY secret to enable AI features.</p>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex h-[calc(100vh-5rem)] -mt-2">
+      {/* Sidebar */}
+      <div className={`${sidebarOpen ? 'w-72' : 'w-0'} transition-all overflow-hidden border-r border-gray-200 bg-white flex flex-col shrink-0`}>
+        <div className="p-3 border-b border-gray-100">
+          <button
+            onClick={startNewChat}
+            className="w-full text-sm bg-indigo-600 text-white px-3 py-2 rounded-lg hover:bg-indigo-700 cursor-pointer flex items-center justify-center gap-2"
+          >
+            <MessageCircle size={14} /> New Chat
+          </button>
+        </div>
+        <div className="flex-1 overflow-y-auto">
+          {conversations.map(c => (
+            <button
+              key={c.id}
+              onClick={() => loadConversation(c.id)}
+              className={`w-full text-left px-3 py-2.5 border-b border-gray-50 hover:bg-gray-50 cursor-pointer transition group ${activeConvoId === c.id ? 'bg-indigo-50' : ''}`}
+            >
+              <div className="flex items-start justify-between gap-1">
+                <span className="text-sm font-medium text-gray-800 line-clamp-2 flex-1">{c.title}</span>
+                <button
+                  onClick={(e) => deleteConvo(c.id, e)}
+                  className="opacity-0 group-hover:opacity-100 text-gray-400 hover:text-red-500 cursor-pointer shrink-0 p-0.5"
+                >
+                  <X size={12} />
+                </button>
+              </div>
+              <div className="text-xs text-gray-400 mt-0.5">
+                {c.message_count} messages · {c.updated_at ? timeAgo(c.updated_at) : ''}
+              </div>
+            </button>
+          ))}
+          {conversations.length === 0 && (
+            <p className="text-xs text-gray-400 text-center py-8">No conversations yet</p>
+          )}
+        </div>
+      </div>
+
+      {/* Main chat area */}
+      <div className="flex-1 flex flex-col min-w-0">
+        {/* Chat header */}
+        <div className="flex items-center gap-2 px-4 py-2 border-b border-gray-200 bg-white">
+          <button
+            onClick={() => setSidebarOpen(o => !o)}
+            className="text-gray-500 hover:text-gray-700 cursor-pointer p-1"
+          >
+            <Menu size={18} />
+          </button>
+          <Bot size={18} className="text-indigo-500" />
+          <span className="text-sm font-medium text-gray-700">
+            {activeConvoId ? conversations.find(c => c.id === activeConvoId)?.title || 'Chat' : 'New Conversation'}
+          </span>
+        </div>
+
+        {/* Messages */}
+        <div className="flex-1 overflow-y-auto px-4 py-4 space-y-4">
+          {messages.length === 0 && (
+            <div className="flex items-center justify-center h-full">
+              <div className="text-center max-w-md">
+                <Sparkles size={40} className="mx-auto text-indigo-300 mb-4" />
+                <h2 className="text-lg font-semibold text-gray-700 mb-2">Ask anything about the data</h2>
+                <p className="text-sm text-gray-500 mb-4">
+                  Explore lobbying relationships, spending patterns, policy priorities, and connections between entities in the LDA filings and Politico Influence data.
+                </p>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                  {[
+                    'Who are the top lobbying clients in tech?',
+                    'What policy areas does TikTok lobby on?',
+                    'Show me the biggest lobbying spenders',
+                    'Which firms lobby on AI regulation?',
+                  ].map((q, i) => (
+                    <button
+                      key={i}
+                      onClick={() => { setInput(q); }}
+                      className="text-xs text-left px-3 py-2 rounded-lg border border-gray-200 text-gray-600 hover:bg-gray-50 hover:border-indigo-200 cursor-pointer transition"
+                    >
+                      {q}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            </div>
+          )}
+
+          {messages.map((m, i) => (
+            <div key={i} className={`flex ${m.role === 'user' ? 'justify-end' : 'justify-start'}`}>
+              <div className={`max-w-[80%] rounded-lg px-4 py-3 ${
+                m.role === 'user'
+                  ? 'bg-indigo-600 text-white'
+                  : 'bg-white border border-gray-200 text-gray-800'
+              }`}>
+                {m.role === 'user' ? (
+                  <p className="text-sm">{m.content}</p>
+                ) : (
+                  <div>{renderMarkdown(m.content)}</div>
+                )}
+              </div>
+            </div>
+          ))}
+
+          {sending && (
+            <div className="flex justify-start">
+              <div className="bg-white border border-gray-200 rounded-lg px-4 py-3">
+                <div className="flex items-center gap-2 text-sm text-gray-500">
+                  <Loader2 size={14} className="animate-spin" /> Thinking...
+                </div>
+              </div>
+            </div>
+          )}
+          <div ref={messagesEndRef} />
+        </div>
+
+        {/* Input */}
+        <div className="border-t border-gray-200 bg-white px-4 py-3">
+          <div className="flex gap-2 max-w-4xl mx-auto">
+            <input
+              type="text"
+              value={input}
+              onChange={e => setInput(e.target.value)}
+              onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleSend(); } }}
+              placeholder="Ask about lobbying data, entities, relationships..."
+              className="flex-1 text-sm border border-gray-200 rounded-lg px-4 py-2.5 focus:outline-none focus:ring-2 focus:ring-indigo-300 focus:border-indigo-300"
+              disabled={sending}
+            />
+            <button
+              onClick={handleSend}
+              disabled={!input.trim() || sending}
+              className="bg-indigo-600 text-white px-4 py-2.5 rounded-lg hover:bg-indigo-700 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-1.5"
+            >
+              <Send size={14} />
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+
 // ---------- App ----------
 export default function App() {
-  type NavState = { page: Page; filingUuid?: string; entityId?: number; newsletterId?: number; centerEntityId?: number; leaderboardType?: string };
+  type NavState = { page: Page; filingUuid?: string; entityId?: number; newsletterId?: number; centerEntityId?: number; leaderboardType?: string; conversationId?: number };
   const [navState, setNavState] = useState<NavState>({ page: 'dashboard' });
   const [navHistory, setNavHistory] = useState<NavState[]>([]);
 
@@ -1822,6 +2115,9 @@ export default function App() {
         )}
         {page === 'leaderboard' && navState.leaderboardType && (
           <EntityLeaderboard entityType={navState.leaderboardType} onBack={handleBack} onNavigate={handleNavigate} />
+        )}
+        {page === 'chat' && (
+          <ChatPage onNavigate={handleNavigate} initialConversationId={navState.conversationId} />
         )}
       </main>
     </div>
