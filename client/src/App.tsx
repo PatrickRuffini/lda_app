@@ -733,6 +733,33 @@ function InfluencePage({ onNavigate }: { onNavigate: (page: Page, ctx?: unknown)
     setSearchResults(null);
   };
 
+  const [reprocessing, setReprocessing] = useState(false);
+
+  const handleReprocess = async () => {
+    if (!confirm('Re-run classification on all newsletters? This keeps existing entities but rebuilds all relationships. This may take a few minutes.')) return;
+    setReprocessing(true);
+    try {
+      await api.reprocessEntities();
+      // Poll: relationships drop to 0 during reprocess, wait until they come back
+      let sawZero = false;
+      const poll = setInterval(async () => {
+        try {
+          const s = await api.getInfluenceStats();
+          if (s.total_relationships === 0) sawZero = true;
+          if (sawZero && s.total_relationships > 0) {
+            clearInterval(poll);
+            setStats(s);
+            setReprocessing(false);
+            load();
+          }
+        } catch {}
+      }, 4000);
+    } catch (err) {
+      console.error(err);
+      setReprocessing(false);
+    }
+  };
+
   const [scrapeProgress, setScrapeProgress] = useState<any>(null);
 
   const handleScrape = async () => {
@@ -780,8 +807,18 @@ function InfluencePage({ onNavigate }: { onNavigate: (page: Page, ctx?: unknown)
             </span>
           )}
           <button
+            onClick={handleReprocess}
+            disabled={reprocessing || scraping}
+            className="flex items-center gap-2 border border-amber-600 text-amber-700 px-4 py-2 rounded-lg text-sm font-medium hover:bg-amber-50 disabled:opacity-50 cursor-pointer"
+            data-testid="button-reprocess"
+            title="Re-run classification: keeps entities, rebuilds all relationships"
+          >
+            {reprocessing ? <Loader2 size={16} className="animate-spin" /> : <RefreshCw size={16} />}
+            {reprocessing ? 'Reprocessing...' : 'Re-run Classification'}
+          </button>
+          <button
             onClick={handleScrape}
-            disabled={scraping}
+            disabled={scraping || reprocessing}
             className="flex items-center gap-2 bg-amber-600 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-amber-700 disabled:opacity-50 cursor-pointer"
             data-testid="button-scrape"
           >
@@ -1421,7 +1458,7 @@ function NewsletterReaderPage({ newsletterId, onBack, onNavigate }: { newsletter
     });
   };
 
-  const knownSectionHeadings = ['jobs report', 'new joint fundraisers', 'new pacs'];
+  const knownSectionHeadings = ['jobs report', 'new joint fundraisers', 'new pacs', 'new lobbying registrations', 'new lobbying terminations'];
   const firstInPiRe = /^(FIRST IN PI(?:\s*I+)?(?:\s*(?:\u2014|\u2013|[\-–—])\s*[^:]+)?)\s*:\s*/;
   const sectionHeadingRe = /^([A-Z][A-Z\s'\u2019&,\-]+(?::|(?=\s?\u2014)))\s*\u2014?\s*/;
   const adStartRe = /^A message from\b/i;
