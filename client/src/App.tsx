@@ -1289,54 +1289,65 @@ function NewsletterReaderPage({ newsletterId, onBack, onNavigate }: { newsletter
 
 // ---------- App ----------
 export default function App() {
-  const [page, setPage] = useState<Page>('dashboard');
-  const [filingUuid, setFilingUuid] = useState<string | null>(null);
-  const [entityId, setEntityId] = useState<number | null>(null);
-  const [newsletterId, setNewsletterId] = useState<number | null>(null);
-  const [centerEntityId, setCenterEntityId] = useState<number | undefined>(undefined);
-  const [prevPage, setPrevPage] = useState<Page>('dashboard');
+  type NavState = { page: Page; filingUuid?: string; entityId?: number; newsletterId?: number; centerEntityId?: number };
+  const [navState, setNavState] = useState<NavState>({ page: 'dashboard' });
+  const [navHistory, setNavHistory] = useState<NavState[]>([]);
+
+  const page = navState.page;
+  const filingUuid = navState.filingUuid ?? null;
+  const entityId = navState.entityId ?? null;
+  const newsletterId = navState.newsletterId ?? null;
+  const centerEntityId = navState.centerEntityId;
 
   const handleNavigate = (target: Page, ctx?: unknown) => {
+    const next: NavState = { page: target };
     if (target === 'filing' && typeof ctx === 'string') {
-      setPrevPage(page);
-      setFilingUuid(ctx);
-      setPage('filing');
+      next.filingUuid = ctx;
     } else if (target === 'newsletter' && typeof ctx === 'number') {
-      setPrevPage(page);
-      setNewsletterId(ctx);
-      setPage('newsletter');
+      next.newsletterId = ctx;
     } else if (target === 'entity' && typeof ctx === 'number') {
-      setPrevPage(page);
-      setEntityId(ctx);
-      setPage('entity');
+      next.entityId = ctx;
     } else if (target === 'network' && typeof ctx === 'number') {
-      setCenterEntityId(ctx);
-      setPage('network');
-    } else {
-      setCenterEntityId(undefined);
-      setPage(target);
+      next.centerEntityId = ctx;
     }
+    setNavHistory(h => [...h, navState]);
+    setNavState(next);
   };
 
-  const navPage = (page === 'filing' || page === 'entity' || page === 'newsletter') ? prevPage : page;
+  const handleBack = () => {
+    setNavHistory(h => {
+      const copy = [...h];
+      const prev = copy.pop();
+      if (prev) {
+        setNavState(prev);
+        return copy;
+      }
+      setNavState({ page: 'dashboard' });
+      return [];
+    });
+  };
+
+  const navPage = (page === 'filing' || page === 'entity' || page === 'newsletter')
+    ? (navHistory.length > 0 ? navHistory[navHistory.length - 1].page : 'dashboard')
+    : page;
 
   return (
     <div className="min-h-screen">
-      <Nav page={navPage} setPage={p => { setPage(p); setFilingUuid(null); setEntityId(null); setCenterEntityId(undefined); }} />
+      <Nav page={navPage} setPage={p => { setNavHistory([]); setNavState({ page: p }); }} />
       <main className="max-w-7xl mx-auto px-4 sm:px-6 py-6">
         {page === 'dashboard' && <Dashboard onNavigate={handleNavigate} />}
         {page === 'search' && <SearchPage onNavigate={handleNavigate} />}
         {page === 'issues' && <IssuesPage onNavigate={handleNavigate} />}
         {page === 'filing' && filingUuid && (
-          <FilingDetailPage filingUuid={filingUuid} onBack={() => { setPage(prevPage); setFilingUuid(null); }} />
+          <FilingDetailPage filingUuid={filingUuid} onBack={handleBack} />
         )}
         {page === 'influence' && <InfluencePage onNavigate={handleNavigate} />}
         {page === 'newsletter' && newsletterId && (
-          <NewsletterReaderPage newsletterId={newsletterId} onBack={() => { setPage(prevPage); setNewsletterId(null); }} onNavigate={handleNavigate} />
+          <NewsletterReaderPage newsletterId={newsletterId} onBack={handleBack} onNavigate={handleNavigate} />
         )}
         {page === 'network' && <NetworkMapPage onNavigate={handleNavigate} centerEntityId={centerEntityId} />}
         {page === 'entity' && entityId && (
-          <EntityDetailPage entityId={entityId} onBack={() => { setPage(prevPage); setEntityId(null); }} onNavigate={handleNavigate} />
+          <EntityDetailPage entityId={entityId} onBack={handleBack} onNavigate={handleNavigate} />
         )}
       </main>
     </div>
