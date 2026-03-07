@@ -171,14 +171,31 @@ export interface EntitySummary {
   id: number;
   name: string;
   entity_type: string;
-  role: string | null;
+  is_consultant?: boolean;
+  is_client?: boolean;
   display_name: string;
   mention_count: number;
   first_seen: string | null;
   last_seen: string | null;
 }
 
+export interface LdaFilingSummary {
+  filing_uuid: string;
+  filing_type: string;
+  filing_type_display: string;
+  filing_year: number;
+  filing_period_display: string;
+  dt_posted: string | null;
+  income: number | null;
+  expenses: number | null;
+  url: string | null;
+  registrant_name: string | null;
+  client_name: string | null;
+}
+
 export interface EntityDetail extends EntitySummary {
+  registrant_id: number | null;
+  client_id: number | null;
   connections: Array<{
     entity: EntitySummary;
     relationship_type: string;
@@ -186,6 +203,11 @@ export interface EntityDetail extends EntitySummary {
     first_seen: string | null;
     last_seen: string | null;
     context_snippets: string[];
+    filing_id: number | null;
+    filing_uuid: string | null;
+    filing_type: string | null;
+    filing_url: string | null;
+    filing_date: string | null;
   }>;
   newsletter_mentions: Array<{
     newsletter_id: number;
@@ -193,6 +215,7 @@ export interface EntityDetail extends EntitySummary {
     published_date: string | null;
     context: string;
   }>;
+  lda_filings: LdaFilingSummary[];
 }
 
 export interface NetworkData {
@@ -294,4 +317,7 @@ export const api = {
 
   getReprocessStatus: () =>
     fetchJson<{ status?: string; processed?: number; total?: number }>(`${BASE}/influence/reprocess/status`),
+
+  linkLda: () =>
+    fetch(`${BASE}/influence/link-lda`, { method: 'POST' }).then(r => r.json()),
 };

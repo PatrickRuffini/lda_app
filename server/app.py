@@ -19,7 +19,7 @@ from .models import (
     get_engine, get_session, init_db, run_migrations,
 )
 from .sync import sync_filings, sync_incremental, sync_backfill, sync_year, get_sync_progress, _update_progress
-from .influence import scrape_and_store, reprocess_all_entities, get_scrape_progress, get_reprocess_progress
+from .influence import scrape_and_store, reprocess_all_entities, get_scrape_progress, get_reprocess_progress, link_entities_to_lda
 
 logger = logging.getLogger(__name__)
 
@@ -683,7 +683,7 @@ def get_entity(entity_id: int):
             other_id = rel.entity_b_id if rel.entity_a_id == entity_id else rel.entity_a_id
             other = session.query(Entity).get(other_id)
             if other:
-                connections.append({
+                conn = {
                     "entity": {
                         "id": other.id,
                         "name": other.name,
@@ -698,7 +698,21 @@ def get_entity(entity_id: int):
                     "first_seen": rel.first_seen.isoformat() if rel.first_seen else None,
                     "last_seen": rel.last_seen.isoformat() if rel.last_seen else None,
                     "context_snippets": _safe_json_loads(rel.context_snippets),
-                })
+                    "filing_id": None,
+                    "filing_uuid": None,
+                    "filing_type": None,
+                    "filing_url": None,
+                    "filing_date": None,
+                }
+                if rel.filing_id:
+                    filing = session.query(Filing).get(rel.filing_id)
+                    if filing:
+                        conn["filing_id"] = filing.id
+                        conn["filing_uuid"] = filing.filing_uuid
+                        conn["filing_type"] = filing.filing_type_display or filing.filing_type
+                        conn["filing_url"] = filing.url
+                        conn["filing_date"] = filing.dt_posted.isoformat() if filing.dt_posted else None
+                connections.append(conn)
 
         mentions = (
             session.query(EntityMention, Newsletter)
@@ -722,6 +736,38 @@ def get_entity(entity_id: int):
             if len(unique_mentions) >= 20:
                 break
 
+        # Fetch LDA filings linked to this entity
+        lda_filings = []
+        if entity.registrant_id or entity.client_id:
+            filing_query = session.query(Filing)
+            if entity.registrant_id and entity.client_id:
+                filing_query = filing_query.filter(
+                    (Filing.registrant_id == entity.registrant_id) |
+                    (Filing.client_id == entity.client_id)
+                )
+            elif entity.registrant_id:
+                filing_query = filing_query.filter(Filing.registrant_id == entity.registrant_id)
+            else:
+                filing_query = filing_query.filter(Filing.client_id == entity.client_id)
+
+            recent_filings = filing_query.order_by(desc(Filing.dt_posted)).limit(20).all()
+            for f in recent_filings:
+                reg = session.query(Registrant).get(f.registrant_id) if f.registrant_id else None
+                cli = session.query(Client).get(f.client_id) if f.client_id else None
+                lda_filings.append({
+                    "filing_uuid": f.filing_uuid,
+                    "filing_type": f.filing_type,
+                    "filing_type_display": f.filing_type_display or f.filing_type,
+                    "filing_year": f.filing_year,
+                    "filing_period_display": f.filing_period_display,
+                    "dt_posted": f.dt_posted.isoformat() if f.dt_posted else None,
+                    "income": f.income,
+                    "expenses": f.expenses,
+                    "url": f.url,
+                    "registrant_name": reg.name if reg else None,
+                    "client_name": cli.name if cli else None,
+                })
+
         return {
             "id": entity.id,
             "name": entity.name,
@@ -732,8 +778,11 @@ def get_entity(entity_id: int):
             "mention_count": entity.mention_count,
             "first_seen": entity.first_seen.isoformat() if entity.first_seen else None,
             "last_seen": entity.last_seen.isoformat() if entity.last_seen else None,
+            "registrant_id": entity.registrant_id,
+            "client_id": entity.client_id,
             "connections": connections,
             "newsletter_mentions": unique_mentions,
+            "lda_filings": lda_filings,
         }
     finally:
         session.close()
@@ -795,6 +844,20 @@ def reprocess_entities_endpoint():
 def reprocess_status_endpoint():
     """Get reprocessing progress."""
     return get_reprocess_progress()
+
+
+@app.post("/api/influence/link-lda")
+def link_lda_endpoint():
+    """Manually trigger LDA entity linking without full reprocess."""
+    session = _get_session()
+    try:
+        result = link_entities_to_lda(session)
+        return {"status": "done", **result}
+    except Exception as e:
+        logger.error(f"LDA linking error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        session.close()
 
 
 @app.get("/api/influence/network")

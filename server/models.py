@@ -113,6 +113,8 @@ class Entity(Base):
     last_seen = Column(DateTime)
     mention_count = Column(Integer, default=0)
     user_override = Column(Boolean, default=False)
+    registrant_id = Column(Integer, ForeignKey("registrants.id"), nullable=True, index=True)
+    client_id = Column(Integer, ForeignKey("clients.id"), nullable=True, index=True)
 
     __table_args__ = (
         Index("ix_entities_name", "name", unique=True),
@@ -141,6 +143,7 @@ class Relationship(Base):
     first_seen = Column(DateTime)
     last_seen = Column(DateTime)
     context_snippets = Column(Text)
+    filing_id = Column(Integer, ForeignKey("filings.id"), nullable=True, index=True)
 
     __table_args__ = (
         Index("ix_relationships_pair", "entity_a_id", "entity_b_id", unique=True),
@@ -207,6 +210,38 @@ def run_migrations(engine):
                 ))
                 conn.execute(sa_text(
                     "CREATE INDEX ix_entities_is_client ON entities (is_client)"
+                ))
+            migrated = True
+
+    # Migration: add registrant_id/client_id to entities for LDA linking
+    if "entities" in inspector.get_table_names():
+        columns = {c["name"] for c in inspector.get_columns("entities")}
+        if "registrant_id" not in columns:
+            with engine.begin() as conn:
+                conn.execute(sa_text(
+                    "ALTER TABLE entities ADD COLUMN registrant_id INTEGER REFERENCES registrants(id)"
+                ))
+                conn.execute(sa_text(
+                    "ALTER TABLE entities ADD COLUMN client_id INTEGER REFERENCES clients(id)"
+                ))
+                conn.execute(sa_text(
+                    "CREATE INDEX ix_entities_registrant_id ON entities (registrant_id)"
+                ))
+                conn.execute(sa_text(
+                    "CREATE INDEX ix_entities_client_id ON entities (client_id)"
+                ))
+            migrated = True
+
+    # Migration: add filing_id to relationships for LDA linking
+    if "relationships" in inspector.get_table_names():
+        rel_columns = {c["name"] for c in inspector.get_columns("relationships")}
+        if "filing_id" not in rel_columns:
+            with engine.begin() as conn:
+                conn.execute(sa_text(
+                    "ALTER TABLE relationships ADD COLUMN filing_id INTEGER REFERENCES filings(id)"
+                ))
+                conn.execute(sa_text(
+                    "CREATE INDEX ix_relationships_filing_id ON relationships (filing_id)"
                 ))
             migrated = True
 

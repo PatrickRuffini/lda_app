@@ -20,7 +20,7 @@ from bs4 import BeautifulSoup, Tag
 from sqlalchemy import text
 
 from .models import (
-    Entity, EntityMention, Newsletter, Relationship,
+    Client, Entity, EntityMention, Filing, Newsletter, Registrant, Relationship,
     get_engine, get_session, init_db,
 )
 
@@ -837,6 +837,119 @@ def process_newsletter_entities(session, newsletter: Newsletter):
     newsletter.entities_extracted = True
 
 
+def _normalize_org_name(name: str) -> str:
+    """Normalize an organization name for fuzzy matching against LDA records."""
+    n = name.upper().strip()
+    # Strip common legal suffixes
+    n = re.sub(
+        r",?\s*\b(LLC|LLP|L\.L\.C\.|L\.L\.P\.|INC\.?|CORP\.?|CORPORATION|LTD\.?|CO\.?|P\.?A\.?|PLLC|P\.?L\.?L\.?C\.?|P\.?C\.?|L\.?P\.?)\s*$",
+        "", n, flags=re.I,
+    ).strip()
+    # Strip trailing commas/periods
+    n = n.rstrip(".,").strip()
+    # Collapse whitespace
+    n = re.sub(r"\s+", " ", n)
+    return n
+
+
+def link_entities_to_lda(session) -> dict:
+    """
+    Match newsletter entities to LDA registrant/client records by normalized name.
+    Also match lobbying_registration/termination relationships to specific filings.
+    Returns counts of matches made.
+    """
+    # Build normalized name -> id lookups
+    registrant_lookup: dict[str, int] = {}
+    for r in session.query(Registrant).all():
+        registrant_lookup[_normalize_org_name(r.name)] = r.id
+
+    client_lookup: dict[str, int] = {}
+    for c in session.query(Client).all():
+        client_lookup[_normalize_org_name(c.name)] = c.id
+
+    entity_matches = 0
+
+    # Link consultant entities to registrants
+    consultants = session.query(Entity).filter(Entity.is_consultant == True).all()
+    for ent in consultants:
+        norm = _normalize_org_name(ent.name)
+        rid = registrant_lookup.get(norm)
+        if rid and ent.registrant_id != rid:
+            ent.registrant_id = rid
+            entity_matches += 1
+
+    # Link client entities to clients
+    clients = session.query(Entity).filter(Entity.is_client == True).all()
+    for ent in clients:
+        norm = _normalize_org_name(ent.name)
+        cid = client_lookup.get(norm)
+        if cid and ent.client_id != cid:
+            ent.client_id = cid
+            entity_matches += 1
+
+    session.flush()
+
+    # Match registration/termination relationships to filings
+    filing_matches = 0
+    reg_rels = (
+        session.query(Relationship)
+        .filter(
+            Relationship.relationship_type.in_(["lobbying_registration", "lobbying_termination"]),
+            Relationship.filing_id == None,
+        )
+        .all()
+    )
+
+    for rel in reg_rels:
+        ent_a = session.query(Entity).get(rel.entity_a_id)
+        ent_b = session.query(Entity).get(rel.entity_b_id)
+        if not ent_a or not ent_b:
+            continue
+
+        # Determine which is registrant and which is client
+        reg_id = ent_a.registrant_id or ent_b.registrant_id
+        cli_id = ent_a.client_id or ent_b.client_id
+
+        if not reg_id or not cli_id:
+            continue
+
+        # Query filings for this registrant+client pair
+        filing_query = (
+            session.query(Filing)
+            .filter(Filing.registrant_id == reg_id, Filing.client_id == cli_id)
+        )
+
+        if rel.relationship_type == "lobbying_registration":
+            filing_query = filing_query.filter(Filing.filing_type == "RR")
+        else:
+            filing_query = filing_query.filter(Filing.filing_type.in_(["1T", "2T", "3T", "4T"]))
+
+        # Try date-windowed match first (filing posted within 30 days before relationship first_seen)
+        matched_filing = None
+        if rel.first_seen:
+            window_start = rel.first_seen - timedelta(days=30)
+            windowed = (
+                filing_query
+                .filter(Filing.dt_posted >= window_start, Filing.dt_posted <= rel.first_seen)
+                .order_by(Filing.dt_posted.desc())
+                .first()
+            )
+            if windowed:
+                matched_filing = windowed
+
+        # Fall back to closest filing of the right type
+        if not matched_filing:
+            matched_filing = filing_query.order_by(Filing.dt_posted.desc()).first()
+
+        if matched_filing:
+            rel.filing_id = matched_filing.id
+            filing_matches += 1
+
+    session.commit()
+    logger.info(f"LDA linking: {entity_matches} entity matches, {filing_matches} filing matches")
+    return {"entity_matches": entity_matches, "filing_matches": filing_matches}
+
+
 _scrape_progress: dict = {}
 _reprocess_progress: dict = {}
 
@@ -915,12 +1028,16 @@ def scrape_and_store(
             _scrape_progress["stored"] = stored
             time.sleep(2)
 
+        # Link newly extracted entities to LDA records
+        link_result = link_entities_to_lda(session)
+
         _scrape_progress = {}
         return {
             "stored": stored,
             "skipped": skipped,
             "errors": errors,
             "total_urls": len(urls),
+            "lda_links": link_result,
         }
 
     except Exception as e:
@@ -997,9 +1114,12 @@ def reprocess_all_entities(db_url: str = None) -> dict:
             session.commit()
             logger.info(f"Cleaned up {orphans} orphaned entities with no mentions")
 
+        # Link entities to LDA records after reprocessing
+        link_result = link_entities_to_lda(session)
+
         logger.info(f"Reprocess complete: {processed} newsletters")
         _reprocess_progress = {"status": "done", "processed": processed, "total": total}
-        return {"processed": processed, "orphans_removed": orphans}
+        return {"processed": processed, "orphans_removed": orphans, "lda_links": link_result}
     except Exception as e:
         _reprocess_progress = {"status": "error", "error": str(e)}
         session.rollback()

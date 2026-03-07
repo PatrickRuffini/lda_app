@@ -1341,25 +1341,34 @@ function EntityDetailPage({ entityId, onBack, onNavigate }: { entityId: number; 
         </div>
       )}
 
-      {/* Co-mentions */}
+      {/* Lobbying Registrations */}
       {registrations.length > 0 && (
         <div>
           <h2 className="text-lg font-semibold text-gray-900 mb-3">Lobbying Registrations</h2>
           <div className="bg-white rounded-lg border border-gray-200 divide-y divide-gray-100">
             {registrations.map(c => (
-              <button
-                key={c.entity.id}
-                onClick={() => onNavigate('entity', c.entity.id)}
-                className="w-full text-left px-4 py-2 hover:bg-gray-50 cursor-pointer transition flex items-center justify-between"
-              >
-                <div className="flex items-center gap-2">
-                  <Briefcase size={14} className="text-green-500" />
-                  <span className="text-sm font-medium text-gray-900">{c.entity.display_name || c.entity.name}</span>
+              <div key={c.entity.id} className="px-4 py-2 hover:bg-gray-50 transition flex items-center justify-between gap-2">
+                <button
+                  onClick={() => onNavigate('entity', c.entity.id)}
+                  className="flex items-center gap-2 cursor-pointer min-w-0"
+                >
+                  <Briefcase size={14} className="text-green-500 shrink-0" />
+                  <span className="text-sm font-medium text-gray-900 truncate">{c.entity.display_name || c.entity.name}</span>
+                </button>
+                <div className="flex items-center gap-2 shrink-0">
+                  {c.filing_uuid && (
+                    <button
+                      onClick={() => onNavigate('filing', c.filing_uuid)}
+                      className="text-xs text-indigo-600 border border-indigo-200 px-2 py-0.5 rounded hover:bg-indigo-50 cursor-pointer flex items-center gap-1"
+                    >
+                      <FileText size={10} /> View Filing
+                    </button>
+                  )}
+                  <span className={`text-xs px-2 py-0.5 rounded-full ${c.relationship_type === 'lobbying_termination' ? 'text-red-600 bg-red-50' : 'text-green-600 bg-green-50'}`}>
+                    {c.relationship_type === 'lobbying_termination' ? 'Terminated' : 'Registered'}
+                  </span>
                 </div>
-                <span className={`text-xs px-2 py-0.5 rounded-full ${c.relationship_type === 'lobbying_termination' ? 'text-red-600 bg-red-50' : 'text-green-600 bg-green-50'}`}>
-                  {c.relationship_type === 'lobbying_termination' ? 'Terminated' : 'Registered'}
-                </span>
-              </button>
+              </div>
             ))}
           </div>
         </div>
@@ -1405,6 +1414,38 @@ function EntityDetailPage({ entityId, onBack, onNavigate }: { entityId: number; 
                   <span className="text-xs text-gray-400 shrink-0">{formatDate(m.published_date)}</span>
                 </div>
                 <p className="text-xs text-gray-600 line-clamp-2">{m.context}</p>
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* LDA Filings */}
+      {entity.lda_filings && entity.lda_filings.length > 0 && (
+        <div>
+          <h2 className="text-lg font-semibold text-gray-900 mb-3">LDA Filings</h2>
+          <div className="bg-white rounded-lg border border-gray-200 divide-y divide-gray-100">
+            {entity.lda_filings.map((f) => (
+              <button
+                key={f.filing_uuid}
+                onClick={() => onNavigate('filing', f.filing_uuid)}
+                className="w-full text-left px-4 py-3 hover:bg-gray-50 cursor-pointer transition"
+              >
+                <div className="flex items-center justify-between gap-2 mb-1">
+                  <div className="flex items-center gap-2 min-w-0">
+                    <FileText size={14} className="text-indigo-500 shrink-0" />
+                    <span className="text-sm font-medium text-gray-900 truncate">{f.filing_type_display}</span>
+                    <span className="text-xs text-gray-400">{f.filing_year} {f.filing_period_display}</span>
+                  </div>
+                  <span className="text-xs text-gray-400 shrink-0">{f.dt_posted ? new Date(f.dt_posted).toLocaleDateString() : ''}</span>
+                </div>
+                <div className="flex items-center gap-3 text-xs text-gray-500">
+                  {f.registrant_name && <span>Registrant: {f.registrant_name}</span>}
+                  {f.client_name && <span>Client: {f.client_name}</span>}
+                  {f.income != null && f.income > 0 && (
+                    <span className="text-green-600">${f.income.toLocaleString()}</span>
+                  )}
+                </div>
               </button>
             ))}
           </div>
