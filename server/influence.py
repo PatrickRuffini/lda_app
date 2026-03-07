@@ -192,7 +192,7 @@ def scrape_newsletter(page, url: str) -> Optional[dict]:
         text = p.get_text(separator=" ", strip=True)
         if text:
             para_texts.append(text)
-    body_text = "\n\n".join(para_texts)
+    body_text = _strip_boilerplate("\n\n".join(para_texts))
 
     return {
         "url": url,
@@ -201,6 +201,30 @@ def scrape_newsletter(page, url: str) -> Optional[dict]:
         "body_text": body_text,
         "body_html": body_html,
     }
+
+
+def _strip_boilerplate(body_text: str) -> str:
+    paras = body_text.split("\n\n")
+    byline_idx = None
+    for i, p in enumerate(paras):
+        if re.match(r"^By\s+[A-Z][A-Z\s]+(?:and\s+[A-Z][A-Z\s]+)?$", p.strip()):
+            byline_idx = i
+            break
+
+    if byline_idx is None:
+        return body_text
+
+    content_re = re.compile(
+        r"^([A-Z][A-Z\s'\u2019&,\-]+:|FIRST IN PI|"
+        r"Happy \w+day and welcome to PI|"
+        r"\u2014 |\u2013 |— )"
+    )
+
+    for i in range(byline_idx + 1, len(paras)):
+        if content_re.match(paras[i].strip()):
+            return "\n\n".join(paras[i:])
+
+    return "\n\n".join(paras[byline_idx + 1:])
 
 
 PERSON_INDICATORS = [
@@ -776,7 +800,7 @@ def reprocess_all_entities(db_url: str = None) -> dict:
                     t = p.get_text(separator=" ", strip=True)
                     if t:
                         para_texts.append(t)
-                nl.body_text = "\n\n".join(para_texts)
+                nl.body_text = _strip_boilerplate("\n\n".join(para_texts))
 
             process_newsletter_entities(session, nl)
             session.commit()
