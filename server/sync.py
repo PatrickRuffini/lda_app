@@ -223,8 +223,9 @@ def _get_api_year_count(year: int) -> Optional[int]:
 
 def sync_incremental(db_url: str = None, max_pages: int = 200) -> dict:
     """
-    Grab filings newer than our most recent one.
-    Ordered by -dt_posted so we get newest first.
+    Grab filings newer than our most recent ones.
+    The Senate API requires at least one filter param, so we sync the
+    current year and previous year to catch recent filings.
     Stops when we hit a streak of duplicates (filings we already have).
     """
     engine = init_db(db_url)
@@ -241,61 +242,72 @@ def sync_incremental(db_url: str = None, max_pages: int = 200) -> dict:
     total_stored = 0
     total_skipped = 0
     total_duplicates = 0
-    page_num = 0
-    consecutive_dupes = 0
-    dupe_threshold = 50
+    total_pages = 0
+
+    current_year = datetime.utcnow().year
+    years_to_check = [current_year, current_year - 1]
 
     try:
-        params = {"page_size": PAGE_SIZE, "ordering": "-dt_posted"}
-        page = 1
-
-        while page <= max_pages:
+        for year in years_to_check:
             if _sync_progress.get("status") == "cancelling":
                 logger.info("Incremental sync cancelled")
                 break
 
-            params["page"] = page
-            data = _fetch_page("filings", params)
-            if not data:
-                break
+            consecutive_dupes = 0
+            dupe_threshold = 50
+            pages_for_year = max_pages // len(years_to_check)
 
-            results = data.get("results", [])
-            if not results:
-                break
+            _update_progress(current_year=year)
 
-            page_num = page
-            page_new = 0
+            params = {"page_size": PAGE_SIZE, "filing_year": year}
+            page = 1
 
-            for filing_data in results:
-                filing, is_new = _store_filing(session, filing_data)
-                if filing:
-                    if is_new:
-                        total_stored += 1
-                        page_new += 1
-                        consecutive_dupes = 0
+            while page <= pages_for_year:
+                if _sync_progress.get("status") == "cancelling":
+                    break
+
+                params["page"] = page
+                data = _fetch_page("filings", params)
+                if not data:
+                    break
+
+                results = data.get("results", [])
+                if not results:
+                    break
+
+                total_pages += 1
+                page_new = 0
+
+                for filing_data in results:
+                    filing, is_new = _store_filing(session, filing_data)
+                    if filing:
+                        if is_new:
+                            total_stored += 1
+                            page_new += 1
+                            consecutive_dupes = 0
+                        else:
+                            total_duplicates += 1
+                            consecutive_dupes += 1
                     else:
-                        total_duplicates += 1
-                        consecutive_dupes += 1
-                else:
-                    total_skipped += 1
+                        total_skipped += 1
 
-            session.commit()
-            _update_progress(
-                stored=total_stored, skipped=total_skipped,
-                duplicates=total_duplicates, pages=page_num,
-            )
+                session.commit()
+                _update_progress(
+                    stored=total_stored, skipped=total_skipped,
+                    duplicates=total_duplicates, pages=total_pages,
+                )
 
-            logger.info(f"Incremental page {page}: {page_new} new, {len(results) - page_new} existing")
+                logger.info(f"Incremental year {year}, page {page}: {page_new} new, {len(results) - page_new} existing")
 
-            if consecutive_dupes >= dupe_threshold:
-                logger.info(f"Hit {dupe_threshold} consecutive duplicates, stopping incremental sync")
-                break
+                if consecutive_dupes >= dupe_threshold:
+                    logger.info(f"Year {year}: hit {dupe_threshold} consecutive duplicates, moving on")
+                    break
 
-            if not data.get("next"):
-                break
+                if not data.get("next"):
+                    break
 
-            page += 1
-            time.sleep(0.3)
+                page += 1
+                time.sleep(0.3)
 
     except Exception as e:
         session.rollback()
@@ -309,10 +321,10 @@ def sync_incremental(db_url: str = None, max_pages: int = 200) -> dict:
     _update_progress(
         status=final_status, finished_at=datetime.utcnow().isoformat(),
         stored=total_stored, skipped=total_skipped,
-        duplicates=total_duplicates, pages=page_num,
+        duplicates=total_duplicates, pages=total_pages,
     )
 
-    return {"stored": total_stored, "skipped": total_skipped, "duplicates": total_duplicates, "pages": page_num}
+    return {"stored": total_stored, "skipped": total_skipped, "duplicates": total_duplicates, "pages": total_pages}
 
 
 def sync_year(year: int, db_url: str = None, max_pages: int = 5000) -> dict:
@@ -325,7 +337,7 @@ def sync_year(year: int, db_url: str = None, max_pages: int = 5000) -> dict:
     page_num = 0
 
     try:
-        params = {"page_size": PAGE_SIZE, "ordering": "-dt_posted", "filing_year": year}
+        params = {"page_size": PAGE_SIZE, "filing_year": year}
         page = 1
 
         while page <= max_pages:
@@ -459,7 +471,7 @@ def sync_filings(
     engine = init_db(db_url)
     session = get_session(engine)
 
-    params: dict = {"page_size": page_size, "ordering": "-dt_posted"}
+    params: dict = {"page_size": page_size}
     if filing_year:
         params["filing_year"] = filing_year
     if filing_period:
