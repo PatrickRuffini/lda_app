@@ -1350,11 +1350,31 @@ function NewsletterReaderPage({ newsletterId, onBack, onNavigate }: { newsletter
     });
   };
 
-  const knownSectionHeadings = ['jobs report'];
+  const knownSectionHeadings = ['jobs report', 'new joint fundraisers', 'new pacs'];
   const firstInPiRe = /^(FIRST IN PI(?:\s*I+)?(?:\s*(?:\u2014|\u2013|[\-–—])\s*[^:]+)?)\s*:\s*/;
   const sectionHeadingRe = /^([A-Z][A-Z\s'\u2019&,\-]+(?::|(?=\s?\u2014)))\s*\u2014?\s*/;
+  const adStartRe = /^A message from\b/i;
 
   const paragraphs = newsletter.body_text.split('\n\n').filter(p => p.trim().length > 0);
+
+  const isHeadingLike = (text: string) => {
+    const t = text.trim();
+    if (knownSectionHeadings.includes(t.toLowerCase())) return true;
+    if (firstInPiRe.test(t)) return true;
+    if (sectionHeadingRe.test(t)) return true;
+    return false;
+  };
+
+  const adBlocks = new Set<number>();
+  for (let i = 0; i < paragraphs.length; i++) {
+    if (adStartRe.test(paragraphs[i].trim())) {
+      adBlocks.add(i);
+      for (let j = i + 1; j < paragraphs.length; j++) {
+        if (isHeadingLike(paragraphs[j])) break;
+        adBlocks.add(j);
+      }
+    }
+  }
 
   const renderParagraph = (para: string, i: number) => {
     if (knownSectionHeadings.includes(para.trim().toLowerCase())) {
@@ -1435,7 +1455,32 @@ function NewsletterReaderPage({ newsletterId, onBack, onNavigate }: { newsletter
         )}
 
         <div className="px-6 py-5 max-w-none">
-          {paragraphs.map((para, i) => renderParagraph(para, i))}
+          {(() => {
+            const elements: React.ReactNode[] = [];
+            let i = 0;
+            while (i < paragraphs.length) {
+              if (adBlocks.has(i) && adStartRe.test(paragraphs[i].trim())) {
+                const adParas: string[] = [];
+                const startIdx = i;
+                while (i < paragraphs.length && adBlocks.has(i)) {
+                  adParas.push(paragraphs[i]);
+                  i++;
+                }
+                elements.push(
+                  <div key={`ad-${startIdx}`} data-testid={`ad-block-${startIdx}`} className="my-4 border border-gray-200 rounded-lg bg-gray-50 overflow-hidden">
+                    <div className="px-3 py-1.5 bg-gray-200 text-xs font-semibold text-gray-500 uppercase tracking-wider">Ad</div>
+                    <div className="px-4 py-3 text-sm text-gray-500 space-y-2">
+                      {adParas.map((p, j) => <p key={j}>{p}</p>)}
+                    </div>
+                  </div>
+                );
+              } else {
+                elements.push(renderParagraph(paragraphs[i], i));
+                i++;
+              }
+            }
+            return elements;
+          })()}
         </div>
 
         <div className="px-6 py-3 border-t border-gray-100 bg-gray-50">

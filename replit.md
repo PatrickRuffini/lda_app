@@ -121,7 +121,14 @@ A full-stack application for searching and browsing U.S. Senate Lobbying Disclos
 - Detects affiliations from "Person of Company" and "Company's Person" patterns
 - Extracts registration pairs from "New Lobbying Registrations/Terminations" sections (splits on LAST colon via `rfind`)
 - Section headings identified by uppercase patterns and excluded from entity creation
+- Known section headings: JOBS REPORT, NEW LOBBYING REGISTRATIONS/TERMINATIONS, NEW JOINT FUNDRAISERS, NEW PACS, SPOTTED, etc.
+- Ad filtering: paragraphs inside HTML elements with `intext-ad` class are skipped during entity extraction
 - Boilerplate stripping removes bylines and pre-content text
+
+### Newsletter Reader (frontend)
+- Paragraphs starting with "A message from" are treated as ad blocks, grouped with all following paragraphs until the next section heading
+- Ad blocks render inside a labeled "Ad" box with muted styling, no entity badges
+- Entity badges: inline clickable badges (indigo for people, amber for organizations) with icons
 
 ### Network Graph (client/src/NetworkGraph.tsx)
 - Custom canvas-based force simulation (no D3 dependency)

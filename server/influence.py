@@ -245,6 +245,7 @@ KNOWN_SECTION_HEADINGS = {
     "JOBS REPORT", "INFLUENCE AD WATCH", "FIRST IN PI",
     "K STREET FILES", "NEW LOBBYING REGISTRATIONS",
     "NEW LOBBYING TERMINATIONS", "SPOTTED",
+    "NEW JOINT FUNDRAISERS", "NEW PACS",
 }
 
 
@@ -398,6 +399,16 @@ def _merge_consecutive_bold_tags(para) -> list:
     return merged
 
 
+def _is_inside_ad(element) -> bool:
+    parent = element
+    while parent:
+        classes = parent.get("class", []) if hasattr(parent, "get") else []
+        if any("intext-ad" in c for c in classes):
+            return True
+        parent = parent.parent
+    return False
+
+
 def extract_bold_entities_from_html(body_html: str) -> list[dict]:
     """
     Extract bold entities from newsletter HTML.
@@ -425,6 +436,9 @@ def extract_bold_entities_from_html(body_html: str) -> list[dict]:
     for para_idx, para in enumerate(paragraphs):
         para_text = para.get_text(separator=" ", strip=True)
         if not para_text or len(para_text) < 10:
+            continue
+
+        if _is_inside_ad(para):
             continue
 
         merged_names = _merge_consecutive_bold_tags(para)
