@@ -1037,18 +1037,13 @@ function EntityDetailPage({ entityId, onBack, onNavigate }: { entityId: number; 
               <button
                 key={c.entity.id}
                 onClick={() => onNavigate('entity', c.entity.id)}
-                className="w-full text-left px-4 py-3 hover:bg-gray-50 cursor-pointer transition"
+                className="w-full text-left px-4 py-2 hover:bg-gray-50 cursor-pointer transition flex items-center justify-between"
               >
-                <div className="flex items-center justify-between">
-                  <div className="flex items-center gap-2">
-                    {c.entity.entity_type === 'person' ? <User size={14} className="text-indigo-500" /> : <Briefcase size={14} className="text-amber-500" />}
-                    <span className="text-sm font-medium text-gray-900">{c.entity.display_name || c.entity.name}</span>
-                  </div>
-                  <span className="text-xs text-amber-600 bg-amber-50 px-2 py-0.5 rounded-full">Affiliated · {c.weight}x</span>
+                <div className="flex items-center gap-2">
+                  {c.entity.entity_type === 'person' ? <User size={14} className="text-indigo-500" /> : <Briefcase size={14} className="text-amber-500" />}
+                  <span className="text-sm font-medium text-gray-900">{c.entity.display_name || c.entity.name}</span>
                 </div>
-                {c.context_snippets.length > 0 && (
-                  <p className="text-xs text-gray-500 mt-1 line-clamp-1">{c.context_snippets[0]}</p>
-                )}
+                <span className="text-xs text-amber-600 bg-amber-50 px-2 py-0.5 rounded-full">{c.weight}x</span>
               </button>
             ))}
           </div>
@@ -1064,20 +1059,15 @@ function EntityDetailPage({ entityId, onBack, onNavigate }: { entityId: number; 
               <button
                 key={c.entity.id}
                 onClick={() => onNavigate('entity', c.entity.id)}
-                className="w-full text-left px-4 py-3 hover:bg-gray-50 cursor-pointer transition"
+                className="w-full text-left px-4 py-2 hover:bg-gray-50 cursor-pointer transition flex items-center justify-between"
               >
-                <div className="flex items-center justify-between">
-                  <div className="flex items-center gap-2">
-                    {c.entity.entity_type === 'person' ? <User size={14} className="text-indigo-500" /> :
-                     c.entity.entity_type === 'organization' ? <Briefcase size={14} className="text-amber-500" /> :
-                     <Tag size={14} className="text-gray-400" />}
-                    <span className="text-sm font-medium text-gray-900">{c.entity.name}</span>
-                  </div>
-                  <span className="text-xs text-gray-500">{c.weight} co-mentions</span>
+                <div className="flex items-center gap-2">
+                  {c.entity.entity_type === 'person' ? <User size={14} className="text-indigo-500" /> :
+                   c.entity.entity_type === 'organization' ? <Briefcase size={14} className="text-amber-500" /> :
+                   <Tag size={14} className="text-gray-400" />}
+                  <span className="text-sm font-medium text-gray-900">{c.entity.name}</span>
                 </div>
-                {c.context_snippets.length > 0 && (
-                  <p className="text-xs text-gray-500 mt-1 line-clamp-1">{c.context_snippets[c.context_snippets.length - 1]}</p>
-                )}
+                <span className="text-xs text-gray-500">{c.weight}x</span>
               </button>
             ))}
           </div>
