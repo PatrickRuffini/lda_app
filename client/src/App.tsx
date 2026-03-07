@@ -917,6 +917,7 @@ function NetworkMapPage({ onNavigate, centerEntityId }: { onNavigate: (page: Pag
         <span className="flex items-center gap-1"><span className="w-3 h-3 rounded-full bg-amber-500 inline-block"></span> Organization</span>
         <span className="flex items-center gap-1"><span className="w-3 h-3 rounded-full bg-slate-400 inline-block"></span> Unknown type</span>
         <span className="flex items-center gap-1"><span className="w-6 border-t-2 border-amber-400 inline-block"></span> Affiliation</span>
+        <span className="flex items-center gap-1"><span className="w-6 border-t-2 border-green-400 inline-block"></span> Registration</span>
         <span className="flex items-center gap-1"><span className="w-6 border-t border-slate-300 inline-block"></span> Co-mention</span>
         <span className="ml-auto text-gray-400">Scroll to zoom · Drag nodes to rearrange · Click for details</span>
       </div>
@@ -981,7 +982,8 @@ function EntityDetailPage({ entityId, onBack, onNavigate }: { entityId: number; 
   if (!entity) return <div className="text-center py-12 text-gray-500">Entity not found.</div>;
 
   const affiliations = entity.connections.filter(c => c.relationship_type === 'affiliation');
-  const coMentions = entity.connections.filter(c => c.relationship_type !== 'affiliation');
+  const registrations = entity.connections.filter(c => c.relationship_type === 'lobbying_registration' || c.relationship_type === 'lobbying_termination');
+  const coMentions = entity.connections.filter(c => !['affiliation', 'lobbying_registration', 'lobbying_termination'].includes(c.relationship_type));
 
   return (
     <div className="space-y-6">
@@ -1049,6 +1051,29 @@ function EntityDetailPage({ entityId, onBack, onNavigate }: { entityId: number; 
       )}
 
       {/* Co-mentions */}
+      {registrations.length > 0 && (
+        <div>
+          <h2 className="text-lg font-semibold text-gray-900 mb-3">Lobbying Registrations</h2>
+          <div className="bg-white rounded-lg border border-gray-200 divide-y divide-gray-100">
+            {registrations.map(c => (
+              <button
+                key={c.entity.id}
+                onClick={() => onNavigate('entity', c.entity.id)}
+                className="w-full text-left px-4 py-2 hover:bg-gray-50 cursor-pointer transition flex items-center justify-between"
+              >
+                <div className="flex items-center gap-2">
+                  <Briefcase size={14} className="text-green-500" />
+                  <span className="text-sm font-medium text-gray-900">{c.entity.display_name || c.entity.name}</span>
+                </div>
+                <span className={`text-xs px-2 py-0.5 rounded-full ${c.relationship_type === 'lobbying_termination' ? 'text-red-600 bg-red-50' : 'text-green-600 bg-green-50'}`}>
+                  {c.relationship_type === 'lobbying_termination' ? 'Terminated' : 'Registered'}
+                </span>
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+
       {coMentions.length > 0 && (
         <div>
           <h2 className="text-lg font-semibold text-gray-900 mb-3">Co-mentioned With</h2>

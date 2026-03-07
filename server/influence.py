@@ -299,6 +299,52 @@ def _classify_entity_type(name: str, context: str) -> str:
     return "unknown"
 
 
+def extract_registration_pairs(body_text: str) -> list[dict]:
+    """
+    Extract lobbying registration/termination pairs from newsletter body text.
+
+    These appear under headers like "New Lobbying Registrations" or
+    "New Lobbying Terminations" in the format: Company1: Company2
+    """
+    pairs = []
+    lines = body_text.split("\n\n")
+    in_section = False
+    section_type = None
+
+    for line in lines:
+        stripped = line.strip()
+        lower = stripped.lower()
+
+        if re.match(r"^new lobbying\s+(registrations?|terminations?)$", lower):
+            in_section = True
+            section_type = "registration" if "registr" in lower else "termination"
+            continue
+
+        if in_section:
+            if ":" not in stripped:
+                in_section = False
+                continue
+            first_colon = stripped.index(":")
+            company_a = stripped[:first_colon].strip()
+            company_b = stripped[first_colon + 1:].strip()
+
+            if not company_a or not company_b:
+                continue
+            if len(company_a) < 2 or len(company_b) < 2:
+                continue
+            if re.match(r"^(a message from|politico|advertisement)", company_a, re.I):
+                in_section = False
+                continue
+
+            pairs.append({
+                "registrant": company_a,
+                "client": company_b,
+                "section_type": section_type,
+            })
+
+    return pairs
+
+
 def extract_bold_entities_from_html(body_html: str) -> list[dict]:
     """
     Extract bold entities from newsletter HTML.
@@ -665,6 +711,68 @@ def process_newsletter_entities(session, newsletter: Newsletter):
                 first_seen=pub_date,
                 last_seen=pub_date,
                 context_snippets=json.dumps([f"Section: {section_name}"]),
+            )
+            session.add(rel)
+
+    reg_pairs = extract_registration_pairs(newsletter.body_text or "")
+    for pair in reg_pairs:
+        registrant = _get_or_create_entity(
+            session, pair["registrant"], "organization", date=pub_date,
+        )
+        registrant.mention_count += 1
+
+        client_ent = _get_or_create_entity(
+            session, pair["client"], "organization", date=pub_date,
+        )
+        client_ent.mention_count += 1
+
+        section_label = f"New Lobbying {'Registrations' if pair['section_type'] == 'registration' else 'Terminations'}"
+        ctx = f"{pair['registrant']}: {pair['client']}"
+
+        session.add(EntityMention(
+            entity_id=registrant.id,
+            newsletter_id=newsletter.id,
+            paragraph_index=9000,
+            context_text=ctx,
+            section_heading=section_label,
+        ))
+        session.add(EntityMention(
+            entity_id=client_ent.id,
+            newsletter_id=newsletter.id,
+            paragraph_index=9000,
+            context_text=ctx,
+            section_heading=section_label,
+        ))
+
+        a_id, b_id = (registrant, client_ent) if registrant.id < client_ent.id else (client_ent, registrant)
+        existing = (
+            session.query(Relationship)
+            .filter(
+                Relationship.entity_a_id == a_id.id,
+                Relationship.entity_b_id == b_id.id,
+            )
+            .first()
+        )
+        if existing:
+            existing.weight = max(existing.weight, 1.5)
+            if pub_date and (not existing.last_seen or pub_date > existing.last_seen):
+                existing.last_seen = pub_date
+            try:
+                snippets = json.loads(existing.context_snippets or "[]")
+            except (json.JSONDecodeError, TypeError):
+                snippets = []
+            snippets.append(ctx)
+            existing.context_snippets = json.dumps(snippets[-10:])
+        else:
+            rel_type = "lobbying_registration" if pair["section_type"] == "registration" else "lobbying_termination"
+            rel = Relationship(
+                entity_a_id=a_id.id,
+                entity_b_id=b_id.id,
+                relationship_type=rel_type,
+                weight=1.5,
+                first_seen=pub_date,
+                last_seen=pub_date,
+                context_snippets=json.dumps([ctx]),
             )
             session.add(rel)
 
