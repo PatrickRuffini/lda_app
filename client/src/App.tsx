@@ -1006,7 +1006,7 @@ function NetworkMapPage({ onNavigate, centerEntityId }: { onNavigate: (page: Pag
   const [minWeight, setMinWeight] = useState(centerEntityId ? 1 : 2);
   const [maxNodes, setMaxNodes] = useState(80);
   const [entityType, setEntityType] = useState('');
-  const [sizeBy, setSizeBy] = useState<SizeMode>('mentions');
+  const [sizeBy, setSizeBy] = useState<SizeMode>('centrality');
   const containerRef = useRef<HTMLDivElement>(null);
   const [dimensions, setDimensions] = useState({ width: 800, height: 600 });
 
@@ -1019,7 +1019,7 @@ function NetworkMapPage({ onNavigate, centerEntityId }: { onNavigate: (page: Pag
     if (centralityScores.size === 0 || !network) return [];
     return [...centralityScores.entries()]
       .sort((a, b) => b[1] - a[1])
-      .slice(0, 10)
+      .slice(0, 25)
       .map(([id, score]) => {
         const node = network.nodes.find(n => n.id === id);
         return { id, score, name: node?.name ?? '', entity_type: node?.entity_type ?? 'unknown' };
@@ -1150,7 +1150,7 @@ function NetworkMapPage({ onNavigate, centerEntityId }: { onNavigate: (page: Pag
         </p>
       )}
 
-      {sizeBy === 'centrality' && topByCentrality.length > 0 && (
+      {topByCentrality.length > 0 && (
         <div className="bg-white rounded-lg border border-gray-200 p-4">
           <h2 className="text-sm font-semibold text-gray-900 mb-2 flex items-center gap-1.5">
             <Target size={14} className="text-indigo-500" />
