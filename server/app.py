@@ -17,7 +17,7 @@ from .models import (
     Entity, EntityMention, Newsletter, Relationship,
     get_engine, get_session, init_db,
 )
-from .sync import sync_filings
+from .sync import sync_filings, sync_incremental, sync_backfill, get_sync_progress, _update_progress
 from .influence import scrape_and_store, reprocess_entities
 
 logger = logging.getLogger(__name__)
@@ -50,61 +50,69 @@ def _get_session():
 # ---------- Pydantic schemas ----------
 
 class SyncRequest(BaseModel):
-    filing_year: Optional[int] = None
-    filing_period: Optional[str] = None
-    filing_type: Optional[str] = None
-    registrant_name: Optional[str] = None
-    client_name: Optional[str] = None
-    max_pages: int = 50
-    page_size: int = 25
-
-
-class SyncStatus(BaseModel):
-    status: str
-    stored: int = 0
-    skipped: int = 0
-    pages: int = 0
-    error: Optional[str] = None
-
-
-_sync_status: dict = {"status": "idle"}
+    mode: str = "incremental"
+    max_pages: int = 200
 
 
 # ---------- Sync endpoints ----------
 
-@app.post("/api/sync", response_model=SyncStatus)
+@app.post("/api/sync")
 def trigger_sync(req: SyncRequest, background_tasks: BackgroundTasks):
-    """Trigger a background sync from the Senate LDA API."""
-    global _sync_status
-    if _sync_status.get("status") == "running":
-        return SyncStatus(status="already_running")
+    """Trigger a background sync from the Senate LDA API.
 
-    _sync_status = {"status": "running"}
+    mode: "incremental" grabs new filings, "backfill" grabs all historical data.
+    """
+    progress = get_sync_progress()
+    if progress.get("status") == "running":
+        return {"status": "already_running", **progress}
 
-    def _run_sync():
-        global _sync_status
+    def _run():
         try:
-            result = sync_filings(
-                filing_year=req.filing_year,
-                filing_period=req.filing_period,
-                filing_type=req.filing_type,
-                registrant_name=req.registrant_name,
-                client_name=req.client_name,
-                max_pages=req.max_pages,
-                page_size=req.page_size,
-                db_url=DB_URL,
-            )
-            _sync_status = {"status": "completed", **result}
+            if req.mode == "backfill":
+                sync_backfill(db_url=DB_URL)
+            else:
+                sync_incremental(db_url=DB_URL, max_pages=req.max_pages)
         except Exception as e:
-            _sync_status = {"status": "error", "error": str(e)}
+            logger.error(f"Sync error: {e}")
+            from datetime import datetime as dt
+            _update_progress(status="error", error=str(e), finished_at=dt.utcnow().isoformat())
 
-    background_tasks.add_task(_run_sync)
-    return SyncStatus(status="started")
+    background_tasks.add_task(_run)
+    return {"status": "started", "mode": req.mode}
 
 
-@app.get("/api/sync/status", response_model=SyncStatus)
-def get_sync_status():
-    return SyncStatus(**_sync_status)
+@app.post("/api/sync/cancel")
+def cancel_sync():
+    """Cancel a running backfill sync."""
+    progress = get_sync_progress()
+    if progress.get("status") == "running":
+        _update_progress(status="cancelling")
+        return {"status": "cancelling"}
+    return {"status": progress.get("status", "idle")}
+
+
+@app.get("/api/sync/status")
+def sync_status():
+    return get_sync_progress()
+
+
+@app.get("/api/sync/coverage")
+def sync_coverage():
+    """Get year-by-year filing coverage: how many we have vs how many exist."""
+    session = _get_session()
+    try:
+        rows = (
+            session.query(Filing.filing_year, func.count(Filing.id))
+            .group_by(Filing.filing_year)
+            .order_by(desc(Filing.filing_year))
+            .all()
+        )
+        return {
+            "years": [{"year": y, "count": c} for y, c in rows if y is not None],
+            "total": sum(c for _, c in rows),
+        }
+    finally:
+        session.close()
 
 
 # ---------- Search endpoints ----------

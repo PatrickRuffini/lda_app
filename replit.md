@@ -27,7 +27,7 @@ Preferred communication style: Simple, everyday language.
 - **Key modules:**
   - `server/app.py` — main FastAPI app, route definitions, CORS middleware, serves static frontend files via `StaticFiles`.
   - `server/models.py` — SQLAlchemy ORM models (declarative base). Tables: `registrants`, `clients`, `filings` (includes `added_to_db` timestamp), `lobbying_activities`, `entities`, `entity_mentions`, `newsletters`, `relationships`. Connects to PostgreSQL via `DATABASE_URL`.
-  - `server/sync.py` — fetches filings from the Senate LDA API (`https://lda.senate.gov/api/v1`) with pagination, retry logic, and optional API key auth. Stores results into PostgreSQL. Sets `added_to_db` timestamp when a filing is first ingested.
+  - `server/sync.py` — fetches filings from the Senate LDA API (`https://lda.senate.gov/api/v1`) with pagination, retry logic, and optional API key auth. Supports two modes: **incremental** (grabs newest filings, stops at duplicates) and **backfill** (year-by-year from present to 1999, skips years already complete). Thread-safe progress tracking via `get_sync_progress()`. Stores results into PostgreSQL with `added_to_db` timestamp.
   - `server/influence.py` — scrapes Politico Influence newsletter HTML, extracts bold entities, detects person↔organization affiliations via regex patterns, builds co-occurrence relationships, stores to PostgreSQL.
 - **Full-text search:** PostgreSQL `to_tsvector`/`to_tsquery` for full-text search across registrant names, client names, and filing fields.
 - **Database:** PostgreSQL via Replit's built-in database. Connected through `DATABASE_URL` environment variable.
