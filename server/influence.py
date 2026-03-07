@@ -189,7 +189,7 @@ def scrape_newsletter(page, url: str) -> Optional[dict]:
     paragraphs = body.find_all(["p", "li", "h2", "h3", "h4"])
     para_texts = []
     for p in paragraphs:
-        text = p.get_text(separator=" ", strip=True)
+        text = re.sub(r" {2,}", " ", p.get_text(separator=" ", strip=True))
         if text:
             para_texts.append(text)
     body_text = _strip_boilerplate("\n\n".join(para_texts))
@@ -797,7 +797,7 @@ def reprocess_all_entities(db_url: str = None) -> dict:
                 paras = soup.find_all(["p", "li", "h2", "h3", "h4"])
                 para_texts = []
                 for p in paras:
-                    t = p.get_text(separator=" ", strip=True)
+                    t = re.sub(r" {2,}", " ", p.get_text(separator=" ", strip=True))
                     if t:
                         para_texts.append(t)
                 nl.body_text = _strip_boilerplate("\n\n".join(para_texts))
