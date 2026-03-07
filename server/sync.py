@@ -363,7 +363,12 @@ def sync_year(year: int, db_url: str = None, max_pages: int = 5000) -> dict:
                     total_duplicates += 1
 
             session.commit()
-            _update_progress(current_year=year)
+            _update_progress(
+                current_year=year,
+                stored=total_stored,
+                duplicates=total_duplicates,
+                pages=page_num,
+            )
 
             logger.info(f"Year {year}, page {page}: stored {total_stored} so far")
 
