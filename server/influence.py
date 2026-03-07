@@ -238,6 +238,9 @@ KNOWN_ACRONYM_ENTITIES = {
 }
 
 
+_POSSESSIVE_BRANDS = {"Lowe's", "McDonald's", "Arby's", "Macy's", "Campbell's", "Hellmann's",
+                      "Lowe\u2019s", "McDonald\u2019s", "Arby\u2019s", "Macy\u2019s", "Campbell\u2019s", "Hellmann\u2019s"}
+
 KNOWN_SECTION_HEADINGS = {
     "JOBS REPORT", "INFLUENCE AD WATCH", "FIRST IN PI",
     "K STREET FILES", "NEW LOBBYING REGISTRATIONS",
@@ -426,6 +429,12 @@ def extract_bold_entities_from_html(body_html: str) -> list[dict]:
 
         merged_names = _merge_consecutive_bold_tags(para)
         for name in merged_names:
+            if not name or len(name) < 2:
+                continue
+
+            if name not in _POSSESSIVE_BRANDS:
+                name = re.sub(r"['\u2019]s$", "", name).strip()
+
             if not name or len(name) < 2:
                 continue
 
