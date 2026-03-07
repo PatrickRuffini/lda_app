@@ -677,6 +677,11 @@ function InfluencePage({ onNavigate }: { onNavigate: (page: Page, ctx?: unknown)
   const [loading, setLoading] = useState(true);
   const [scraping, setScraping] = useState(false);
 
+  const [searchQuery, setSearchQuery] = useState('');
+  const [searchInput, setSearchInput] = useState('');
+  const [searchResults, setSearchResults] = useState<{ entities: EntitySummary[]; newsletters: NewsletterSummary[]; entityTotal: number; newsletterTotal: number } | null>(null);
+  const [searching, setSearching] = useState(false);
+
   const load = useCallback(async () => {
     setLoading(true);
     try {
@@ -696,6 +701,37 @@ function InfluencePage({ onNavigate }: { onNavigate: (page: Page, ctx?: unknown)
   }, [page]);
 
   useEffect(() => { load(); }, [load]);
+
+  const handleSearch = useCallback(async (q: string) => {
+    if (!q.trim()) {
+      setSearchResults(null);
+      setSearchQuery('');
+      return;
+    }
+    setSearching(true);
+    setSearchQuery(q.trim());
+    try {
+      const [entities, nls] = await Promise.all([
+        api.getEntities({ q: q.trim(), sort: '-mention_count', page_size: 20 }),
+        api.getNewsletters(1, 10, q.trim()),
+      ]);
+      setSearchResults({
+        entities: entities.results,
+        newsletters: nls.results,
+        entityTotal: entities.total,
+        newsletterTotal: nls.total,
+      });
+    } catch (err) {
+      console.error(err);
+    }
+    setSearching(false);
+  }, []);
+
+  const clearSearch = () => {
+    setSearchInput('');
+    setSearchQuery('');
+    setSearchResults(null);
+  };
 
   const [scrapeProgress, setScrapeProgress] = useState<any>(null);
 
@@ -755,8 +791,111 @@ function InfluencePage({ onNavigate }: { onNavigate: (page: Page, ctx?: unknown)
         </div>
       </div>
 
+      {/* Search */}
+      <div className="bg-white rounded-lg border border-gray-200 p-4">
+        <form onSubmit={e => { e.preventDefault(); handleSearch(searchInput); }} className="flex gap-2">
+          <div className="relative flex-1">
+            <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
+            <input
+              type="text"
+              value={searchInput}
+              onChange={e => setSearchInput(e.target.value)}
+              placeholder="Search entities and newsletters..."
+              className="w-full pl-9 pr-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-amber-500 focus:border-transparent"
+              data-testid="input-influence-search"
+            />
+          </div>
+          <button
+            type="submit"
+            disabled={searching}
+            className="bg-amber-600 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-amber-700 disabled:opacity-50 cursor-pointer"
+            data-testid="button-influence-search"
+          >
+            {searching ? <Loader2 size={16} className="animate-spin" /> : 'Search'}
+          </button>
+          {searchResults && (
+            <button
+              type="button"
+              onClick={clearSearch}
+              className="text-gray-500 hover:text-gray-700 px-2 cursor-pointer"
+              data-testid="button-influence-search-clear"
+            >
+              <X size={16} />
+            </button>
+          )}
+        </form>
+      </div>
+
+      {/* Search Results */}
+      {searchResults && (
+        <div className="space-y-4">
+          <div className="flex items-center justify-between">
+            <h2 className="text-lg font-semibold text-gray-900">
+              Results for "{searchQuery}"
+            </h2>
+            <span className="text-sm text-gray-500">
+              {searchResults.entityTotal} entities, {searchResults.newsletterTotal} newsletters
+            </span>
+          </div>
+
+          {searchResults.entities.length > 0 && (
+            <div>
+              <h3 className="text-sm font-medium text-gray-700 mb-2">Entities ({searchResults.entityTotal})</h3>
+              <div className="bg-white rounded-lg border border-gray-200 divide-y divide-gray-100">
+                {searchResults.entities.map(e => (
+                  <button
+                    key={e.id}
+                    onClick={() => onNavigate('entity', e.id)}
+                    className="w-full text-left px-4 py-2.5 text-sm flex items-center justify-between cursor-pointer hover:bg-gray-50 transition"
+                    data-testid={`search-result-entity-${e.id}`}
+                  >
+                    <div className="flex items-center gap-2 min-w-0">
+                      {e.entity_type === 'person' ? <User size={14} className="text-indigo-500 shrink-0" /> :
+                       e.entity_type === 'organization' ? <Briefcase size={14} className="text-amber-500 shrink-0" /> :
+                       <Tag size={14} className="text-gray-400 shrink-0" />}
+                      <span className="truncate">{e.display_name || e.name}</span>
+                      <span className="text-xs text-gray-400 bg-gray-100 rounded px-1.5 py-0.5 shrink-0">{e.entity_type}</span>
+                    </div>
+                    <span className="text-xs text-gray-400 shrink-0 ml-2">{e.mention_count} mentions</span>
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {searchResults.newsletters.length > 0 && (
+            <div>
+              <h3 className="text-sm font-medium text-gray-700 mb-2">Newsletters ({searchResults.newsletterTotal})</h3>
+              <div className="space-y-2">
+                {searchResults.newsletters.map(nl => (
+                  <button
+                    key={nl.id}
+                    onClick={() => onNavigate('newsletter', nl.id)}
+                    className="w-full text-left bg-white rounded-lg border border-gray-200 px-4 py-3 hover:shadow-md transition cursor-pointer"
+                    data-testid={`search-result-newsletter-${nl.id}`}
+                  >
+                    <div className="flex items-start justify-between gap-2">
+                      <h3 className="font-semibold text-gray-900 text-sm">{nl.title}</h3>
+                      <span className="text-xs text-gray-400 shrink-0">{formatDate(nl.published_date)}</span>
+                    </div>
+                    <p className="text-xs text-gray-500 line-clamp-1 mt-1">{nl.body_preview}</p>
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {searchResults.entities.length === 0 && searchResults.newsletters.length === 0 && (
+            <div className="text-center py-8 bg-white rounded-lg border border-gray-200">
+              <Search size={32} className="mx-auto text-gray-300 mb-2" />
+              <p className="text-gray-500 text-sm">No results found for "{searchQuery}"</p>
+            </div>
+          )}
+        </div>
+      )}
+
       {/* Stats */}
-      {stats && stats.total_entities > 0 && (
+      {stats && stats.total_entities > 0 && !searchResults && (
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
           <div className="bg-white rounded-lg border border-gray-200 p-4">
             <p className="text-2xl font-bold text-amber-600">{stats.total_entities.toLocaleString()}</p>
@@ -785,7 +924,7 @@ function InfluencePage({ onNavigate }: { onNavigate: (page: Page, ctx?: unknown)
         </div>
       )}
 
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+      {!searchResults && <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
         {/* Newsletter list */}
         <div className="md:col-span-2">
           <h2 className="text-lg font-semibold text-gray-900 mb-3">Newsletters</h2>
@@ -840,10 +979,10 @@ function InfluencePage({ onNavigate }: { onNavigate: (page: Page, ctx?: unknown)
             ))}
           </div>
         </div>
-      </div>
+      </div>}
 
       {/* Empty state */}
-      {(!stats || stats.total_newsletters === 0) && (
+      {(!stats || stats.total_newsletters === 0) && !searchResults && (
         <div className="text-center py-12">
           <Network size={48} className="mx-auto text-gray-300 mb-4" />
           <h2 className="text-xl font-semibold text-gray-700 mb-2">Build Your DC Network Map</h2>

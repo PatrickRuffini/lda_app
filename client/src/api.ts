@@ -261,8 +261,8 @@ export const api = {
   getInfluenceScrapeStatus: () =>
     fetchJson<{ status: string; stored?: number; skipped?: number; errors?: number }>(`${BASE}/influence/scrape/status`),
 
-  getNewsletters: (page = 1, pageSize = 25) =>
-    fetchJson<PaginatedResponse<NewsletterSummary>>(`${BASE}/influence/newsletters?page=${page}&page_size=${pageSize}`),
+  getNewsletters: (page = 1, pageSize = 25, q?: string) =>
+    fetchJson<PaginatedResponse<NewsletterSummary>>(`${BASE}/influence/newsletters?page=${page}&page_size=${pageSize}${q ? `&q=${encodeURIComponent(q)}` : ''}`),
 
   getNewsletter: (id: number) =>
     fetchJson<NewsletterDetail>(`${BASE}/influence/newsletters/${id}`),
