@@ -5,7 +5,7 @@ import os
 from datetime import datetime
 from typing import Optional
 
-from fastapi import FastAPI, Query, BackgroundTasks, HTTPException
+from fastapi import FastAPI, Query, Body, BackgroundTasks, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
@@ -18,7 +18,7 @@ from .models import (
     get_engine, get_session, init_db,
 )
 from .sync import sync_filings, sync_incremental, sync_backfill, sync_year, get_sync_progress, _update_progress
-from .influence import scrape_and_store, reprocess_entities
+from .influence import scrape_and_store, reprocess_all_entities
 
 logger = logging.getLogger(__name__)
 
@@ -578,6 +578,7 @@ def get_newsletter(newsletter_id: int):
                     "display_name": ent.display_name,
                     "paragraph_index": mention.paragraph_index,
                     "context": mention.context_text,
+                    "section_heading": mention.section_heading,
                 }
                 for mention, ent in mentions
             ],
@@ -703,6 +704,57 @@ def get_entity(entity_id: int):
         }
     finally:
         session.close()
+
+
+@app.patch("/api/influence/entities/{entity_id}")
+def update_entity_type(entity_id: int, body: dict = Body(...)):
+    """Update an entity's type (person, organization, unknown). Sets user_override=True."""
+    session = _get_session()
+    try:
+        entity = session.query(Entity).get(entity_id)
+        if not entity:
+            raise HTTPException(status_code=404, detail="Entity not found")
+
+        new_type = body.get("entity_type")
+        if new_type not in ("person", "organization", "unknown"):
+            raise HTTPException(status_code=400, detail="entity_type must be person, organization, or unknown")
+
+        old_type = entity.entity_type
+        entity.entity_type = new_type
+        entity.user_override = True
+
+        if body.get("display_name"):
+            entity.display_name = body["display_name"]
+
+        session.commit()
+
+        return {
+            "id": entity.id,
+            "name": entity.name,
+            "entity_type": entity.entity_type,
+            "display_name": entity.display_name,
+            "user_override": entity.user_override,
+            "old_type": old_type,
+        }
+    finally:
+        session.close()
+
+
+@app.post("/api/influence/reprocess")
+def reprocess_entities_endpoint():
+    """Clear and re-extract all entities from existing newsletters."""
+    import threading
+
+    def _run():
+        try:
+            result = reprocess_all_entities(DB_URL)
+            logger.info(f"Reprocessed {result['processed']} newsletters")
+        except Exception as e:
+            logger.error(f"Reprocess error: {e}")
+
+    thread = threading.Thread(target=_run, daemon=True)
+    thread.start()
+    return {"status": "started"}
 
 
 @app.get("/api/influence/network")

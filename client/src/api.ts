@@ -161,6 +161,7 @@ export interface NewsletterDetail {
     display_name: string;
     paragraph_index: number;
     context: string;
+    section_heading: string | null;
   }>;
 }
 
@@ -277,4 +278,14 @@ export const api = {
 
   getInfluenceStats: () =>
     fetchJson<InfluenceStats>(`${BASE}/influence/stats`),
+
+  updateEntityType: (id: number, entity_type: string, display_name?: string) =>
+    fetch(`${BASE}/influence/entities/${id}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ entity_type, ...(display_name ? { display_name } : {}) }),
+    }).then(r => r.json()),
+
+  reprocessEntities: () =>
+    fetch(`${BASE}/influence/reprocess`, { method: 'POST' }).then(r => r.json()),
 };

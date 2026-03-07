@@ -110,9 +110,10 @@ class Entity(Base):
     first_seen = Column(DateTime)
     last_seen = Column(DateTime)
     mention_count = Column(Integer, default=0)
+    user_override = Column(Boolean, default=False)
 
     __table_args__ = (
-        Index("ix_entities_name_type", "name", "entity_type", unique=True),
+        Index("ix_entities_name", "name", unique=True),
     )
 
 
@@ -124,6 +125,7 @@ class EntityMention(Base):
     newsletter_id = Column(Integer, ForeignKey("newsletters.id", ondelete="CASCADE"), nullable=False, index=True)
     paragraph_index = Column(Integer)
     context_text = Column(Text)
+    section_heading = Column(String(500))
 
 
 class Relationship(Base):
