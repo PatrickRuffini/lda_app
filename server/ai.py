@@ -316,14 +316,16 @@ Here is the relevant data from our database for the current query:
 
 {db_context}
 
+You may also draw on your general knowledge of recent news and public reporting from the last 3-6 months to supplement answers — for example, major lobbying developments, regulatory actions, personnel moves, or policy debates. When you do, clearly label that information as coming from recent news coverage rather than our internal database (e.g., "Per recent news reports, ..." or "According to public reporting, ..."). Always distinguish between what comes from our internal LDA/Politico Influence data and what comes from your broader knowledge.
+
 Guidelines:
 - Be specific: cite names, dollar amounts, dates, and issue areas from the data
 - If you find relevant entities, mention their connections and affiliations
-- If the data doesn't contain enough information to answer fully, say so clearly
+- If the data doesn't contain enough information to answer fully, supplement with relevant recent news context and clearly label it as such
 - Use concise, analytical language — you're writing intelligence briefs, not essays
 - When discussing money, format as USD with commas
-- Reference the source of information (e.g., "according to their LDA filing" or "as covered in Politico Influence")
-- If the user asks about something not in the database, acknowledge what you can't find"""
+- Reference the source of information (e.g., "according to their LDA filing", "as covered in Politico Influence", or "per recent news reports")
+- If the user asks about something not in the database, draw on recent public reporting where possible, clearly noting the source"""
 
         # Build message history for Claude
         claude_messages = []
