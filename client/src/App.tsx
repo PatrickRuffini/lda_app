@@ -4,7 +4,7 @@ import { api, type FilingSummary, type FilingDetail, type IssueSummary, type Sta
 import { formatDistanceToNow, format } from 'date-fns';
 import NetworkGraph from './NetworkGraph';
 
-type Page = 'dashboard' | 'search' | 'issues' | 'filing' | 'influence' | 'network' | 'entity' | 'newsletter';
+type Page = 'dashboard' | 'search' | 'issues' | 'filing' | 'influence' | 'network' | 'entity' | 'newsletter' | 'leaderboard';
 
 function formatMoney(val: number | null | undefined): string {
   if (val === null || val === undefined) return '-';
@@ -762,14 +762,22 @@ function InfluencePage({ onNavigate }: { onNavigate: (page: Page, ctx?: unknown)
             <p className="text-2xl font-bold text-amber-600">{stats.total_entities.toLocaleString()}</p>
             <p className="text-sm text-gray-500">Entities</p>
           </div>
-          <div className="bg-white rounded-lg border border-gray-200 p-4">
+          <button
+            onClick={() => onNavigate('leaderboard', 'person')}
+            className="bg-white rounded-lg border border-gray-200 p-4 text-left hover:bg-indigo-50 hover:border-indigo-200 transition cursor-pointer"
+            data-testid="button-people-leaderboard"
+          >
             <p className="text-2xl font-bold text-indigo-600">{stats.total_persons.toLocaleString()}</p>
             <p className="text-sm text-gray-500">People</p>
-          </div>
-          <div className="bg-white rounded-lg border border-gray-200 p-4">
+          </button>
+          <button
+            onClick={() => onNavigate('leaderboard', 'organization')}
+            className="bg-white rounded-lg border border-gray-200 p-4 text-left hover:bg-amber-50 hover:border-amber-200 transition cursor-pointer"
+            data-testid="button-org-leaderboard"
+          >
             <p className="text-2xl font-bold text-amber-600">{stats.total_organizations.toLocaleString()}</p>
             <p className="text-sm text-gray-500">Organizations</p>
-          </div>
+          </button>
           <div className="bg-white rounded-lg border border-gray-200 p-4">
             <p className="text-2xl font-bold text-green-600">{stats.total_relationships.toLocaleString()}</p>
             <p className="text-sm text-gray-500">Relationships</p>
@@ -1287,9 +1295,72 @@ function NewsletterReaderPage({ newsletterId, onBack, onNavigate }: { newsletter
   );
 }
 
+// ---------- Entity Leaderboard ----------
+function EntityLeaderboard({ entityType, onBack, onNavigate }: { entityType: string; onBack: () => void; onNavigate: (page: Page, ctx?: unknown) => void }) {
+  const [entities, setEntities] = useState<EntitySummary[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [page, setPage] = useState(1);
+  const [total, setTotal] = useState(0);
+  const pageSize = 50;
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    try {
+      const data = await api.getEntities({ entity_type: entityType, sort: '-mention_count', page, page_size: pageSize });
+      setEntities(data.results);
+      setTotal(data.total);
+    } catch (err) { console.error(err); }
+    setLoading(false);
+  }, [entityType, page]);
+
+  useEffect(() => { load(); }, [load]);
+
+  const isPerson = entityType === 'person';
+  const label = isPerson ? 'People' : 'Organizations';
+  const icon = isPerson ? <User size={16} /> : <Briefcase size={16} />;
+
+  return (
+    <div className="space-y-4">
+      <button onClick={onBack} className="text-sm text-indigo-600 hover:underline flex items-center gap-1 cursor-pointer" data-testid="button-back-leaderboard">
+        <ChevronLeft size={14} /> Back
+      </button>
+      <div className="flex items-center gap-2">
+        <span className={isPerson ? 'text-indigo-600' : 'text-amber-600'}>{icon}</span>
+        <h1 className="text-xl font-semibold text-gray-900">{label} by Mentions</h1>
+        <span className="text-sm text-gray-400">({total.toLocaleString()} total)</span>
+      </div>
+      {loading ? (
+        <div className="flex items-center justify-center h-64"><Loader2 className="animate-spin text-indigo-600" size={32} /></div>
+      ) : (
+        <>
+          <div className="bg-white rounded-lg border border-gray-200 divide-y divide-gray-100">
+            {entities.map((e, idx) => (
+              <button
+                key={e.id}
+                onClick={() => onNavigate('entity', e.id)}
+                className="w-full text-left px-4 py-3 hover:bg-gray-50 cursor-pointer transition flex items-center gap-3"
+                data-testid={`row-entity-${e.id}`}
+              >
+                <span className="text-sm font-mono text-gray-400 w-8 text-right">{(page - 1) * pageSize + idx + 1}</span>
+                <div className="flex-1 min-w-0">
+                  <span className="text-sm font-medium text-gray-900 truncate block">{e.display_name || e.name}</span>
+                </div>
+                <span className={isPerson ? 'text-sm font-semibold text-indigo-600' : 'text-sm font-semibold text-amber-600'}>{e.mention_count}</span>
+                <span className="text-xs text-gray-400">mentions</span>
+              </button>
+            ))}
+          </div>
+          <Pagination page={page} pageSize={pageSize} total={total} onPage={setPage} />
+        </>
+      )}
+    </div>
+  );
+}
+
+
 // ---------- App ----------
 export default function App() {
-  type NavState = { page: Page; filingUuid?: string; entityId?: number; newsletterId?: number; centerEntityId?: number };
+  type NavState = { page: Page; filingUuid?: string; entityId?: number; newsletterId?: number; centerEntityId?: number; leaderboardType?: string };
   const [navState, setNavState] = useState<NavState>({ page: 'dashboard' });
   const [navHistory, setNavHistory] = useState<NavState[]>([]);
 
@@ -1309,6 +1380,8 @@ export default function App() {
       next.entityId = ctx;
     } else if (target === 'network' && typeof ctx === 'number') {
       next.centerEntityId = ctx;
+    } else if (target === 'leaderboard' && typeof ctx === 'string') {
+      next.leaderboardType = ctx;
     }
     setNavHistory(h => [...h, navState]);
     setNavState(next);
@@ -1327,7 +1400,7 @@ export default function App() {
     });
   };
 
-  const navPage = (page === 'filing' || page === 'entity' || page === 'newsletter')
+  const navPage = (page === 'filing' || page === 'entity' || page === 'newsletter' || page === 'leaderboard')
     ? (navHistory.length > 0 ? navHistory[navHistory.length - 1].page : 'dashboard')
     : page;
 
@@ -1348,6 +1421,9 @@ export default function App() {
         {page === 'network' && <NetworkMapPage onNavigate={handleNavigate} centerEntityId={centerEntityId} />}
         {page === 'entity' && entityId && (
           <EntityDetailPage entityId={entityId} onBack={handleBack} onNavigate={handleNavigate} />
+        )}
+        {page === 'leaderboard' && navState.leaderboardType && (
+          <EntityLeaderboard entityType={navState.leaderboardType} onBack={handleBack} onNavigate={handleNavigate} />
         )}
       </main>
     </div>
