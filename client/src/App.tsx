@@ -1,8 +1,8 @@
-import { useState, useEffect, useCallback, useRef } from 'react';
-import { Search, FileText, Tag, BarChart3, RefreshCw, Building2, Users, ChevronLeft, ChevronRight, ExternalLink, DollarSign, Calendar, Loader2, Network, Newspaper, User, Briefcase, Menu, X, Download, Square, ChevronDown } from 'lucide-react';
+import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
+import { Search, FileText, Tag, BarChart3, RefreshCw, Building2, Users, ChevronLeft, ChevronRight, ExternalLink, DollarSign, Calendar, Loader2, Network, Newspaper, User, Briefcase, Menu, X, Download, Square, ChevronDown, Target } from 'lucide-react';
 import { api, type FilingSummary, type FilingDetail, type IssueSummary, type Stats, type SyncStatus, type SyncCoverage, type SearchParams, type TopEntity, type NewsletterSummary, type NewsletterDetail, type EntitySummary, type EntityDetail, type NetworkData, type InfluenceStats } from './api';
 import { formatDistanceToNow, format } from 'date-fns';
-import NetworkGraph from './NetworkGraph';
+import NetworkGraph, { computeEigenvectorCentrality, type SizeMode } from './NetworkGraph';
 
 type Page = 'dashboard' | 'search' | 'issues' | 'filing' | 'influence' | 'network' | 'entity' | 'newsletter' | 'leaderboard';
 
@@ -1006,8 +1006,25 @@ function NetworkMapPage({ onNavigate, centerEntityId }: { onNavigate: (page: Pag
   const [minWeight, setMinWeight] = useState(centerEntityId ? 1 : 2);
   const [maxNodes, setMaxNodes] = useState(80);
   const [entityType, setEntityType] = useState('');
+  const [sizeBy, setSizeBy] = useState<SizeMode>('mentions');
   const containerRef = useRef<HTMLDivElement>(null);
   const [dimensions, setDimensions] = useState({ width: 800, height: 600 });
+
+  const centralityScores = useMemo(() => {
+    if (!network || network.nodes.length === 0) return new Map<number, number>();
+    return computeEigenvectorCentrality(network.nodes, network.edges);
+  }, [network]);
+
+  const topByCentrality = useMemo(() => {
+    if (centralityScores.size === 0 || !network) return [];
+    return [...centralityScores.entries()]
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 10)
+      .map(([id, score]) => {
+        const node = network.nodes.find(n => n.id === id);
+        return { id, score, name: node?.name ?? '', entity_type: node?.entity_type ?? 'unknown' };
+      });
+  }, [centralityScores, network]);
 
   useEffect(() => {
     const el = containerRef.current;
@@ -1078,6 +1095,18 @@ function NetworkMapPage({ onNavigate, centerEntityId }: { onNavigate: (page: Pag
           <option value="person">People</option>
           <option value="organization">Organizations</option>
         </select>
+        <button
+          onClick={() => setSizeBy(s => s === 'mentions' ? 'centrality' : 'mentions')}
+          className={`flex items-center gap-1 text-sm px-3 py-1 rounded border cursor-pointer transition ${
+            sizeBy === 'centrality'
+              ? 'bg-indigo-50 border-indigo-300 text-indigo-700'
+              : 'border-gray-300 text-gray-600 hover:bg-gray-50'
+          }`}
+          title="Toggle node sizing between mention count and eigenvector centrality"
+        >
+          <Target size={14} />
+          <span className="hidden sm:inline">{sizeBy === 'centrality' ? 'Centrality' : 'Mentions'}</span>
+        </button>
       </div>
 
       {/* Legend */}
@@ -1102,6 +1131,8 @@ function NetworkMapPage({ onNavigate, centerEntityId }: { onNavigate: (page: Pag
             width={dimensions.width}
             height={dimensions.height}
             onNodeClick={id => onNavigate('entity', id)}
+            sizeBy={sizeBy}
+            centralityScores={centralityScores}
           />
         ) : (
           <div className="flex items-center justify-center h-96 bg-white rounded-lg border border-gray-200 text-gray-400">
@@ -1117,6 +1148,39 @@ function NetworkMapPage({ onNavigate, centerEntityId }: { onNavigate: (page: Pag
         <p className="text-xs text-gray-400 text-center">
           Showing {network.nodes.length} entities and {network.edges.length} relationships
         </p>
+      )}
+
+      {sizeBy === 'centrality' && topByCentrality.length > 0 && (
+        <div className="bg-white rounded-lg border border-gray-200 p-4">
+          <h2 className="text-sm font-semibold text-gray-900 mb-2 flex items-center gap-1.5">
+            <Target size={14} className="text-indigo-500" />
+            Top Entities by Eigenvector Centrality
+          </h2>
+          <div className="divide-y divide-gray-100">
+            {topByCentrality.map((entry, i) => (
+              <button
+                key={entry.id}
+                onClick={() => onNavigate('entity', entry.id)}
+                className="w-full text-left flex items-center gap-3 py-1.5 hover:bg-gray-50 cursor-pointer transition px-1 rounded"
+              >
+                <span className="text-xs text-gray-400 w-5 text-right shrink-0">{i + 1}.</span>
+                {entry.entity_type === 'person'
+                  ? <User size={13} className="text-indigo-500 shrink-0" />
+                  : <Briefcase size={13} className="text-amber-500 shrink-0" />}
+                <span className="text-sm text-gray-800 truncate min-w-0">{entry.name}</span>
+                <div className="ml-auto flex items-center gap-2 shrink-0">
+                  <div className="w-16 h-1.5 bg-gray-100 rounded-full overflow-hidden">
+                    <div
+                      className="h-full bg-indigo-500 rounded-full"
+                      style={{ width: `${Math.round(entry.score * 100)}%` }}
+                    />
+                  </div>
+                  <span className="text-xs text-gray-500 w-10 text-right">{(entry.score * 100).toFixed(0)}%</span>
+                </div>
+              </button>
+            ))}
+          </div>
+        </div>
       )}
     </div>
   );
