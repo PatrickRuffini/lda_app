@@ -1,10 +1,10 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { Search, FileText, Tag, BarChart3, RefreshCw, Building2, Users, ChevronLeft, ChevronRight, ExternalLink, DollarSign, Calendar, Loader2, Network, Newspaper, User, Briefcase, Menu, X, Download, Square } from 'lucide-react';
-import { api, type FilingSummary, type FilingDetail, type IssueSummary, type Stats, type SyncStatus, type SyncCoverage, type SearchParams, type TopEntity, type NewsletterSummary, type EntitySummary, type EntityDetail, type NetworkData, type InfluenceStats } from './api';
+import { api, type FilingSummary, type FilingDetail, type IssueSummary, type Stats, type SyncStatus, type SyncCoverage, type SearchParams, type TopEntity, type NewsletterSummary, type NewsletterDetail, type EntitySummary, type EntityDetail, type NetworkData, type InfluenceStats } from './api';
 import { formatDistanceToNow, format } from 'date-fns';
 import NetworkGraph from './NetworkGraph';
 
-type Page = 'dashboard' | 'search' | 'issues' | 'filing' | 'influence' | 'network' | 'entity';
+type Page = 'dashboard' | 'search' | 'issues' | 'filing' | 'influence' | 'network' | 'entity' | 'newsletter';
 
 function formatMoney(val: number | null | undefined): string {
   if (val === null || val === undefined) return '-';
@@ -774,21 +774,23 @@ function InfluencePage({ onNavigate }: { onNavigate: (page: Page, ctx?: unknown)
           ) : (
             <div className="space-y-3">
               {newsletters.map(nl => (
-                <div key={nl.id} className="bg-white rounded-lg border border-gray-200 p-4 hover:shadow-md transition">
+                <button
+                  key={nl.id}
+                  onClick={() => onNavigate('newsletter', nl.id)}
+                  data-testid={`card-newsletter-${nl.id}`}
+                  className="w-full text-left bg-white rounded-lg border border-gray-200 p-4 hover:shadow-md transition cursor-pointer"
+                >
                   <div className="flex items-start justify-between gap-2 mb-1">
                     <h3 className="font-semibold text-gray-900 text-sm">{nl.title}</h3>
                     <span className="text-xs text-gray-400 shrink-0">{formatDate(nl.published_date)}</span>
                   </div>
                   <p className="text-sm text-gray-600 line-clamp-2">{nl.body_preview}</p>
                   <div className="flex items-center gap-3 mt-2">
-                    <a href={nl.url} target="_blank" rel="noopener noreferrer" className="text-xs text-indigo-600 hover:underline flex items-center gap-1">
-                      Read on Politico <ExternalLink size={10} />
-                    </a>
                     {nl.entities_extracted && (
                       <span className="text-xs text-green-600">Entities extracted</span>
                     )}
                   </div>
-                </div>
+                </button>
               ))}
               <Pagination page={page} pageSize={25} total={total} onPage={setPageNum} />
             </div>
@@ -1063,17 +1065,148 @@ function EntityDetailPage({ entityId, onBack, onNavigate }: { entityId: number; 
           <h2 className="text-lg font-semibold text-gray-900 mb-3">Newsletter Appearances</h2>
           <div className="space-y-2">
             {entity.newsletter_mentions.map((m, i) => (
-              <div key={i} className="bg-white rounded-lg border border-gray-200 p-3">
+              <button
+                key={i}
+                onClick={() => onNavigate('newsletter', m.newsletter_id)}
+                data-testid={`link-newsletter-mention-${m.newsletter_id}`}
+                className="w-full text-left bg-white rounded-lg border border-gray-200 p-3 hover:shadow-md transition cursor-pointer"
+              >
                 <div className="flex items-center justify-between mb-1">
                   <span className="text-sm font-medium text-gray-900">{m.newsletter_title}</span>
                   <span className="text-xs text-gray-400">{formatDate(m.published_date)}</span>
                 </div>
                 <p className="text-xs text-gray-600 line-clamp-2">{m.context}</p>
-              </div>
+              </button>
             ))}
           </div>
         </div>
       )}
+    </div>
+  );
+}
+
+// ---------- Newsletter Reader Page ----------
+function NewsletterReaderPage({ newsletterId, onBack, onNavigate }: { newsletterId: number; onBack: () => void; onNavigate: (page: Page, ctx?: unknown) => void }) {
+  const [newsletter, setNewsletter] = useState<NewsletterDetail | null>(null);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    setLoading(true);
+    api.getNewsletter(newsletterId)
+      .then(setNewsletter)
+      .catch(console.error)
+      .finally(() => setLoading(false));
+  }, [newsletterId]);
+
+  if (loading) return <div className="flex items-center justify-center h-64"><Loader2 className="animate-spin text-indigo-600" size={32} /></div>;
+  if (!newsletter) return <div className="text-center py-12 text-gray-500">Newsletter not found.</div>;
+
+  const entityMap = new Map<string, { id: number; entity_type: string; display_name: string }>();
+  for (const e of newsletter.entities) {
+    const key = e.name.toLowerCase();
+    if (!entityMap.has(key)) {
+      entityMap.set(key, { id: e.id, entity_type: e.entity_type, display_name: e.display_name });
+    }
+  }
+
+  const sortedNames = Array.from(entityMap.keys()).sort((a, b) => b.length - a.length);
+
+  const annotateText = (text: string) => {
+    if (sortedNames.length === 0) return [text];
+
+    const escapedNames = sortedNames.map(n => n.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
+    const regex = new RegExp(`\\b(${escapedNames.join('|')})\\b`, 'gi');
+    const parts = text.split(regex);
+
+    return parts.map((part, i) => {
+      const match = entityMap.get(part.toLowerCase());
+      if (match) {
+        const colorClass = match.entity_type === 'person'
+          ? 'bg-indigo-100 text-indigo-800 border-indigo-200 hover:bg-indigo-200'
+          : match.entity_type === 'organization'
+          ? 'bg-amber-100 text-amber-800 border-amber-200 hover:bg-amber-200'
+          : 'bg-gray-100 text-gray-700 border-gray-200 hover:bg-gray-200';
+        const IconComponent = match.entity_type === 'person' ? User : match.entity_type === 'organization' ? Briefcase : Tag;
+        return (
+          <button
+            key={i}
+            onClick={(ev) => { ev.stopPropagation(); onNavigate('entity', match.id); }}
+            data-testid={`badge-entity-${match.id}`}
+            className={`inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded-md text-xs font-medium border cursor-pointer transition ${colorClass}`}
+            title={`${match.display_name} (${match.entity_type})`}
+          >
+            <IconComponent size={10} />
+            <span>{part}</span>
+          </button>
+        );
+      }
+      return part;
+    });
+  };
+
+  const paragraphs = newsletter.body_text.split('\n').filter(p => p.trim().length > 0);
+
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center gap-3">
+        <button onClick={onBack} data-testid="button-back-newsletter" className="text-sm text-indigo-600 hover:underline cursor-pointer flex items-center gap-1">
+          <ChevronLeft size={16} /> Back
+        </button>
+      </div>
+
+      <article className="bg-white rounded-lg border border-gray-200 overflow-hidden">
+        <div className="px-6 py-5 border-b border-gray-100">
+          <h1 className="text-xl font-bold text-gray-900 mb-2" data-testid="text-newsletter-title">{newsletter.title}</h1>
+          <div className="flex items-center gap-4 text-sm text-gray-500">
+            {newsletter.published_date && (
+              <span className="flex items-center gap-1">
+                <Calendar size={14} />
+                {formatDate(newsletter.published_date)}
+              </span>
+            )}
+            <a
+              href={newsletter.url}
+              target="_blank"
+              rel="noopener noreferrer"
+              data-testid="link-politico-original"
+              className="text-indigo-600 hover:underline flex items-center gap-1"
+            >
+              Read on Politico <ExternalLink size={12} />
+            </a>
+          </div>
+        </div>
+
+        {newsletter.entities.length > 0 && (
+          <div className="px-6 py-3 border-b border-gray-100 bg-gray-50">
+            <div className="flex items-center gap-2 flex-wrap">
+              <span className="text-xs font-medium text-gray-500 mr-1">Extracted entities:</span>
+              <span className="inline-flex items-center gap-1 text-xs text-indigo-600"><User size={12} /> People</span>
+              <span className="inline-flex items-center gap-1 text-xs text-amber-600"><Briefcase size={12} /> Organizations</span>
+              <span className="text-xs text-gray-400">· {newsletter.entities.length} mentions found</span>
+            </div>
+          </div>
+        )}
+
+        <div className="px-6 py-5 prose prose-sm max-w-none">
+          {paragraphs.map((para, i) => (
+            <p key={i} className="text-gray-800 leading-relaxed mb-3 text-sm" data-testid={`text-paragraph-${i}`}>
+              {annotateText(para)}
+            </p>
+          ))}
+        </div>
+
+        <div className="px-6 py-3 border-t border-gray-100 bg-gray-50">
+          <a
+            href={newsletter.url}
+            target="_blank"
+            rel="noopener noreferrer"
+            data-testid="link-politico-bottom"
+            className="text-sm text-indigo-600 hover:underline flex items-center gap-1"
+          >
+            View original on Politico <ExternalLink size={14} />
+          </a>
+        </div>
+      </article>
     </div>
   );
 }
@@ -1083,6 +1216,7 @@ export default function App() {
   const [page, setPage] = useState<Page>('dashboard');
   const [filingUuid, setFilingUuid] = useState<string | null>(null);
   const [entityId, setEntityId] = useState<number | null>(null);
+  const [newsletterId, setNewsletterId] = useState<number | null>(null);
   const [centerEntityId, setCenterEntityId] = useState<number | undefined>(undefined);
   const [prevPage, setPrevPage] = useState<Page>('dashboard');
 
@@ -1091,6 +1225,10 @@ export default function App() {
       setPrevPage(page);
       setFilingUuid(ctx);
       setPage('filing');
+    } else if (target === 'newsletter' && typeof ctx === 'number') {
+      setPrevPage(page);
+      setNewsletterId(ctx);
+      setPage('newsletter');
     } else if (target === 'entity' && typeof ctx === 'number') {
       setPrevPage(page);
       setEntityId(ctx);
@@ -1104,7 +1242,7 @@ export default function App() {
     }
   };
 
-  const navPage = (page === 'filing' || page === 'entity') ? prevPage : page;
+  const navPage = (page === 'filing' || page === 'entity' || page === 'newsletter') ? prevPage : page;
 
   return (
     <div className="min-h-screen">
@@ -1117,6 +1255,9 @@ export default function App() {
           <FilingDetailPage filingUuid={filingUuid} onBack={() => { setPage(prevPage); setFilingUuid(null); }} />
         )}
         {page === 'influence' && <InfluencePage onNavigate={handleNavigate} />}
+        {page === 'newsletter' && newsletterId && (
+          <NewsletterReaderPage newsletterId={newsletterId} onBack={() => { setPage(prevPage); setNewsletterId(null); }} onNavigate={handleNavigate} />
+        )}
         {page === 'network' && <NetworkMapPage onNavigate={handleNavigate} centerEntityId={centerEntityId} />}
         {page === 'entity' && entityId && (
           <EntityDetailPage entityId={entityId} onBack={() => { setPage(prevPage); setEntityId(null); }} onNavigate={handleNavigate} />

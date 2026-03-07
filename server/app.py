@@ -569,8 +569,10 @@ def get_newsletter(newsletter_id: int):
             "title": nl.title,
             "published_date": nl.published_date.isoformat() if nl.published_date else None,
             "body_text": nl.body_text,
+            "body_html": nl.body_html,
             "entities": [
                 {
+                    "id": ent.id,
                     "name": ent.name,
                     "entity_type": ent.entity_type,
                     "display_name": ent.display_name,

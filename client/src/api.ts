@@ -153,7 +153,9 @@ export interface NewsletterDetail {
   title: string;
   published_date: string | null;
   body_text: string;
+  body_html: string | null;
   entities: Array<{
+    id: number;
     name: string;
     entity_type: string;
     display_name: string;
