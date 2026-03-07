@@ -808,6 +808,7 @@ def get_network(
         if center_entity_id:
             # Collect entity IDs at each depth level
             current_ids = {center_entity_id}
+            all_seen_ids = {center_entity_id}
             all_rels = []
             seen_rel_ids = set()
 
@@ -829,7 +830,25 @@ def get_network(
                         all_rels.append(rel)
                     next_ids.add(rel.entity_a_id)
                     next_ids.add(rel.entity_b_id)
-                current_ids = next_ids - current_ids
+                current_ids = next_ids - all_seen_ids
+                all_seen_ids |= next_ids
+
+            # Fetch all inter-connections among discovered entities
+            # so 2nd-level nodes show their relationships to each other
+            if len(all_seen_ids) > 1:
+                inter_rels = (
+                    session.query(Relationship)
+                    .filter(
+                        Relationship.entity_a_id.in_(all_seen_ids),
+                        Relationship.entity_b_id.in_(all_seen_ids),
+                        Relationship.weight >= min_weight,
+                    )
+                    .all()
+                )
+                for rel in inter_rels:
+                    if rel.id not in seen_rel_ids:
+                        seen_rel_ids.add(rel.id)
+                        all_rels.append(rel)
 
             rels = all_rels[:max_nodes * 2]
         else:
