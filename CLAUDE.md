@@ -14,18 +14,22 @@ LDA Filings Search & Politico Influence Tracker — a full-stack app for browsin
 
 ## Database Reference
 
-The file `lda_filings.db` (SQLite) in the project root is a **local dump/snapshot for reference only — it is NOT the database of record**. The production database is a separately hosted PostgreSQL instance connected via `DATABASE_URL`.
+The production database is a separately hosted PostgreSQL instance connected via `DATABASE_URL`. The `db-dump/` folder contains **CSV exports of the production data for reference only — these are NOT the database of record**. Use these files whenever you need to understand the shape of the data, inspect sample rows, or answer questions about what the data looks like.
 
-When you need to understand the shape of the data, inspect table schemas, or look at sample data to answer questions about what the data looks like, refer to `lda_filings.db`. Key tables defined in `server/models.py`:
+### Reference files (`db-dump/`)
 
-- `registrants` — Lobbying firms/registrants
-- `clients` — Clients of registrants
-- `filings` — LDA filing records (income, expenses, filing period, etc.)
-- `lobbying_activities` — Issue areas and descriptions per filing
-- `newsletters` — Scraped Politico Influence newsletters (HTML + extracted text)
-- `entities` — Extracted named entities (people, organizations) with mention counts
-- `entity_mentions` — Per-newsletter entity mention records
-- `relationships` — Entity-to-entity relationships (co_mention, affiliation, lobbying_registration, lobbying_termination)
+- `registrants.csv` — Lobbying firms/registrants
+- `clients.csv` — Clients of registrants
+- `filings.csv` — LDA filing records (income, expenses, filing period, etc.)
+- `lobbying_activities.csv` — Issue areas and descriptions per filing
+- `newsletters.csv` — Scraped Politico Influence newsletters (HTML + extracted text)
+- `entities.csv` — Extracted named entities (people, organizations) with mention counts
+- `entity_mentions.csv` — Per-newsletter entity mention records
+- `relationships.csv` — Entity-to-entity relationships (co_mention, affiliation, lobbying_registration, lobbying_termination)
+
+Additionally, `lda_filings.db` (SQLite) in the project root is an older local snapshot that can also be queried for reference.
+
+Table schemas are defined in `server/models.py`.
 
 ## Key Files
 
