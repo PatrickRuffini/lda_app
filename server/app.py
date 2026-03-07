@@ -22,7 +22,7 @@ from .influence import scrape_and_store, reprocess_entities
 
 logger = logging.getLogger(__name__)
 
-DB_PATH = os.environ.get("LDA_DB_PATH", "lda_filings.db")
+DB_URL = os.environ.get("DATABASE_URL")
 
 app = FastAPI(title="LDA Filings Search", version="1.0.0")
 
@@ -40,7 +40,7 @@ _engine = None
 def _get_engine():
     global _engine
     if _engine is None:
-        _engine = init_db(DB_PATH)
+        _engine = init_db(DB_URL)
     return _engine
 
 def _get_session():
@@ -67,7 +67,6 @@ class SyncStatus(BaseModel):
     error: Optional[str] = None
 
 
-# Global sync status tracking
 _sync_status: dict = {"status": "idle"}
 
 
@@ -93,7 +92,7 @@ def trigger_sync(req: SyncRequest, background_tasks: BackgroundTasks):
                 client_name=req.client_name,
                 max_pages=req.max_pages,
                 page_size=req.page_size,
-                db_path=DB_PATH,
+                db_url=DB_URL,
             )
             _sync_status = {"status": "completed", **result}
         except Exception as e:
@@ -128,35 +127,56 @@ def search_filings(
     """Search filings with filters and full-text search."""
     session = _get_session()
     try:
-        # If full-text search query provided, use FTS
         if q:
             fts_query = text(
-                """SELECT filing_uuid FROM filings_fts
-                   WHERE filings_fts MATCH :query
-                   ORDER BY rank
-                   LIMIT :limit OFFSET :offset"""
+                """SELECT f.id, ts_rank(
+                    to_tsvector('english',
+                        coalesce(r.name, '') || ' ' ||
+                        coalesce(c.name, '') || ' ' ||
+                        coalesce(f.filing_type_display, '') || ' ' ||
+                        coalesce(f.posted_by_name, '')
+                    ),
+                    plainto_tsquery('english', :query)
+                ) AS rank
+                FROM filings f
+                LEFT JOIN registrants r ON f.registrant_id = r.id
+                LEFT JOIN clients c ON f.client_id = c.id
+                WHERE to_tsvector('english',
+                    coalesce(r.name, '') || ' ' ||
+                    coalesce(c.name, '') || ' ' ||
+                    coalesce(f.filing_type_display, '') || ' ' ||
+                    coalesce(f.posted_by_name, '')
+                ) @@ plainto_tsquery('english', :query)
+                ORDER BY rank DESC
+                LIMIT :limit OFFSET :offset"""
             )
             offset = (page - 1) * page_size
             fts_results = session.execute(
                 fts_query, {"query": q, "limit": page_size, "offset": offset}
             ).fetchall()
-            uuids = [r[0] for r in fts_results]
+            filing_ids = [r[0] for r in fts_results]
 
-            # Count total
             count_query = text(
-                "SELECT COUNT(*) FROM filings_fts WHERE filings_fts MATCH :query"
+                """SELECT COUNT(*) FROM filings f
+                LEFT JOIN registrants r ON f.registrant_id = r.id
+                LEFT JOIN clients c ON f.client_id = c.id
+                WHERE to_tsvector('english',
+                    coalesce(r.name, '') || ' ' ||
+                    coalesce(c.name, '') || ' ' ||
+                    coalesce(f.filing_type_display, '') || ' ' ||
+                    coalesce(f.posted_by_name, '')
+                ) @@ plainto_tsquery('english', :query)"""
             )
             total = session.execute(count_query, {"query": q}).scalar()
 
-            if not uuids:
+            if not filing_ids:
                 return {"results": [], "total": 0, "page": page, "page_size": page_size}
 
-            query = session.query(Filing).filter(Filing.filing_uuid.in_(uuids))
+            query = session.query(Filing).filter(Filing.id.in_(filing_ids))
         else:
             query = session.query(Filing)
-            total = None  # will compute below
+            total = None
 
-        # Apply filters
         if filing_year:
             query = query.filter(Filing.filing_year == filing_year)
         if filing_period:
@@ -179,7 +199,6 @@ def search_filings(
         if total is None:
             total = query.count()
 
-        # Sorting
         if sort.startswith("-"):
             sort_col = getattr(Filing, sort[1:], Filing.dt_posted)
             query = query.order_by(desc(sort_col))
@@ -341,7 +360,6 @@ def get_stats():
         total_clients = session.query(func.count(Client.id)).scalar() or 0
         latest_filing = session.query(func.max(Filing.dt_posted)).scalar()
 
-        # Get filing counts by year
         year_counts = (
             session.query(Filing.filing_year, func.count(Filing.id))
             .group_by(Filing.filing_year)
@@ -372,6 +390,7 @@ def _filing_to_dict(filing: Filing, full: bool = False) -> dict:
         "filing_period_display": filing.filing_period_display,
         "filing_date": filing.filing_date.isoformat() if filing.filing_date else None,
         "dt_posted": filing.dt_posted.isoformat() if filing.dt_posted else None,
+        "added_to_db": filing.added_to_db.isoformat() if filing.added_to_db else None,
         "income": filing.income,
         "expenses": filing.expenses,
         "url": filing.url,
@@ -458,7 +477,7 @@ def trigger_influence_scrape(req: InfluenceScrapeRequest, background_tasks: Back
             result = scrape_and_store(
                 max_newsletters=req.max_newsletters,
                 max_discovery_pages=req.max_discovery_pages,
-                db_path=DB_PATH,
+                db_url=DB_URL,
             )
             _influence_status = {"status": "completed", **result}
         except Exception as e:
@@ -514,7 +533,6 @@ def get_newsletter(newsletter_id: int):
         if not nl:
             raise HTTPException(status_code=404, detail="Newsletter not found")
 
-        # Get entities mentioned in this newsletter
         mentions = (
             session.query(EntityMention, Entity)
             .join(Entity, EntityMention.entity_id == Entity.id)
@@ -600,7 +618,6 @@ def get_entity(entity_id: int):
         if not entity:
             raise HTTPException(status_code=404, detail="Entity not found")
 
-        # Get all relationships for this entity
         rels = (
             session.query(Relationship)
             .filter(
@@ -631,7 +648,6 @@ def get_entity(entity_id: int):
                     "context_snippets": _safe_json_loads(rel.context_snippets),
                 })
 
-        # Get newsletter mentions
         mentions = (
             session.query(EntityMention, Newsletter)
             .join(Newsletter, EntityMention.newsletter_id == Newsletter.id)
@@ -673,13 +689,10 @@ def get_network(
 ):
     """
     Get the network graph data for visualization.
-
-    Returns nodes and edges suitable for rendering a force-directed graph.
     """
     session = _get_session()
     try:
         if center_entity_id:
-            # Ego network: relationships involving the center entity
             rels_query = (
                 session.query(Relationship)
                 .filter(
@@ -691,7 +704,6 @@ def get_network(
                 .limit(max_nodes)
             )
         else:
-            # Global network: top relationships by weight
             rels_query = (
                 session.query(Relationship)
                 .filter(Relationship.weight >= min_weight)
@@ -701,20 +713,17 @@ def get_network(
 
         rels = rels_query.all()
 
-        # Collect unique entity IDs
         entity_ids = set()
         for rel in rels:
             entity_ids.add(rel.entity_a_id)
             entity_ids.add(rel.entity_b_id)
 
-        # Fetch entities
         entities = session.query(Entity).filter(Entity.id.in_(entity_ids)).all()
         if entity_type:
             entities = [e for e in entities if e.entity_type == entity_type or e.entity_type == "unknown"]
 
         entity_map = {e.id: e for e in entities}
 
-        # Build nodes
         nodes = []
         included_ids = set()
         for e in sorted(entities, key=lambda x: x.mention_count or 0, reverse=True)[:max_nodes]:
@@ -727,7 +736,6 @@ def get_network(
             })
             included_ids.add(e.id)
 
-        # Build edges (only between included nodes)
         edges = []
         for rel in rels:
             if rel.entity_a_id in included_ids and rel.entity_b_id in included_ids:

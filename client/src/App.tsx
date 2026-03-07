@@ -502,7 +502,7 @@ function FilingDetailPage({ filingUuid, onBack }: { filingUuid: string; onBack: 
           </div>
         </div>
 
-        <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 text-sm">
+        <div className="grid grid-cols-2 sm:grid-cols-5 gap-4 text-sm">
           <div>
             <p className="text-gray-400 text-xs uppercase">Year / Period</p>
             <p className="font-medium">{filing.filing_year} {filing.filing_period_display}</p>
@@ -510,6 +510,10 @@ function FilingDetailPage({ filingUuid, onBack }: { filingUuid: string; onBack: 
           <div>
             <p className="text-gray-400 text-xs uppercase">Date Posted</p>
             <p className="font-medium">{formatDate(filing.dt_posted)}</p>
+          </div>
+          <div>
+            <p className="text-gray-400 text-xs uppercase" data-testid="label-added-to-db">Added to DB</p>
+            <p className="font-medium" data-testid="text-added-to-db">{formatDate(filing.added_to_db)}</p>
           </div>
           <div>
             <p className="text-gray-400 text-xs uppercase">Income</p>
