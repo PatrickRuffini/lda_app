@@ -1,8 +1,12 @@
 modules = ["python-3.11", "nodejs-20"]
 
-[nix]
-channel = "stable-25_05"
-packages = ["libxcrypt"]
+[[ports]]
+localPort = 5000
+externalPort = 5000
+
+[[ports]]
+localPort = 8000
+externalPort = 80
 
 [workflows]
 runButton = "Project"
@@ -28,18 +32,6 @@ waitForPort = 5000
 [workflows.workflow.metadata]
 outputType = "webview"
 
-[[ports]]
-localPort = 5000
-externalPort = 5000
-
-[[ports]]
-localPort = 5001
-externalPort = 3000
-
-[[ports]]
-localPort = 5904
-externalPort = 80
-
-[[ports]]
-localPort = 8000
-externalPort = 8000
+[nix]
+channel = "stable-25_05"
+packages = ["libxcrypt", "xcodebuild", "zlib"]

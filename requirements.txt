@@ -3,9 +3,14 @@ uvicorn[standard]>=0.27.0
 sqlalchemy>=2.0.25
 requests>=2.31.0
 pydantic>=2.5.0
+beautifulsoup4>=4.12.0
+lxml>=5.0.0
+python-dotenv>=1.0.0
+fastapi
+uvicorn[standard]
 fastapi
 pydantic
+python-dotenv
 requests
 sqlalchemy
 uvicorn[standard]
-python-dotenv

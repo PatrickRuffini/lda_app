@@ -83,6 +83,65 @@ class LobbyingActivity(Base):
     filing = relationship("Filing", back_populates="lobbying_activities")
 
 
+# ---------- Politico Influence Models ----------
+
+class Newsletter(Base):
+    __tablename__ = "newsletters"
+
+    id = Column(Integer, primary_key=True)
+    url = Column(String(500), unique=True, nullable=False, index=True)
+    title = Column(String(500), nullable=False)
+    published_date = Column(DateTime, index=True)
+    body_text = Column(Text)
+    body_html = Column(Text)
+    scraped_at = Column(DateTime, default=datetime.datetime.utcnow)
+
+    entities_extracted = Column(Boolean, default=False)
+
+
+class Entity(Base):
+    __tablename__ = "entities"
+
+    id = Column(Integer, primary_key=True)
+    name = Column(String(500), nullable=False, index=True)
+    entity_type = Column(String(50), index=True)  # 'person' or 'organization'
+    display_name = Column(String(500))  # e.g. "John Smith (Acme Corp)"
+    first_seen = Column(DateTime)
+    last_seen = Column(DateTime)
+    mention_count = Column(Integer, default=0)
+
+    __table_args__ = (
+        Index("ix_entities_name_type", "name", "entity_type", unique=True),
+    )
+
+
+class EntityMention(Base):
+    __tablename__ = "entity_mentions"
+
+    id = Column(Integer, primary_key=True)
+    entity_id = Column(Integer, ForeignKey("entities.id", ondelete="CASCADE"), nullable=False, index=True)
+    newsletter_id = Column(Integer, ForeignKey("newsletters.id", ondelete="CASCADE"), nullable=False, index=True)
+    paragraph_index = Column(Integer)  # which paragraph in the newsletter
+    context_text = Column(Text)  # surrounding sentence
+
+
+class Relationship(Base):
+    __tablename__ = "relationships"
+
+    id = Column(Integer, primary_key=True)
+    entity_a_id = Column(Integer, ForeignKey("entities.id", ondelete="CASCADE"), nullable=False, index=True)
+    entity_b_id = Column(Integer, ForeignKey("entities.id", ondelete="CASCADE"), nullable=False, index=True)
+    relationship_type = Column(String(50), default="co_mention")  # 'co_mention', 'affiliation'
+    weight = Column(Integer, default=1)  # number of co-occurrences
+    first_seen = Column(DateTime)
+    last_seen = Column(DateTime)
+    context_snippets = Column(Text)  # JSON array of context strings
+
+    __table_args__ = (
+        Index("ix_relationships_pair", "entity_a_id", "entity_b_id", unique=True),
+    )
+
+
 # Full-text search virtual table will be created separately
 
 
@@ -93,7 +152,7 @@ def get_engine(db_path="lda_filings.db"):
 
 def init_db(db_path="lda_filings.db"):
     engine = get_engine(db_path)
-    Base.metadata.create_all(engine)
+    Base.metadata.create_all(engine, checkfirst=True)
 
     # Create FTS5 virtual table for full-text search
     with engine.connect() as conn:
