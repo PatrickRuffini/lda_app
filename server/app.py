@@ -2,6 +2,7 @@
 import json
 import logging
 import os
+import time
 from datetime import datetime
 from typing import Optional
 
@@ -33,6 +34,23 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+_cache = {}
+CACHE_TTL = 30
+
+def _cached(key, fn):
+    now = time.time()
+    entry = _cache.get(key)
+    if entry and now - entry[1] < CACHE_TTL:
+        return entry[0]
+    result = fn()
+    _cache[key] = (result, now)
+    return result
+
+def _invalidate_cache(*keys):
+    for k in keys:
+        _cache.pop(k, None)
 
 
 _engine = None
@@ -91,6 +109,8 @@ def trigger_sync(req: SyncRequest, background_tasks: BackgroundTasks):
             logger.error(f"Sync error: {e}")
             from datetime import datetime as dt
             _update_progress(status="error", error=str(e), finished_at=dt.utcnow().isoformat())
+        finally:
+            _invalidate_cache("stats", "top_registrants_10", "top_registrants_20", "top_clients_10", "top_clients_20")
 
     background_tasks.add_task(_run)
     return {"status": "started", "mode": req.mode}
@@ -314,91 +334,71 @@ def filings_by_issue(
 @app.get("/api/top-registrants")
 def top_registrants(limit: int = Query(20, ge=1, le=100)):
     """Get top registrants by filing count."""
-    session = _get_session()
-    try:
-        results = (
-            session.query(
-                Registrant.name,
-                Registrant.senate_id,
-                func.count(Filing.id).label("filing_count"),
-                func.sum(Filing.income).label("total_income"),
+    def _fetch():
+        session = _get_session()
+        try:
+            results = (
+                session.query(
+                    Registrant.name, Registrant.senate_id,
+                    func.count(Filing.id).label("filing_count"),
+                    func.sum(Filing.income).label("total_income"),
+                )
+                .join(Filing).group_by(Registrant.id)
+                .order_by(desc("filing_count")).limit(limit).all()
             )
-            .join(Filing)
-            .group_by(Registrant.id)
-            .order_by(desc("filing_count"))
-            .limit(limit)
-            .all()
-        )
-        return [
-            {
-                "name": r[0],
-                "senate_id": r[1],
-                "filing_count": r[2],
-                "total_income": float(r[3]) if r[3] else 0,
-            }
-            for r in results
-        ]
-    finally:
-        session.close()
+            return [{"name": r[0], "senate_id": r[1], "filing_count": r[2], "total_income": float(r[3]) if r[3] else 0} for r in results]
+        finally:
+            session.close()
+    return _cached(f"top_registrants_{limit}", _fetch)
 
 
 @app.get("/api/top-clients")
 def top_clients(limit: int = Query(20, ge=1, le=100)):
     """Get top clients by filing count."""
-    session = _get_session()
-    try:
-        results = (
-            session.query(
-                Client.name,
-                Client.senate_id,
-                func.count(Filing.id).label("filing_count"),
-                func.sum(Filing.income).label("total_income"),
+    def _fetch():
+        session = _get_session()
+        try:
+            results = (
+                session.query(
+                    Client.name, Client.senate_id,
+                    func.count(Filing.id).label("filing_count"),
+                    func.sum(Filing.income).label("total_income"),
+                )
+                .join(Filing).group_by(Client.id)
+                .order_by(desc("filing_count")).limit(limit).all()
             )
-            .join(Filing)
-            .group_by(Client.id)
-            .order_by(desc("filing_count"))
-            .limit(limit)
-            .all()
-        )
-        return [
-            {
-                "name": r[0],
-                "senate_id": r[1],
-                "filing_count": r[2],
-                "total_income": float(r[3]) if r[3] else 0,
-            }
-            for r in results
-        ]
-    finally:
-        session.close()
+            return [{"name": r[0], "senate_id": r[1], "filing_count": r[2], "total_income": float(r[3]) if r[3] else 0} for r in results]
+        finally:
+            session.close()
+    return _cached(f"top_clients_{limit}", _fetch)
 
 
 @app.get("/api/stats")
 def get_stats():
     """Get overall database statistics."""
-    session = _get_session()
-    try:
-        total_filings = session.query(func.count(Filing.id)).scalar() or 0
-        total_registrants = session.query(func.count(Registrant.id)).scalar() or 0
-        total_clients = session.query(func.count(Client.id)).scalar() or 0
-        latest_filing = session.query(func.max(Filing.dt_posted)).scalar()
-
-        year_counts = (
-            session.query(Filing.filing_year, func.count(Filing.id))
-            .group_by(Filing.filing_year)
-            .order_by(desc(Filing.filing_year))
-            .all()
-        )
-
-        return {
-            "total_filings": total_filings,
-            "total_registrants": total_registrants,
-            "total_clients": total_clients,
-            "latest_filing": latest_filing.isoformat() if latest_filing else None,
-            "filings_by_year": [{"year": y, "count": c} for y, c in year_counts],
-        }
-    finally:
-        session.close()
+    def _fetch():
+        session = _get_session()
+        try:
+            total_filings = session.query(func.count(Filing.id)).scalar() or 0
+            total_registrants = session.query(func.count(Registrant.id)).scalar() or 0
+            total_clients = session.query(func.count(Client.id)).scalar() or 0
+            latest_filing = session.query(func.max(Filing.dt_posted)).scalar()
+            year_counts = (
+                session.query(Filing.filing_year, func.count(Filing.id))
+                .group_by(Filing.filing_year)
+                .order_by(desc(Filing.filing_year))
+                .all()
+            )
+            return {
+                "total_filings": total_filings,
+                "total_registrants": total_registrants,
+                "total_clients": total_clients,
+                "latest_filing": latest_filing.isoformat() if latest_filing else None,
+                "filings_by_year": [{"year": y, "count": c} for y, c in year_counts],
+            }
+        finally:
+            session.close()
+    return _cached("stats", _fetch)
 
 
 # ---------- Helpers ----------
@@ -748,6 +748,7 @@ def reprocess_entities_endpoint():
     def _run():
         try:
             result = reprocess_all_entities(DB_URL)
+            _invalidate_cache("influence_stats", "stats")
             logger.info(f"Reprocessed {result['processed']} newsletters")
         except Exception as e:
             logger.error(f"Reprocess error: {e}")
@@ -836,39 +837,28 @@ def get_network(
 @app.get("/api/influence/stats")
 def influence_stats():
     """Get Politico Influence stats."""
-    session = _get_session()
-    try:
-        total_newsletters = session.query(func.count(Newsletter.id)).scalar() or 0
-        total_entities = session.query(func.count(Entity.id)).scalar() or 0
-        total_relationships = session.query(func.count(Relationship.id)).scalar() or 0
-        total_persons = (
-            session.query(func.count(Entity.id))
-            .filter(Entity.entity_type == "person")
-            .scalar() or 0
-        )
-        total_orgs = (
-            session.query(func.count(Entity.id))
-            .filter(Entity.entity_type == "organization")
-            .scalar() or 0
-        )
-        latest_newsletter = session.query(func.max(Newsletter.published_date)).scalar()
-        total_affiliations = (
-            session.query(func.count(Relationship.id))
-            .filter(Relationship.relationship_type == "affiliation")
-            .scalar() or 0
-        )
-
-        return {
-            "total_newsletters": total_newsletters,
-            "total_entities": total_entities,
-            "total_persons": total_persons,
-            "total_organizations": total_orgs,
-            "total_relationships": total_relationships,
-            "total_affiliations": total_affiliations,
-            "latest_newsletter": latest_newsletter.isoformat() if latest_newsletter else None,
-        }
-    finally:
-        session.close()
+    def _fetch():
+        session = _get_session()
+        try:
+            total_newsletters = session.query(func.count(Newsletter.id)).scalar() or 0
+            total_entities = session.query(func.count(Entity.id)).scalar() or 0
+            total_relationships = session.query(func.count(Relationship.id)).scalar() or 0
+            total_persons = session.query(func.count(Entity.id)).filter(Entity.entity_type == "person").scalar() or 0
+            total_orgs = session.query(func.count(Entity.id)).filter(Entity.entity_type == "organization").scalar() or 0
+            latest_newsletter = session.query(func.max(Newsletter.published_date)).scalar()
+            total_affiliations = session.query(func.count(Relationship.id)).filter(Relationship.relationship_type == "affiliation").scalar() or 0
+            return {
+                "total_newsletters": total_newsletters,
+                "total_entities": total_entities,
+                "total_persons": total_persons,
+                "total_organizations": total_orgs,
+                "total_relationships": total_relationships,
+                "total_affiliations": total_affiliations,
+                "latest_newsletter": latest_newsletter.isoformat() if latest_newsletter else None,
+            }
+        finally:
+            session.close()
+    return _cached("influence_stats", _fetch)
 
 
 # Serve React frontend in production
