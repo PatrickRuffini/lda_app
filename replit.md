@@ -26,11 +26,11 @@ Preferred communication style: Simple, everyday language.
 - **Location:** `server/` directory as a Python package.
 - **Key modules:**
   - `server/app.py` — main FastAPI app, route definitions, CORS middleware, serves static frontend files via `StaticFiles`.
-  - `server/models.py` — SQLAlchemy ORM models (declarative base). Tables: `registrants`, `clients`, `filings`, `lobbying_activities`, `entities`, `entity_mentions`, `newsletters`, `relationships`. Uses SQLite via a local `.db` file (path configured via `LDA_DB_PATH` env var, defaults to `lda_filings.db`).
-  - `server/sync.py` — fetches filings from the Senate LDA API (`https://lda.senate.gov/api/v1`) with pagination, retry logic, and optional API key auth. Stores results into SQLite.
-  - `server/influence.py` — scrapes Politico Influence newsletter HTML, extracts bold entities, detects person↔organization affiliations via regex patterns, builds co-occurrence relationships, stores to SQLite.
-- **Full-text search:** SQLite FTS5 virtual tables are used for fast search across filings text fields.
-- **Database:** SQLite (single file). No Postgres or external DB is used.
+  - `server/models.py` — SQLAlchemy ORM models (declarative base). Tables: `registrants`, `clients`, `filings` (includes `added_to_db` timestamp), `lobbying_activities`, `entities`, `entity_mentions`, `newsletters`, `relationships`. Connects to PostgreSQL via `DATABASE_URL`.
+  - `server/sync.py` — fetches filings from the Senate LDA API (`https://lda.senate.gov/api/v1`) with pagination, retry logic, and optional API key auth. Stores results into PostgreSQL. Sets `added_to_db` timestamp when a filing is first ingested.
+  - `server/influence.py` — scrapes Politico Influence newsletter HTML, extracts bold entities, detects person↔organization affiliations via regex patterns, builds co-occurrence relationships, stores to PostgreSQL.
+- **Full-text search:** PostgreSQL `to_tsvector`/`to_tsquery` for full-text search across registrant names, client names, and filing fields.
+- **Database:** PostgreSQL via Replit's built-in database. Connected through `DATABASE_URL` environment variable.
 - **Auth:** Optional Senate LDA API key via `LDA_API_KEY` environment variable (falls back to anonymous access).
 - **CORS:** Wildcard allowed origins for development simplicity.
 - **Static file serving:** The compiled Vite frontend (`client/dist`) is mounted and served by FastAPI directly, so there's only one server process in production.
@@ -113,6 +113,6 @@ Navigation is managed via a `Page` type union and `useState` in `App.tsx` (not U
 | Variable | Purpose | Default |
 |---|---|---|
 | `LDA_API_KEY` | Senate LDA API auth token | (empty = anonymous) |
-| `LDA_DB_PATH` | Path to SQLite database file | `lda_filings.db` |
+| `DATABASE_URL` | PostgreSQL connection string | (set by Replit) |
 
-### No external database service is required — SQLite is embedded and file-based.
+### Database is PostgreSQL provided by Replit's built-in database service.

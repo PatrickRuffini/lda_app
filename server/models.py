@@ -1,8 +1,9 @@
-"""SQLAlchemy models for LDA filings storage."""
+"""SQLAlchemy models for LDA filings storage (PostgreSQL)."""
 import datetime
+import os
 from sqlalchemy import (
     Column, String, Integer, Float, Text, DateTime, Boolean,
-    ForeignKey, Table, create_engine, Index
+    ForeignKey, Index, create_engine
 )
 from sqlalchemy.orm import declarative_base, relationship, sessionmaker
 
@@ -48,6 +49,7 @@ class Filing(Base):
     filing_period_display = Column(String(200))
     filing_date = Column(DateTime, index=True)
     dt_posted = Column(DateTime, index=True)
+    added_to_db = Column(DateTime, default=datetime.datetime.utcnow, index=True)
     income = Column(Float)
     expenses = Column(Float)
     expenses_method = Column(String(100))
@@ -64,7 +66,6 @@ class Filing(Base):
 
     __table_args__ = (
         Index("ix_filings_year_period", "filing_year", "filing_period"),
-        Index("ix_filings_dt_posted_desc", dt_posted.desc()),
     )
 
 
@@ -77,8 +78,8 @@ class LobbyingActivity(Base):
     general_issue_code_display = Column(String(200), index=True)
     description = Column(Text)
     specific_issues = Column(Text)
-    government_entities = Column(Text)  # stored as JSON string
-    lobbyists = Column(Text)  # stored as JSON string
+    government_entities = Column(Text)
+    lobbyists = Column(Text)
 
     filing = relationship("Filing", back_populates="lobbying_activities")
 
@@ -104,8 +105,8 @@ class Entity(Base):
 
     id = Column(Integer, primary_key=True)
     name = Column(String(500), nullable=False, index=True)
-    entity_type = Column(String(50), index=True)  # 'person' or 'organization'
-    display_name = Column(String(500))  # e.g. "John Smith (Acme Corp)"
+    entity_type = Column(String(50), index=True)
+    display_name = Column(String(500))
     first_seen = Column(DateTime)
     last_seen = Column(DateTime)
     mention_count = Column(Integer, default=0)
@@ -121,8 +122,8 @@ class EntityMention(Base):
     id = Column(Integer, primary_key=True)
     entity_id = Column(Integer, ForeignKey("entities.id", ondelete="CASCADE"), nullable=False, index=True)
     newsletter_id = Column(Integer, ForeignKey("newsletters.id", ondelete="CASCADE"), nullable=False, index=True)
-    paragraph_index = Column(Integer)  # which paragraph in the newsletter
-    context_text = Column(Text)  # surrounding sentence
+    paragraph_index = Column(Integer)
+    context_text = Column(Text)
 
 
 class Relationship(Base):
@@ -131,51 +132,29 @@ class Relationship(Base):
     id = Column(Integer, primary_key=True)
     entity_a_id = Column(Integer, ForeignKey("entities.id", ondelete="CASCADE"), nullable=False, index=True)
     entity_b_id = Column(Integer, ForeignKey("entities.id", ondelete="CASCADE"), nullable=False, index=True)
-    relationship_type = Column(String(50), default="co_mention")  # 'co_mention', 'affiliation'
-    weight = Column(Integer, default=1)  # number of co-occurrences
+    relationship_type = Column(String(50), default="co_mention")
+    weight = Column(Integer, default=1)
     first_seen = Column(DateTime)
     last_seen = Column(DateTime)
-    context_snippets = Column(Text)  # JSON array of context strings
+    context_snippets = Column(Text)
 
     __table_args__ = (
         Index("ix_relationships_pair", "entity_a_id", "entity_b_id", unique=True),
     )
 
 
-# Full-text search virtual table will be created separately
-
-
-def get_engine(db_path="lda_filings.db"):
-    engine = create_engine(f"sqlite:///{db_path}", echo=False)
+def get_engine(db_url=None):
+    if db_url is None:
+        db_url = os.environ.get("DATABASE_URL")
+    if not db_url:
+        raise RuntimeError("DATABASE_URL environment variable is not set")
+    engine = create_engine(db_url, echo=False, pool_pre_ping=True)
     return engine
 
 
-def init_db(db_path="lda_filings.db"):
-    engine = get_engine(db_path)
+def init_db(db_url=None):
+    engine = get_engine(db_url)
     Base.metadata.create_all(engine, checkfirst=True)
-
-    # Create FTS5 virtual table for full-text search
-    with engine.connect() as conn:
-        conn.execute(
-            __import__("sqlalchemy").text(
-                """
-                CREATE VIRTUAL TABLE IF NOT EXISTS filings_fts USING fts5(
-                    filing_uuid,
-                    registrant_name,
-                    client_name,
-                    issue_codes,
-                    specific_issues,
-                    description,
-                    government_entities,
-                    lobbyist_names,
-                    content='',
-                    tokenize='porter unicode61'
-                )
-                """
-            )
-        )
-        conn.commit()
-
     return engine
 
 

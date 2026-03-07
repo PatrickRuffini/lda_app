@@ -1,4 +1,4 @@
-"""Service to sync filings from the Senate LDA API into local SQLite."""
+"""Service to sync filings from the Senate LDA API into PostgreSQL."""
 import json
 import logging
 import os
@@ -109,10 +109,9 @@ def _store_filing(session, data: dict) -> Optional[Filing]:
     filing = session.query(Filing).filter_by(filing_uuid=uuid).first()
     is_new = filing is None
     if is_new:
-        filing = Filing(filing_uuid=uuid)
+        filing = Filing(filing_uuid=uuid, added_to_db=datetime.utcnow())
         session.add(filing)
 
-    # Registrant
     reg_data = data.get("registrant")
     if reg_data:
         registrant = _upsert_registrant(session, reg_data)
@@ -120,7 +119,6 @@ def _store_filing(session, data: dict) -> Optional[Filing]:
             session.flush()
             filing.registrant_id = registrant.id
 
-    # Client
     client_data = data.get("client")
     if client_data:
         client = _upsert_client(session, client_data)
@@ -142,7 +140,6 @@ def _store_filing(session, data: dict) -> Optional[Filing]:
     filing.posted_by_name = data.get("posted_by_name", "")
     filing.url = data.get("url", "")
 
-    # Lobbying activities
     if not is_new:
         session.query(LobbyingActivity).filter_by(filing_id=filing.id).delete()
         session.flush()
@@ -164,72 +161,6 @@ def _store_filing(session, data: dict) -> Optional[Filing]:
     return filing
 
 
-def _update_fts(session, filing: Filing):
-    """Update the FTS index for a filing."""
-    reg_name = filing.registrant.name if filing.registrant else ""
-    client_name = filing.client.name if filing.client else ""
-
-    issue_codes = []
-    specific_issues_parts = []
-    descriptions = []
-    gov_entities_parts = []
-    lobbyist_names = []
-
-    for act in filing.lobbying_activities:
-        if act.general_issue_code_display:
-            issue_codes.append(act.general_issue_code_display)
-        if act.specific_issues:
-            specific_issues_parts.append(act.specific_issues)
-        if act.description:
-            descriptions.append(act.description)
-        if act.government_entities:
-            try:
-                entities = json.loads(act.government_entities)
-                for e in entities:
-                    if isinstance(e, dict):
-                        gov_entities_parts.append(e.get("name", ""))
-                    else:
-                        gov_entities_parts.append(str(e))
-            except (json.JSONDecodeError, TypeError):
-                gov_entities_parts.append(act.government_entities)
-        if act.lobbyists:
-            try:
-                lobs = json.loads(act.lobbyists)
-                for l in lobs:
-                    if isinstance(l, dict):
-                        parts = [l.get("lobbyist", {}).get("first_name", ""),
-                                 l.get("lobbyist", {}).get("last_name", "")]
-                        lobbyist_names.append(" ".join(p for p in parts if p))
-                    else:
-                        lobbyist_names.append(str(l))
-            except (json.JSONDecodeError, TypeError):
-                lobbyist_names.append(act.lobbyists)
-
-    # Delete old FTS entry
-    session.execute(
-        text("DELETE FROM filings_fts WHERE filing_uuid = :uuid"),
-        {"uuid": filing.filing_uuid},
-    )
-    # Insert new
-    session.execute(
-        text(
-            """INSERT INTO filings_fts(filing_uuid, registrant_name, client_name,
-               issue_codes, specific_issues, description, government_entities, lobbyist_names)
-               VALUES(:uuid, :reg, :client, :issues, :specific, :desc, :gov, :lobs)"""
-        ),
-        {
-            "uuid": filing.filing_uuid,
-            "reg": reg_name,
-            "client": client_name,
-            "issues": " | ".join(issue_codes),
-            "specific": " ".join(specific_issues_parts),
-            "desc": " ".join(descriptions),
-            "gov": " | ".join(gov_entities_parts),
-            "lobs": " | ".join(lobbyist_names),
-        },
-    )
-
-
 def sync_filings(
     filing_year: Optional[int] = None,
     filing_period: Optional[str] = None,
@@ -238,14 +169,14 @@ def sync_filings(
     client_name: Optional[str] = None,
     max_pages: int = 50,
     page_size: int = 25,
-    db_path: str = "lda_filings.db",
+    db_url: str = None,
 ) -> dict:
     """
-    Pull filings from the Senate LDA API and store them locally.
+    Pull filings from the Senate LDA API and store them in PostgreSQL.
 
     Returns summary stats.
     """
-    engine = init_db(db_path)
+    engine = init_db(db_url)
     session = get_session(engine)
 
     params: dict = {"page_size": page_size, "ordering": "-dt_posted"}
@@ -278,8 +209,6 @@ def sync_filings(
             for filing_data in results:
                 filing = _store_filing(session, filing_data)
                 if filing:
-                    session.flush()
-                    _update_fts(session, filing)
                     total_stored += 1
                 else:
                     total_skipped += 1
@@ -290,7 +219,7 @@ def sync_filings(
             if not data.get("next"):
                 break
             page += 1
-            time.sleep(0.5)  # Be polite to the API
+            time.sleep(0.5)
 
     except Exception as e:
         session.rollback()

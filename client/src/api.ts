@@ -25,6 +25,7 @@ export interface FilingSummary {
   filing_period_display: string;
   filing_date: string | null;
   dt_posted: string | null;
+  added_to_db: string | null;
   income: number | null;
   expenses: number | null;
   url: string | null;

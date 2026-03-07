@@ -526,14 +526,14 @@ def process_newsletter_entities(session, newsletter: Newsletter):
 def scrape_and_store(
     max_newsletters: int = 50,
     max_discovery_pages: int = 5,
-    db_path: str = "lda_filings.db",
+    db_url: str = None,
 ) -> dict:
     """
     Main entry point: discover, scrape, extract, and store newsletters.
 
     Returns summary stats.
     """
-    engine = init_db(db_path)
+    engine = init_db(db_url)
     session = get_session(engine)
 
     try:
@@ -592,12 +592,12 @@ def scrape_and_store(
         session.close()
 
 
-def reprocess_entities(db_path: str = "lda_filings.db") -> dict:
+def reprocess_entities(db_url: str = None) -> dict:
     """
     Re-extract entities from all newsletters that haven't been processed yet.
     Useful after updating the extraction logic.
     """
-    engine = init_db(db_path)
+    engine = init_db(db_url)
     session = get_session(engine)
 
     try:
