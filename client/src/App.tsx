@@ -138,26 +138,25 @@ function Dashboard({ onNavigate }: { onNavigate: (page: Page, ctx?: unknown) => 
   const [loading, setLoading] = useState(true);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
-  const load = useCallback(async () => {
+  const load = useCallback(async (retry = 0) => {
     setLoading(true);
     try {
-      const [s, r, tr, tc, ss] = await Promise.all([
-        api.getStats(),
+      api.getStats().then(setStats).catch(console.error);
+      api.getSyncStatus().then(ss => { setSyncStatus(ss); if (ss.status === 'running') setSyncing(true); }).catch(console.error);
+      const [r, tr, tc] = await Promise.all([
         api.searchFilings({ sort: '-dt_posted', page_size: 10 }),
         api.getTopRegistrants(10),
         api.getTopClients(10),
-        api.getSyncStatus(),
       ]);
-      setStats(s);
       setRecent(r.results);
       setTopRegistrants(tr);
       setTopClients(tc);
-      setSyncStatus(ss);
-      if (ss.status === 'running') setSyncing(true);
+      setLoading(false);
     } catch (e) {
       console.error(e);
+      setLoading(false);
+      if (retry < 3) setTimeout(() => load(retry + 1), 2000);
     }
-    setLoading(false);
   }, []);
 
   useEffect(() => { load(); }, [load]);
@@ -196,8 +195,6 @@ function Dashboard({ onNavigate }: { onNavigate: (page: Page, ctx?: unknown) => 
     try { await api.cancelSync(); } catch (e) { console.error(e); }
   };
 
-  if (loading) return <div className="flex items-center justify-center h-64"><Loader2 className="animate-spin text-indigo-600" size={32} /></div>;
-
   const syncRunning = syncing || syncStatus?.status === 'running';
 
   return (
@@ -207,7 +204,7 @@ function Dashboard({ onNavigate }: { onNavigate: (page: Page, ctx?: unknown) => 
         <div className="flex items-center justify-between flex-wrap gap-3">
           <div>
             <p className="text-sm text-gray-700 font-medium" data-testid="text-filing-count">
-              {stats?.total_filings ? `${stats.total_filings.toLocaleString()} filings stored` : 'No filings synced yet'}
+              {stats === null ? <span className="text-gray-400">Loading...</span> : stats.total_filings ? `${stats.total_filings.toLocaleString()} filings stored` : 'No filings synced yet'}
               {stats?.latest_filing && ` · Latest: ${formatDate(stats.latest_filing)}`}
             </p>
             {syncStatus && syncStatus.status !== 'idle' && (
@@ -286,7 +283,8 @@ function Dashboard({ onNavigate }: { onNavigate: (page: Page, ctx?: unknown) => 
       )}
 
       {/* Recent filings */}
-      {recent.length > 0 && (
+      {loading && <div className="flex items-center justify-center py-8"><Loader2 className="animate-spin text-gray-300" size={24} /></div>}
+      {!loading && recent.length > 0 && (
         <div>
           <div className="flex items-center justify-between mb-3">
             <h2 className="text-lg font-semibold text-gray-900">Recent Filings</h2>
