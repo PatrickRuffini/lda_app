@@ -838,10 +838,15 @@ def process_newsletter_entities(session, newsletter: Newsletter):
 
 
 _scrape_progress: dict = {}
+_reprocess_progress: dict = {}
 
 
 def get_scrape_progress() -> dict:
     return dict(_scrape_progress)
+
+
+def get_reprocess_progress() -> dict:
+    return dict(_reprocess_progress)
 
 
 def scrape_and_store(
@@ -943,10 +948,13 @@ def reprocess_all_entities(db_url: str = None) -> dict:
     Keeps existing entities in place (preserving types/overrides),
     resets mention counts, and re-extracts all relationships.
     """
+    global _reprocess_progress
     engine = init_db(db_url)
     session = get_session(engine)
 
     try:
+        _reprocess_progress = {"status": "running", "processed": 0, "total": 0}
+
         session.query(EntityMention).delete()
         session.query(Relationship).delete()
         session.execute(Entity.__table__.update().values(mention_count=0, is_consultant=False, is_client=False))
@@ -960,6 +968,9 @@ def reprocess_all_entities(db_url: str = None) -> dict:
             .order_by(Newsletter.published_date)
             .all()
         )
+
+        total = len(newsletters)
+        _reprocess_progress = {"status": "running", "processed": 0, "total": total}
 
         processed = 0
         for nl in newsletters:
@@ -976,8 +987,9 @@ def reprocess_all_entities(db_url: str = None) -> dict:
             process_newsletter_entities(session, nl)
             session.commit()
             processed += 1
+            _reprocess_progress = {"status": "running", "processed": processed, "total": total}
             if processed % 10 == 0:
-                logger.info(f"Reprocessed {processed}/{len(newsletters)} newsletters")
+                logger.info(f"Reprocessed {processed}/{total} newsletters")
 
         orphans = session.query(Entity).filter(Entity.mention_count == 0).count()
         if orphans:
@@ -986,8 +998,10 @@ def reprocess_all_entities(db_url: str = None) -> dict:
             logger.info(f"Cleaned up {orphans} orphaned entities with no mentions")
 
         logger.info(f"Reprocess complete: {processed} newsletters")
+        _reprocess_progress = {"status": "done", "processed": processed, "total": total}
         return {"processed": processed, "orphans_removed": orphans}
     except Exception as e:
+        _reprocess_progress = {"status": "error", "error": str(e)}
         session.rollback()
         raise
     finally:

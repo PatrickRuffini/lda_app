@@ -734,29 +734,32 @@ function InfluencePage({ onNavigate }: { onNavigate: (page: Page, ctx?: unknown)
   };
 
   const [reprocessing, setReprocessing] = useState(false);
+  const [reprocessProgress, setReprocessProgress] = useState<{ processed?: number; total?: number } | null>(null);
 
   const handleReprocess = async () => {
     if (!confirm('Re-run classification on all newsletters? This keeps existing entities but rebuilds all relationships. This may take a few minutes.')) return;
     setReprocessing(true);
+    setReprocessProgress(null);
     try {
       await api.reprocessEntities();
-      // Poll: relationships drop to 0 during reprocess, wait until they come back
-      let sawZero = false;
       const poll = setInterval(async () => {
         try {
-          const s = await api.getInfluenceStats();
-          if (s.total_relationships === 0) sawZero = true;
-          if (sawZero && s.total_relationships > 0) {
+          const p = await api.getReprocessStatus();
+          if (p.status === 'running') {
+            setReprocessProgress({ processed: p.processed, total: p.total });
+          }
+          if (p.status === 'done' || p.status === 'error') {
             clearInterval(poll);
-            setStats(s);
+            setReprocessProgress(null);
             setReprocessing(false);
             load();
           }
         } catch {}
-      }, 4000);
+      }, 2000);
     } catch (err) {
       console.error(err);
       setReprocessing(false);
+      setReprocessProgress(null);
     }
   };
 
@@ -791,41 +794,57 @@ function InfluencePage({ onNavigate }: { onNavigate: (page: Page, ctx?: unknown)
   return (
     <div className="space-y-6">
       {/* Header with scrape button */}
-      <div className="bg-white rounded-lg border border-gray-200 p-4 flex items-center justify-between">
-        <div>
-          <h1 className="text-lg font-semibold text-gray-900">Politico Influence</h1>
-          <p className="text-sm text-gray-500">
-            {stats?.total_newsletters ? `${stats.total_newsletters} newsletters scraped` : 'No newsletters yet'}
-            {stats?.latest_newsletter && ` · Latest: ${formatDate(stats.latest_newsletter)}`}
-          </p>
+      <div className="bg-white rounded-lg border border-gray-200 p-4">
+        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+          <div>
+            <h1 className="text-lg font-semibold text-gray-900">Politico Influence</h1>
+            <p className="text-sm text-gray-500">
+              {stats?.total_newsletters ? `${stats.total_newsletters} newsletters scraped` : 'No newsletters yet'}
+              {stats?.latest_newsletter && ` · Latest: ${formatDate(stats.latest_newsletter)}`}
+            </p>
+          </div>
+          <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2">
+            {scraping && scrapeProgress && (
+              <span className="text-xs text-gray-500" data-testid="text-scrape-progress">
+                {scrapeProgress.phase === 'discovering' ? 'Discovering archive...' :
+                  `${scrapeProgress.stored} stored, ${scrapeProgress.skipped} skipped${scrapeProgress.total ? ` / ${scrapeProgress.total} total` : ''}`}
+              </span>
+            )}
+            <button
+              onClick={handleScrape}
+              disabled={scraping || reprocessing}
+              className="flex items-center justify-center gap-2 bg-amber-600 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-amber-700 disabled:opacity-50 cursor-pointer"
+              data-testid="button-scrape"
+            >
+              {scraping ? <Loader2 size={16} className="animate-spin" /> : <RefreshCw size={16} />}
+              {scraping ? 'Scraping...' : 'Scrape Newsletters'}
+            </button>
+            <button
+              onClick={handleReprocess}
+              disabled={reprocessing || scraping}
+              className="flex items-center justify-center gap-2 border border-amber-600 text-amber-700 px-4 py-2 rounded-lg text-sm font-medium hover:bg-amber-50 disabled:opacity-50 cursor-pointer"
+              data-testid="button-reprocess"
+              title="Re-run classification: keeps entities, rebuilds all relationships"
+            >
+              {reprocessing ? <Loader2 size={16} className="animate-spin" /> : <RefreshCw size={16} />}
+              {reprocessing ? 'Reprocessing...' : 'Re-run Classification'}
+            </button>
+          </div>
         </div>
-        <div className="flex items-center gap-3">
-          {scraping && scrapeProgress && (
-            <span className="text-xs text-gray-500" data-testid="text-scrape-progress">
-              {scrapeProgress.phase === 'discovering' ? 'Discovering archive...' :
-                `${scrapeProgress.stored} stored, ${scrapeProgress.skipped} skipped${scrapeProgress.total ? ` / ${scrapeProgress.total} total` : ''}`}
-            </span>
-          )}
-          <button
-            onClick={handleReprocess}
-            disabled={reprocessing || scraping}
-            className="flex items-center gap-2 border border-amber-600 text-amber-700 px-4 py-2 rounded-lg text-sm font-medium hover:bg-amber-50 disabled:opacity-50 cursor-pointer"
-            data-testid="button-reprocess"
-            title="Re-run classification: keeps entities, rebuilds all relationships"
-          >
-            {reprocessing ? <Loader2 size={16} className="animate-spin" /> : <RefreshCw size={16} />}
-            {reprocessing ? 'Reprocessing...' : 'Re-run Classification'}
-          </button>
-          <button
-            onClick={handleScrape}
-            disabled={scraping || reprocessing}
-            className="flex items-center gap-2 bg-amber-600 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-amber-700 disabled:opacity-50 cursor-pointer"
-            data-testid="button-scrape"
-          >
-            {scraping ? <Loader2 size={16} className="animate-spin" /> : <RefreshCw size={16} />}
-            {scraping ? 'Scraping...' : 'Scrape Newsletters'}
-          </button>
-        </div>
+        {reprocessing && reprocessProgress && reprocessProgress.total && reprocessProgress.total > 0 && (
+          <div className="mt-3 pt-3 border-t border-gray-100">
+            <div className="flex items-center justify-between mb-1.5">
+              <span className="text-xs font-medium text-gray-600">Reprocessing newsletters...</span>
+              <span className="text-xs text-gray-500">{reprocessProgress.processed ?? 0} / {reprocessProgress.total}</span>
+            </div>
+            <div className="w-full h-2 bg-gray-100 rounded-full overflow-hidden">
+              <div
+                className="h-full bg-amber-500 rounded-full transition-all duration-500"
+                style={{ width: `${Math.round(((reprocessProgress.processed ?? 0) / reprocessProgress.total) * 100)}%` }}
+              />
+            </div>
+          </div>
+        )}
       </div>
 
       {/* Search */}

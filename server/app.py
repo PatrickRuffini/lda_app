@@ -19,7 +19,7 @@ from .models import (
     get_engine, get_session, init_db, run_migrations,
 )
 from .sync import sync_filings, sync_incremental, sync_backfill, sync_year, get_sync_progress, _update_progress
-from .influence import scrape_and_store, reprocess_all_entities, get_scrape_progress
+from .influence import scrape_and_store, reprocess_all_entities, get_scrape_progress, get_reprocess_progress
 
 logger = logging.getLogger(__name__)
 
@@ -789,6 +789,12 @@ def reprocess_entities_endpoint():
     thread = threading.Thread(target=_run, daemon=True)
     thread.start()
     return {"status": "started"}
+
+
+@app.get("/api/influence/reprocess/status")
+def reprocess_status_endpoint():
+    """Get reprocessing progress."""
+    return get_reprocess_progress()
 
 
 @app.get("/api/influence/network")

@@ -291,4 +291,7 @@ export const api = {
 
   reprocessEntities: () =>
     fetch(`${BASE}/influence/reprocess`, { method: 'POST' }).then(r => r.json()),
+
+  getReprocessStatus: () =>
+    fetchJson<{ status?: string; processed?: number; total?: number }>(`${BASE}/influence/reprocess/status`),
 };
