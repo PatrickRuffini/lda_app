@@ -16,7 +16,7 @@ from sqlalchemy import text, func, desc
 from .models import (
     Filing, LobbyingActivity, Registrant, Client,
     Entity, EntityMention, Newsletter, Relationship,
-    get_engine, get_session, init_db,
+    get_engine, get_session, init_db, run_migrations,
 )
 from .sync import sync_filings, sync_incremental, sync_backfill, sync_year, get_sync_progress, _update_progress
 from .influence import scrape_and_store, reprocess_all_entities, get_scrape_progress
@@ -63,6 +63,18 @@ def _get_engine():
 
 def _get_session():
     return get_session(_get_engine())
+
+
+@app.on_event("startup")
+def _run_startup_migrations():
+    engine = _get_engine()
+    if run_migrations(engine):
+        logger.info("Migration applied (added 'role' column). Triggering entity reprocess...")
+        try:
+            result = reprocess_all_entities(DB_URL)
+            logger.info(f"Startup reprocess complete: {result}")
+        except Exception as e:
+            logger.error(f"Startup reprocess failed: {e}")
 
 
 # ---------- Pydantic schemas ----------
@@ -583,6 +595,7 @@ def get_newsletter(newsletter_id: int):
                     "id": ent.id,
                     "name": ent.name,
                     "entity_type": ent.entity_type,
+                    "role": ent.role,
                     "display_name": ent.display_name,
                     "paragraph_index": mention.paragraph_index,
                     "context": mention.context_text,
@@ -628,6 +641,7 @@ def list_entities(
                     "id": e.id,
                     "name": e.name,
                     "entity_type": e.entity_type,
+                    "role": e.role,
                     "display_name": e.display_name,
                     "mention_count": e.mention_count,
                     "first_seen": e.first_seen.isoformat() if e.first_seen else None,
@@ -672,6 +686,7 @@ def get_entity(entity_id: int):
                         "id": other.id,
                         "name": other.name,
                         "entity_type": other.entity_type,
+                        "role": other.role,
                         "display_name": other.display_name,
                         "mention_count": other.mention_count,
                     },
@@ -708,6 +723,7 @@ def get_entity(entity_id: int):
             "id": entity.id,
             "name": entity.name,
             "entity_type": entity.entity_type,
+            "role": entity.role,
             "display_name": entity.display_name,
             "mention_count": entity.mention_count,
             "first_seen": entity.first_seen.isoformat() if entity.first_seen else None,
@@ -822,6 +838,7 @@ def get_network(
                 "id": e.id,
                 "name": e.name,
                 "entity_type": e.entity_type,
+                "role": e.role,
                 "display_name": e.display_name,
                 "mention_count": e.mention_count or 0,
             })

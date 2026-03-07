@@ -158,6 +158,7 @@ export interface NewsletterDetail {
     id: number;
     name: string;
     entity_type: string;
+    role: string | null;
     display_name: string;
     paragraph_index: number;
     context: string;
@@ -169,6 +170,7 @@ export interface EntitySummary {
   id: number;
   name: string;
   entity_type: string;
+  role: string | null;
   display_name: string;
   mention_count: number;
   first_seen: string | null;

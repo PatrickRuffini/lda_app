@@ -541,13 +541,15 @@ def detect_affiliations(entities_in_paragraph: list[dict], paragraph_text: str) 
 
 def _get_or_create_entity(session, name: str, entity_type: str = "unknown",
                           display_name: Optional[str] = None,
-                          date: Optional[datetime] = None) -> Entity:
+                          date: Optional[datetime] = None,
+                          role: Optional[str] = None) -> Entity:
     """Get or create an entity by name. Respects user_override for type."""
     entity = session.query(Entity).filter(Entity.name == name).first()
     if not entity:
         entity = Entity(
             name=name,
             entity_type=entity_type,
+            role=role,
             display_name=display_name or name,
             first_seen=date,
             last_seen=date,
@@ -559,6 +561,8 @@ def _get_or_create_entity(session, name: str, entity_type: str = "unknown",
     else:
         if not entity.user_override and entity_type != "unknown":
             entity.entity_type = entity_type
+        if role and not entity.role:
+            entity.role = role
         if display_name and not entity.user_override:
             entity.display_name = display_name
         if date:
@@ -756,11 +760,13 @@ def process_newsletter_entities(session, newsletter: Newsletter):
     for pair in reg_pairs:
         registrant = _get_or_create_entity(
             session, pair["registrant"], "organization", date=pub_date,
+            role="consultant",
         )
         registrant.mention_count += 1
 
         client_ent = _get_or_create_entity(
             session, pair["client"], "organization", date=pub_date,
+            role="client",
         )
         client_ent.mention_count += 1
 
@@ -929,11 +935,11 @@ def reprocess_all_entities(db_url: str = None) -> dict:
     try:
         session.query(EntityMention).delete()
         session.query(Relationship).delete()
-        session.execute(Entity.__table__.update().values(mention_count=0))
+        session.execute(Entity.__table__.update().values(mention_count=0, role=None))
         session.query(Newsletter).update({Newsletter.entities_extracted: False})
         session.commit()
 
-        logger.info("Cleared mentions, relationships, and reset mention counts. Entities preserved.")
+        logger.info("Cleared mentions, relationships, reset mention counts and roles. Entities preserved.")
 
         newsletters = (
             session.query(Newsletter)

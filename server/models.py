@@ -106,6 +106,7 @@ class Entity(Base):
     id = Column(Integer, primary_key=True)
     name = Column(String(500), nullable=False, index=True)
     entity_type = Column(String(50), index=True)
+    role = Column(String(50), index=True)  # "consultant", "client", or None
     display_name = Column(String(500))
     first_seen = Column(DateTime)
     last_seen = Column(DateTime)
@@ -158,6 +159,27 @@ def init_db(db_url=None):
     engine = get_engine(db_url)
     Base.metadata.create_all(engine, checkfirst=True)
     return engine
+
+
+def run_migrations(engine):
+    """Run schema migrations. Returns True if any migration was applied."""
+    from sqlalchemy import inspect, text as sa_text
+    inspector = inspect(engine)
+    migrated = False
+
+    if "entities" in inspector.get_table_names():
+        columns = {c["name"] for c in inspector.get_columns("entities")}
+        if "role" not in columns:
+            with engine.begin() as conn:
+                conn.execute(sa_text(
+                    "ALTER TABLE entities ADD COLUMN role VARCHAR(50)"
+                ))
+                conn.execute(sa_text(
+                    "CREATE INDEX ix_entities_role ON entities (role)"
+                ))
+            migrated = True
+
+    return migrated
 
 
 def get_session(engine):
