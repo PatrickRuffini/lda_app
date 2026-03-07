@@ -520,6 +520,7 @@ def get_influence_status():
 
 @app.get("/api/influence/newsletters")
 def list_newsletters(
+    q: Optional[str] = Query(None),
     page: int = Query(1, ge=1),
     page_size: int = Query(25, ge=1, le=100),
 ):
@@ -527,6 +528,10 @@ def list_newsletters(
     session = _get_session()
     try:
         query = session.query(Newsletter).order_by(desc(Newsletter.published_date))
+        if q:
+            query = query.filter(
+                Newsletter.title.ilike(f"%{q}%") | Newsletter.body_text.ilike(f"%{q}%")
+            )
         total = query.count()
         newsletters = query.offset((page - 1) * page_size).limit(page_size).all()
         return {
