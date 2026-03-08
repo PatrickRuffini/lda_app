@@ -135,6 +135,45 @@ function Pagination({ page, pageSize, total, onPage }: { page: number; pageSize:
   );
 }
 
+function RevenuePerLobbyistTable() {
+  const [data, setData] = useState<Array<{ id: number; name: string; filing_count: number; total_revenue: number; lobbyist_count: number; revenue_per_lobbyist: number | null }>>([]);
+  const [loading, setLoading] = useState(true);
+  useEffect(() => { api.getRevenuePerLobbyist(15).then(setData).catch(() => setData([])).finally(() => setLoading(false)); }, []);
+  if (loading) return <div className="bg-white rounded-lg border border-gray-200 p-4 flex justify-center py-8"><Loader2 className="animate-spin text-gray-300" size={20} /></div>;
+  if (!data.length) return null;
+  return (
+    <div className="bg-white rounded-lg border border-gray-200 p-4">
+      <h3 className="font-semibold text-gray-900 mb-3 flex items-center gap-2"><DollarSign size={16} /> Revenue per Lobbyist by Firm</h3>
+      <div className="overflow-x-auto">
+        <table className="w-full text-sm">
+          <thead>
+            <tr className="text-left text-gray-500 border-b border-gray-100">
+              <th className="pb-2 pr-4 font-medium">#</th>
+              <th className="pb-2 pr-4 font-medium">Firm</th>
+              <th className="pb-2 pr-4 font-medium text-right">Filings</th>
+              <th className="pb-2 pr-4 font-medium text-right">Revenue</th>
+              <th className="pb-2 pr-4 font-medium text-right">Lobbyists</th>
+              <th className="pb-2 font-medium text-right">Rev / Lobbyist</th>
+            </tr>
+          </thead>
+          <tbody>
+            {data.map((d, i) => (
+              <tr key={d.id} className="border-b border-gray-50 last:border-0">
+                <td className="py-1.5 pr-4 text-gray-400">{i + 1}</td>
+                <td className="py-1.5 pr-4 text-gray-700 truncate max-w-[200px]">{d.name}</td>
+                <td className="py-1.5 pr-4 text-right text-gray-500">{d.filing_count.toLocaleString()}</td>
+                <td className="py-1.5 pr-4 text-right text-gray-600">{formatMoney(d.total_revenue)}</td>
+                <td className="py-1.5 pr-4 text-right text-gray-500">{d.lobbyist_count}</td>
+                <td className="py-1.5 text-right font-medium text-green-600">{d.revenue_per_lobbyist != null ? formatMoney(d.revenue_per_lobbyist) : '—'}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
 // ---------- Dashboard ----------
 function Dashboard({ onNavigate }: { onNavigate: (page: Page, ctx?: unknown) => void }) {
   const [stats, setStats] = useState<Stats | null>(null);
@@ -197,7 +236,7 @@ function Dashboard({ onNavigate }: { onNavigate: (page: Page, ctx?: unknown) => 
     <div className="space-y-6">
       {/* Stats cards */}
       {stats && stats.total_filings > 0 && (
-        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-4">
+        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-4">
           <div className="bg-white rounded-lg border border-gray-200 p-4">
             <p className="text-2xl font-bold text-indigo-700">{stats.total_filings.toLocaleString()}</p>
             <p className="text-sm text-gray-500">Total Filings</p>
@@ -217,6 +256,10 @@ function Dashboard({ onNavigate }: { onNavigate: (page: Page, ctx?: unknown) => 
           <div className="bg-white rounded-lg border border-gray-200 p-4">
             <p className="text-2xl font-bold text-indigo-700">{formatMoney(stats.total_revenue)}</p>
             <p className="text-sm text-gray-500">Total Revenue</p>
+          </div>
+          <div className="bg-white rounded-lg border border-gray-200 p-4">
+            <p className="text-2xl font-bold text-green-700">{stats.total_lobbyists > 0 ? formatMoney(stats.total_revenue / stats.total_lobbyists) : '$0'}</p>
+            <p className="text-sm text-gray-500">Rev / Lobbyist</p>
           </div>
         </div>
       )}
@@ -291,6 +334,9 @@ function Dashboard({ onNavigate }: { onNavigate: (page: Page, ctx?: unknown) => 
           )}
         </div>
       )}
+
+      {/* Revenue per lobbyist by firm */}
+      <RevenuePerLobbyistTable />
 
       {/* Top consultants & lobbyists */}
       {(topConsultants.length > 0 || topLobbyists.length > 0) && (

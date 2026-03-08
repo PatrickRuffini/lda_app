@@ -445,6 +445,74 @@ def top_clients(limit: int = Query(20, ge=1, le=100), sort: str = Query("filings
     return _cached(f"top_clients_{limit}_{sort}", _fetch)
 
 
+@app.get("/api/revenue-per-lobbyist")
+def revenue_per_lobbyist(limit: int = Query(15, ge=1, le=50)):
+    """Top firms by filing count with revenue per lobbyist."""
+    session = _get_session()
+    try:
+        import json as _json
+        # Top firms by filing count
+        top_firms = (
+            session.query(
+                Registrant.id,
+                Registrant.name,
+                func.count(Filing.id).label("filing_count"),
+                func.sum(Filing.income).label("total_revenue"),
+            )
+            .join(Filing)
+            .filter(Filing.income.isnot(None))
+            .group_by(Registrant.id, Registrant.name)
+            .order_by(desc("filing_count"))
+            .limit(limit)
+            .all()
+        )
+        firm_ids = [r[0] for r in top_firms]
+        if not firm_ids:
+            return []
+
+        # Count distinct lobbyists per firm from LobbyingActivity JSON
+        activities = (
+            session.query(Filing.registrant_id, LobbyingActivity.lobbyists)
+            .select_from(LobbyingActivity)
+            .join(Filing)
+            .filter(Filing.registrant_id.in_(firm_ids))
+            .filter(LobbyingActivity.lobbyists.isnot(None))
+            .all()
+        )
+        firm_lobbyists: dict = {}
+        for reg_id, lob_json in activities:
+            try:
+                lob_list = _json.loads(lob_json)
+            except (ValueError, TypeError):
+                continue
+            if not isinstance(lob_list, list):
+                continue
+            names = firm_lobbyists.setdefault(reg_id, set())
+            for entry in lob_list:
+                lob = entry.get("lobbyist", {}) if isinstance(entry, dict) else {}
+                first = (lob.get("first_name") or "").strip()
+                last = (lob.get("last_name") or "").strip()
+                full = f"{first} {last}".strip()
+                if full:
+                    names.add(full.lower())
+
+        result = []
+        for reg_id, name, filing_count, total_revenue in top_firms:
+            rev = float(total_revenue) if total_revenue else 0
+            lob_count = len(firm_lobbyists.get(reg_id, set()))
+            result.append({
+                "id": reg_id,
+                "name": name,
+                "filing_count": filing_count,
+                "total_revenue": rev,
+                "lobbyist_count": lob_count,
+                "revenue_per_lobbyist": round(rev / lob_count, 2) if lob_count > 0 else None,
+            })
+        return result
+    finally:
+        session.close()
+
+
 @app.get("/api/top-consultants")
 def top_consultants(limit: int = Query(10, ge=1, le=50), sort: str = Query("mention_count", regex="^(mention_count|filings)$")):
     """Top consultants (entities with is_consultant=True), ranked by mention count or filing count."""
