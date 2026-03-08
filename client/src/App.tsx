@@ -131,7 +131,7 @@ function Pagination({ page, pageSize, total, onPage }: { page: number; pageSize:
 }
 
 // ---------- Dashboard ----------
-function Dashboard({ onNavigate }: { onNavigate: (page: Page, ctx?: unknown) => void }) {
+function Dashboard({ onNavigate, onSyncComplete }: { onNavigate: (page: Page, ctx?: unknown) => void; onSyncComplete?: () => void }) {
   const [stats, setStats] = useState<Stats | null>(null);
   const [recent, setRecent] = useState<FilingSummary[]>([]);
   const [topRegistrants, setTopRegistrants] = useState<TopEntity[]>([]);
@@ -175,6 +175,7 @@ function Dashboard({ onNavigate }: { onNavigate: (page: Page, ctx?: unknown) => 
             pollRef.current = null;
             setSyncing(false);
             load();
+            onSyncComplete?.();
           }
         } catch (e) { console.error(e); }
       }, 2000);
@@ -2002,16 +2003,17 @@ function ReportLineChart({ data, title, loading }: { data: ReportSeries | null; 
   );
 }
 
-function ActivityHeatmap() {
+function ActivityHeatmap({ syncVersion }: { syncVersion?: number }) {
   const [data, setData] = useState<Array<{ date: string; count: number }>>([]);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
+    setLoading(true);
     api.getActivityHeatmap()
       .then(d => setData(d.days))
       .catch(() => setData([]))
       .finally(() => setLoading(false));
-  }, []);
+  }, [syncVersion]);
 
   const heatmapData = useMemo(() => {
     if (!data.length) return { weeks: [], maxCount: 0, months: [] };
@@ -2140,7 +2142,7 @@ function ActivityHeatmap() {
   );
 }
 
-function ReportsPage() {
+function ReportsPage({ syncVersion }: { syncVersion?: number }) {
   const [preset, setPreset] = useState<DatePreset>('past_365');
   const [granularity, setGranularity] = useState<'week' | 'month'>('month');
   const [regData, setRegData] = useState<ReportSeries | null>(null);
@@ -2160,7 +2162,7 @@ function ReportsPage() {
       .then(d => setIssueData(d))
       .catch(() => setIssueData(null))
       .finally(() => setIssueLoading(false));
-  }, [preset, granularity]);
+  }, [preset, granularity, syncVersion]);
 
   useEffect(() => { loadData(); }, [loadData]);
 
@@ -2215,7 +2217,7 @@ function ReportsPage() {
       </div>
 
       {/* Activity heatmap */}
-      <ActivityHeatmap />
+      <ActivityHeatmap syncVersion={syncVersion} />
 
       {/* Charts */}
       <ReportLineChart
@@ -2505,6 +2507,7 @@ export default function App() {
   type NavState = { page: Page; filingUuid?: string; entityId?: number; newsletterId?: number; centerEntityId?: number; leaderboardType?: string; conversationId?: number };
   const [navState, setNavState] = useState<NavState>({ page: 'dashboard' });
   const [navHistory, setNavHistory] = useState<NavState[]>([]);
+  const [syncVersion, setSyncVersion] = useState(0);
 
   const page = navState.page;
   const filingUuid = navState.filingUuid ?? null;
@@ -2552,7 +2555,7 @@ export default function App() {
     <div className="min-h-screen">
       <Nav page={navPage} setPage={p => { setNavHistory([]); setNavState({ page: p }); }} />
       <main className="max-w-7xl mx-auto px-4 sm:px-6 py-6">
-        {page === 'dashboard' && <Dashboard onNavigate={handleNavigate} />}
+        {page === 'dashboard' && <Dashboard onNavigate={handleNavigate} onSyncComplete={() => setSyncVersion(v => v + 1)} />}
         {page === 'search' && <SearchPage onNavigate={handleNavigate} />}
         {page === 'issues' && <IssuesPage onNavigate={handleNavigate} />}
         {page === 'filing' && filingUuid && (
@@ -2569,7 +2572,7 @@ export default function App() {
         {page === 'leaderboard' && navState.leaderboardType && (
           <EntityLeaderboard entityType={navState.leaderboardType} onBack={handleBack} onNavigate={handleNavigate} />
         )}
-        {page === 'reports' && <ReportsPage />}
+        {page === 'reports' && <ReportsPage syncVersion={syncVersion} />}
         {page === 'chat' && (
           <ChatPage onNavigate={handleNavigate} initialConversationId={navState.conversationId} />
         )}
