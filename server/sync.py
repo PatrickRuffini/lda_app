@@ -469,6 +469,10 @@ def sync_backfill_chunk(db_url: str = None, chunk_size: int = 1000) -> dict:
     results and only storing filings we don't already have (by filing_uuid).
     Stops after chunk_size new filings are stored.
     Moves to the prior year when a year is exhausted.
+
+    Smart page skipping: for each year, counts how many filings we already
+    have and jumps to the approximate page where new filings should start
+    (with a safety margin of 5 pages to avoid gaps).
     """
     engine = init_db(db_url)
     session = get_session(engine)
@@ -478,6 +482,12 @@ def sync_backfill_chunk(db_url: str = None, chunk_size: int = 1000) -> dict:
     # Collect all filing_uuids we already have for fast lookups
     existing_uuids = set(
         row[0] for row in session.query(Filing.filing_uuid).all()
+    )
+    # Count filings per year so we can skip already-fetched pages
+    year_counts = dict(
+        session.query(Filing.filing_year, func.count())
+        .group_by(Filing.filing_year)
+        .all()
     )
     session.close()
 
@@ -499,6 +509,7 @@ def sync_backfill_chunk(db_url: str = None, chunk_size: int = 1000) -> dict:
     total_duplicates = 0
     total_pages = 0
     years_completed = []
+    SAFETY_MARGIN_PAGES = 5
 
     try:
         for year in range(start_year, OLDEST_YEAR - 1, -1):
@@ -511,7 +522,14 @@ def sync_backfill_chunk(db_url: str = None, chunk_size: int = 1000) -> dict:
                 break
 
             _update_progress(current_year=year)
-            logger.info(f"Backfill chunk: year {year} (stored {total_stored}/{chunk_size})")
+
+            # Smart page skip: jump ahead based on filings already collected
+            existing_for_year = year_counts.get(year, 0)
+            start_page = max(1, (existing_for_year // PAGE_SIZE) - SAFETY_MARGIN_PAGES)
+            if start_page > 1:
+                logger.info(f"Backfill chunk: year {year} — {existing_for_year} filings in DB, skipping to page {start_page}")
+            else:
+                logger.info(f"Backfill chunk: year {year} (stored {total_stored}/{chunk_size})")
 
             # Page through this year ordered by dt_posted ascending (oldest first)
             params = {
@@ -519,8 +537,9 @@ def sync_backfill_chunk(db_url: str = None, chunk_size: int = 1000) -> dict:
                 "filing_year": year,
                 "ordering": "dt_posted",
             }
-            page = 1
+            page = start_page
             year_had_new = False
+            consecutive_dup_pages = 0
 
             while True:
                 if _sync_progress.get("status") == "cancelling":
@@ -571,6 +590,16 @@ def sync_backfill_chunk(db_url: str = None, chunk_size: int = 1000) -> dict:
 
                 logger.info(f"Year {year}, page {page}: {page_new} new, {len(results) - page_new} skipped")
 
+                # If we started from a skip point and hit 3 consecutive
+                # all-duplicate pages past the safety margin, this year is done
+                if page_new == 0:
+                    consecutive_dup_pages += 1
+                    if start_page > 1 and consecutive_dup_pages >= 3:
+                        logger.info(f"Year {year}: 3 consecutive duplicate pages after skip, moving on")
+                        break
+                else:
+                    consecutive_dup_pages = 0
+
                 if not data.get("next"):
                     break
 
@@ -581,7 +610,7 @@ def sync_backfill_chunk(db_url: str = None, chunk_size: int = 1000) -> dict:
             _update_progress(years_completed=list(years_completed))
 
             if not year_had_new:
-                logger.info(f"Year {year}: no new filings found, all {page} pages already in DB")
+                logger.info(f"Year {year}: no new filings found, all pages already in DB")
 
             time.sleep(0.5)
 
