@@ -2338,6 +2338,113 @@ function EntityAppearancesLeaderboard({ onNavigate }: { onNavigate?: (page: Page
   );
 }
 
+function FilingTypeDonut() {
+  const [data, setData] = useState<Array<{ type: string; display: string; count: number }>>([]);
+  const [loading, setLoading] = useState(true);
+  useEffect(() => { api.getFilingTypeBreakdown().then(setData).catch(() => setData([])).finally(() => setLoading(false)); }, []);
+  if (loading) return <div className="bg-white rounded-lg border border-gray-200 p-4 flex justify-center py-8"><Loader2 className="animate-spin text-gray-300" size={20} /></div>;
+  if (!data.length) return null;
+  const total = data.reduce((s, d) => s + d.count, 0);
+  const colors = ['#6366f1', '#f59e0b', '#10b981', '#ef4444', '#8b5cf6', '#ec4899'];
+  return (
+    <div className="bg-white rounded-lg border border-gray-200 p-4">
+      <h3 className="font-semibold text-gray-900 mb-3">Filing Types</h3>
+      <div className="space-y-2">
+        {data.map((d, i) => (
+          <div key={d.type}>
+            <div className="flex items-center justify-between text-sm mb-0.5">
+              <span className="text-gray-700">{d.display}</span>
+              <span className="text-gray-500">{d.count.toLocaleString()} ({Math.round(d.count / total * 100)}%)</span>
+            </div>
+            <div className="w-full h-2 bg-gray-100 rounded-full overflow-hidden">
+              <div className="h-full rounded-full" style={{ width: `${d.count / total * 100}%`, backgroundColor: colors[i % colors.length] }} />
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function RegistrationTrendChart({ granularity, syncVersion }: { granularity: string; syncVersion?: number }) {
+  const [data, setData] = useState<{ periods: string[]; registrations: number[]; terminations: number[] } | null>(null);
+  const [loading, setLoading] = useState(true);
+  useEffect(() => {
+    setLoading(true);
+    api.getRegistrationTrend(granularity).then(setData).catch(() => setData(null)).finally(() => setLoading(false));
+  }, [granularity, syncVersion]);
+  if (loading) return <div className="bg-white rounded-lg border border-gray-200 p-6 flex justify-center"><Loader2 className="animate-spin text-gray-300" size={24} /></div>;
+  if (!data || !data.periods.length) return null;
+  const chartData = data.periods.map((p, i) => ({ period: p, Registrations: data.registrations[i], Terminations: data.terminations[i] }));
+  return (
+    <div className="bg-white rounded-lg border border-gray-200 p-4">
+      <h3 className="font-semibold text-gray-900 mb-4">New Registrations vs Terminations</h3>
+      <ResponsiveContainer width="100%" height={280}>
+        <LineChart data={chartData} margin={{ top: 5, right: 20, left: 0, bottom: 5 }}>
+          <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
+          <XAxis dataKey="period" tick={{ fontSize: 10 }} />
+          <YAxis tick={{ fontSize: 11 }} />
+          <Tooltip />
+          <Legend />
+          <Line type="monotone" dataKey="Registrations" stroke="#10b981" strokeWidth={2} dot={false} />
+          <Line type="monotone" dataKey="Terminations" stroke="#ef4444" strokeWidth={2} dot={false} />
+        </LineChart>
+      </ResponsiveContainer>
+    </div>
+  );
+}
+
+function TopClientsBySpend() {
+  const [data, setData] = useState<Array<{ name: string; total_spend: number; filing_count: number; firm_count: number }>>([]);
+  const [loading, setLoading] = useState(true);
+  useEffect(() => { api.getTopClientsBySpend(15).then(setData).catch(() => setData([])).finally(() => setLoading(false)); }, []);
+  if (loading) return <div className="bg-white rounded-lg border border-gray-200 p-4 flex justify-center py-8"><Loader2 className="animate-spin text-gray-300" size={20} /></div>;
+  if (!data.length) return null;
+  return (
+    <div className="bg-white rounded-lg border border-gray-200 p-4">
+      <h3 className="font-semibold text-gray-900 mb-3">Top Clients by Spend</h3>
+      <div className="space-y-1.5">
+        {data.map((d, i) => (
+          <div key={d.name} className="flex items-center justify-between text-sm">
+            <span className="text-gray-700 truncate"><span className="text-gray-400 mr-2">{i + 1}.</span>{d.name}</span>
+            <div className="flex items-center gap-3 shrink-0 ml-2">
+              <span className="text-gray-500 text-xs">{d.firm_count} firms</span>
+              <span className="text-green-600 font-medium">{formatMoney(d.total_spend)}</span>
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function TopIssuesByRevenue() {
+  const [data, setData] = useState<Array<{ issue: string; total_revenue: number; filing_count: number; firm_count: number }>>([]);
+  const [loading, setLoading] = useState(true);
+  useEffect(() => { api.getTopIssuesByRevenue(15).then(setData).catch(() => setData([])).finally(() => setLoading(false)); }, []);
+  if (loading) return <div className="bg-white rounded-lg border border-gray-200 p-4 flex justify-center py-8"><Loader2 className="animate-spin text-gray-300" size={20} /></div>;
+  if (!data.length) return null;
+  const maxRev = Math.max(...data.map(d => d.total_revenue));
+  return (
+    <div className="bg-white rounded-lg border border-gray-200 p-4">
+      <h3 className="font-semibold text-gray-900 mb-3">Top Issue Areas by Revenue</h3>
+      <div className="space-y-1.5">
+        {data.map((d, i) => (
+          <div key={d.issue}>
+            <div className="flex items-center justify-between text-sm mb-0.5">
+              <span className="text-gray-700 truncate text-xs"><span className="text-gray-400 mr-1">{i + 1}.</span>{d.issue}</span>
+              <span className="text-green-600 font-medium text-xs shrink-0 ml-2">{formatMoney(d.total_revenue)}</span>
+            </div>
+            <div className="w-full h-1.5 bg-gray-100 rounded-full overflow-hidden">
+              <div className="h-full bg-green-400 rounded-full" style={{ width: `${d.total_revenue / maxRev * 100}%` }} />
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 function ReportsPage({ syncVersion, onNavigate }: { syncVersion?: number; onNavigate?: (page: Page, ctx?: unknown) => void }) {
   const [preset, setPreset] = useState<DatePreset>('past_365');
   const [granularity, setGranularity] = useState<'week' | 'month'>('month');
@@ -2380,24 +2487,15 @@ function ReportsPage({ syncVersion, onNavigate }: { syncVersion?: number; onNavi
 
   return (
     <div className="space-y-6">
+      {/* Header */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <h1 className="text-xl font-bold text-gray-900 flex items-center gap-2">
-          <TrendingUp size={22} className="text-indigo-600" /> LDA Reports
+          <TrendingUp size={22} className="text-indigo-600" /> Reports
         </h1>
         <div className="flex items-center gap-3">
           <div className="flex rounded-lg border border-gray-200 overflow-hidden">
-            <button
-              onClick={() => setGranularity('week')}
-              className={`px-3 py-1.5 text-sm font-medium cursor-pointer transition ${granularity === 'week' ? 'bg-indigo-600 text-white' : 'bg-white text-gray-600 hover:bg-gray-50'}`}
-            >
-              Weekly
-            </button>
-            <button
-              onClick={() => setGranularity('month')}
-              className={`px-3 py-1.5 text-sm font-medium cursor-pointer transition ${granularity === 'month' ? 'bg-indigo-600 text-white' : 'bg-white text-gray-600 hover:bg-gray-50'}`}
-            >
-              Monthly
-            </button>
+            <button onClick={() => setGranularity('week')} className={`px-3 py-1.5 text-sm font-medium cursor-pointer transition ${granularity === 'week' ? 'bg-indigo-600 text-white' : 'bg-white text-gray-600 hover:bg-gray-50'}`}>Weekly</button>
+            <button onClick={() => setGranularity('month')} className={`px-3 py-1.5 text-sm font-medium cursor-pointer transition ${granularity === 'month' ? 'bg-indigo-600 text-white' : 'bg-white text-gray-600 hover:bg-gray-50'}`}>Monthly</button>
           </div>
         </div>
       </div>
@@ -2405,44 +2503,42 @@ function ReportsPage({ syncVersion, onNavigate }: { syncVersion?: number; onNavi
       {/* Date preset pills */}
       <div className="flex flex-wrap gap-2">
         {presets.map(p => (
-          <button
-            key={p.id}
-            onClick={() => setPreset(p.id)}
-            className={`px-3 py-1.5 rounded-full text-sm font-medium cursor-pointer transition ${
-              preset === p.id
-                ? 'bg-indigo-600 text-white'
-                : 'bg-white text-gray-600 border border-gray-200 hover:bg-gray-50'
-            }`}
-          >
+          <button key={p.id} onClick={() => setPreset(p.id)}
+            className={`px-3 py-1.5 rounded-full text-sm font-medium cursor-pointer transition ${preset === p.id ? 'bg-indigo-600 text-white' : 'bg-white text-gray-600 border border-gray-200 hover:bg-gray-50'}`}>
             {p.label}
           </button>
         ))}
       </div>
 
-      {/* Activity heatmap */}
+      {/* Activity heatmap - full width */}
       <ActivityHeatmap syncVersion={syncVersion} />
 
-      {/* Revenue chart */}
-      <RevenueChart data={revenueData} loading={revenueLoading} />
+      {/* Row 1: Revenue + Registration trend */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        <RevenueChart data={revenueData} loading={revenueLoading} />
+        <RegistrationTrendChart granularity={granularity} syncVersion={syncVersion} />
+      </div>
 
-      {/* Entity appearances leaderboard */}
-      <EntityAppearancesLeaderboard onNavigate={onNavigate} />
+      {/* Row 2: Leaderboards side by side */}
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+        <EntityAppearancesLeaderboard onNavigate={onNavigate} />
+        <TopClientsBySpend />
+        <TopIssuesByRevenue />
+      </div>
 
-      {/* Issue-firm heatmap */}
+      {/* Row 3: Filing type + time series charts */}
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+        <FilingTypeDonut />
+        <div className="lg:col-span-2">
+          <ReportLineChart data={regData} title="New Lobbying Registrations by Firm" loading={regLoading} />
+        </div>
+      </div>
+
+      {/* Row 4: Issue activity chart full width */}
+      <ReportLineChart data={issueData} title="Lobbying Activity by Issue Area" loading={issueLoading} />
+
+      {/* Row 5: Issue-firm heatmap full width */}
       <IssueFirmHeatmapChart syncVersion={syncVersion} />
-
-      {/* Charts */}
-      <ReportLineChart
-        data={regData}
-        title="New Lobbying Registrations by Firm"
-        loading={regLoading}
-      />
-
-      <ReportLineChart
-        data={issueData}
-        title="Lobbying Activity by Issue Area"
-        loading={issueLoading}
-      />
     </div>
   );
 }

@@ -920,6 +920,124 @@ def entity_lda_stats(entity_id: int):
         session.close()
 
 
+@app.get("/api/reports/top-clients-by-spend")
+def top_clients_by_spend(limit: int = Query(15, ge=1, le=50)):
+    """Top clients ranked by total lobbying spend."""
+    session = _get_session()
+    try:
+        rows = (
+            session.query(
+                Client.name,
+                func.sum(Filing.income).label("total_spend"),
+                func.count(Filing.id).label("filing_count"),
+                func.count(func.distinct(Registrant.id)).label("firm_count"),
+            )
+            .select_from(Filing)
+            .join(Client).join(Registrant)
+            .filter(Filing.income.isnot(None))
+            .group_by(Client.id, Client.name)
+            .order_by(desc("total_spend"))
+            .limit(limit)
+            .all()
+        )
+        return [
+            {"name": r[0], "total_spend": float(r[1]) if r[1] else 0, "filing_count": r[2], "firm_count": r[3]}
+            for r in rows
+        ]
+    finally:
+        session.close()
+
+
+@app.get("/api/reports/filing-type-breakdown")
+def filing_type_breakdown():
+    """Breakdown of filings by type."""
+    session = _get_session()
+    try:
+        rows = (
+            session.query(
+                Filing.filing_type,
+                Filing.filing_type_display,
+                func.count(Filing.id).label("count"),
+            )
+            .group_by(Filing.filing_type, Filing.filing_type_display)
+            .order_by(desc("count"))
+            .all()
+        )
+        return [{"type": r[0], "display": r[1] or r[0], "count": r[2]} for r in rows]
+    finally:
+        session.close()
+
+
+@app.get("/api/reports/registration-trend")
+def registration_trend(granularity: str = Query("month", regex="^(week|month)$")):
+    """New registrations vs terminations over time."""
+    session = _get_session()
+    try:
+        if granularity == "week":
+            period_expr = func.to_char(Filing.dt_posted, 'IYYY-IW')
+        else:
+            period_expr = func.to_char(Filing.dt_posted, 'YYYY-MM')
+
+        rows = (
+            session.query(
+                Filing.filing_type,
+                period_expr.label("period"),
+                func.count(Filing.id).label("count"),
+            )
+            .filter(Filing.filing_type.in_(['RR', 'TR']))
+            .group_by(Filing.filing_type, "period")
+            .all()
+        )
+
+        registrations: dict = {}
+        terminations: dict = {}
+        for ftype, period, count in rows:
+            if ftype == 'RR':
+                registrations[period] = count
+            else:
+                terminations[period] = count
+
+        all_periods = sorted(set(list(registrations.keys()) + list(terminations.keys())))
+        return {
+            "periods": all_periods,
+            "registrations": [registrations.get(p, 0) for p in all_periods],
+            "terminations": [terminations.get(p, 0) for p in all_periods],
+            "granularity": granularity,
+        }
+    finally:
+        session.close()
+
+
+@app.get("/api/reports/top-issues-by-revenue")
+def top_issues_by_revenue(limit: int = Query(15, ge=1, le=50)):
+    """Top issue areas ranked by total lobbying revenue."""
+    session = _get_session()
+    try:
+        rows = (
+            session.query(
+                LobbyingActivity.general_issue_code_display,
+                func.sum(Filing.income).label("total_revenue"),
+                func.count(func.distinct(Filing.id)).label("filing_count"),
+                func.count(func.distinct(Registrant.id)).label("firm_count"),
+            )
+            .select_from(LobbyingActivity)
+            .join(Filing)
+            .join(Registrant)
+            .filter(Filing.income.isnot(None))
+            .filter(LobbyingActivity.general_issue_code_display.isnot(None))
+            .group_by(LobbyingActivity.general_issue_code_display)
+            .order_by(desc("total_revenue"))
+            .limit(limit)
+            .all()
+        )
+        return [
+            {"issue": r[0], "total_revenue": float(r[1]) if r[1] else 0, "filing_count": r[2], "firm_count": r[3]}
+            for r in rows
+        ]
+    finally:
+        session.close()
+
+
 # ---------- Helpers ----------
 
 def _filing_to_dict(filing: Filing, full: bool = False) -> dict:

@@ -418,4 +418,16 @@ export const api = {
 
   getEntityLdaStats: (entityId: number) =>
     fetchJson<EntityLdaStats>(`${BASE}/influence/entities/${entityId}/lda-stats`),
+
+  getTopClientsBySpend: (limit = 15) =>
+    fetchJson<Array<{ name: string; total_spend: number; filing_count: number; firm_count: number }>>(`${BASE}/reports/top-clients-by-spend?limit=${limit}`),
+
+  getFilingTypeBreakdown: () =>
+    fetchJson<Array<{ type: string; display: string; count: number }>>(`${BASE}/reports/filing-type-breakdown`),
+
+  getRegistrationTrend: (granularity = 'month') =>
+    fetchJson<{ periods: string[]; registrations: number[]; terminations: number[]; granularity: string }>(`${BASE}/reports/registration-trend?granularity=${granularity}`),
+
+  getTopIssuesByRevenue: (limit = 15) =>
+    fetchJson<Array<{ issue: string; total_revenue: number; filing_count: number; firm_count: number }>>(`${BASE}/reports/top-issues-by-revenue?limit=${limit}`),
 };
