@@ -754,6 +754,172 @@ def entity_appearances(limit: int = Query(25, ge=1, le=100), entity_type: Option
         session.close()
 
 
+@app.get("/api/reports/issue-firm-heatmap")
+def issue_firm_heatmap(limit: int = Query(15, ge=1, le=50)):
+    """Heatmap: top firms × issue areas showing % of each firm's filings per issue."""
+    session = _get_session()
+    try:
+        # Top firms by filing count
+        top_firms = (
+            session.query(Registrant.id, Registrant.name, func.count(Filing.id).label("total"))
+            .join(Filing)
+            .group_by(Registrant.id, Registrant.name)
+            .order_by(desc("total"))
+            .limit(limit)
+            .all()
+        )
+        firm_ids = [r[0] for r in top_firms]
+        firm_names = [r[1] for r in top_firms]
+        firm_totals = {r[0]: r[2] for r in top_firms}
+
+        if not firm_ids:
+            return {"firms": [], "issues": [], "cells": []}
+
+        # Issue breakdown per firm
+        rows = (
+            session.query(
+                Registrant.id,
+                LobbyingActivity.general_issue_code_display,
+                func.count(func.distinct(Filing.id)).label("cnt"),
+            )
+            .select_from(LobbyingActivity)
+            .join(Filing)
+            .join(Registrant)
+            .filter(Registrant.id.in_(firm_ids))
+            .filter(LobbyingActivity.general_issue_code_display.isnot(None))
+            .group_by(Registrant.id, LobbyingActivity.general_issue_code_display)
+            .all()
+        )
+
+        # Find top issues across these firms
+        issue_counts: dict = {}
+        for _, issue, cnt in rows:
+            issue_counts[issue] = issue_counts.get(issue, 0) + cnt
+        top_issues = sorted(issue_counts, key=issue_counts.get, reverse=True)[:20]
+
+        # Build cells: for each firm, % of their filings in each issue
+        firm_issue_map: dict = {}
+        for reg_id, issue, cnt in rows:
+            if issue in top_issues:
+                firm_issue_map.setdefault(reg_id, {})[issue] = cnt
+
+        cells = []
+        for reg_id in firm_ids:
+            total = firm_totals[reg_id]
+            row_data = []
+            for issue in top_issues:
+                cnt = firm_issue_map.get(reg_id, {}).get(issue, 0)
+                row_data.append(round(cnt / total * 100, 1) if total else 0)
+            cells.append(row_data)
+
+        return {"firms": firm_names, "issues": top_issues, "cells": cells}
+    finally:
+        session.close()
+
+
+@app.get("/api/influence/entities/{entity_id}/lda-stats")
+def entity_lda_stats(entity_id: int):
+    """LDA stats for a consultant entity: ranking, filing count, revenue, issue breakdown with overindex."""
+    session = _get_session()
+    try:
+        entity = session.query(Entity).get(entity_id)
+        if not entity:
+            raise HTTPException(status_code=404, detail="Entity not found")
+
+        if not entity.registrant_id:
+            return {"has_lda_data": False}
+
+        reg_id = entity.registrant_id
+        registrant = session.query(Registrant).get(reg_id)
+
+        # Filing count and total revenue for this registrant
+        stats = (
+            session.query(
+                func.count(Filing.id).label("filing_count"),
+                func.sum(Filing.income).label("total_revenue"),
+                func.count(func.distinct(Client.id)).label("unique_clients"),
+            )
+            .select_from(Filing)
+            .join(Client)
+            .filter(Filing.registrant_id == reg_id)
+            .first()
+        )
+        filing_count = stats[0] or 0
+        total_revenue = float(stats[1]) if stats[1] else 0
+        unique_clients = stats[2] or 0
+
+        # Rank among all registrants by filing count
+        rank_result = session.execute(
+            text("""
+                SELECT rank FROM (
+                    SELECT r.id, RANK() OVER (ORDER BY COUNT(f.id) DESC) as rank
+                    FROM registrants r JOIN filings f ON f.registrant_id = r.id
+                    GROUP BY r.id
+                ) sub WHERE sub.id = :reg_id
+            """),
+            {"reg_id": reg_id},
+        ).fetchone()
+        rank = rank_result[0] if rank_result else None
+        total_registrants = session.query(func.count(Registrant.id)).scalar() or 0
+
+        # Issue area breakdown for this registrant
+        issue_rows = (
+            session.query(
+                LobbyingActivity.general_issue_code_display,
+                func.count(func.distinct(Filing.id)).label("cnt"),
+            )
+            .select_from(LobbyingActivity)
+            .join(Filing)
+            .filter(Filing.registrant_id == reg_id)
+            .filter(LobbyingActivity.general_issue_code_display.isnot(None))
+            .group_by(LobbyingActivity.general_issue_code_display)
+            .order_by(desc("cnt"))
+            .all()
+        )
+        entity_issue_total = sum(r[1] for r in issue_rows)
+
+        # Average issue distribution across all registrants
+        avg_rows = (
+            session.query(
+                LobbyingActivity.general_issue_code_display,
+                func.count(func.distinct(Filing.id)).label("cnt"),
+            )
+            .select_from(LobbyingActivity)
+            .join(Filing)
+            .filter(LobbyingActivity.general_issue_code_display.isnot(None))
+            .group_by(LobbyingActivity.general_issue_code_display)
+            .all()
+        )
+        avg_total = sum(r[1] for r in avg_rows)
+        avg_pcts = {r[0]: r[1] / avg_total * 100 if avg_total else 0 for r in avg_rows}
+
+        issues = []
+        for issue_name, cnt in issue_rows[:15]:
+            entity_pct = cnt / entity_issue_total * 100 if entity_issue_total else 0
+            avg_pct = avg_pcts.get(issue_name, 0)
+            overindex = round(entity_pct / avg_pct, 2) if avg_pct > 0 else 0
+            issues.append({
+                "issue": issue_name,
+                "count": cnt,
+                "pct": round(entity_pct, 1),
+                "avg_pct": round(avg_pct, 1),
+                "overindex": overindex,
+            })
+
+        return {
+            "has_lda_data": True,
+            "registrant_name": registrant.name if registrant else None,
+            "filing_count": filing_count,
+            "total_revenue": total_revenue,
+            "unique_clients": unique_clients,
+            "rank": rank,
+            "total_registrants": total_registrants,
+            "issues": issues,
+        }
+    finally:
+        session.close()
+
+
 # ---------- Helpers ----------
 
 def _filing_to_dict(filing: Filing, full: bool = False) -> dict:

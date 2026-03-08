@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { Search, FileText, Tag, BarChart3, RefreshCw, Building2, Users, ChevronLeft, ChevronRight, ExternalLink, DollarSign, Calendar, Loader2, Network, Newspaper, User, Briefcase, Menu, X, Download, Square, ChevronDown, Target, Sparkles, Send, MessageCircle, Bot, PanelLeftOpen, PanelLeftClose, TrendingUp, Settings } from 'lucide-react';
-import { api, type FilingSummary, type FilingDetail, type IssueSummary, type Stats, type SyncStatus, type SyncCoverage, type SearchParams, type TopEntity, type NewsletterSummary, type NewsletterDetail, type EntitySummary, type EntityDetail, type NetworkData, type InfluenceStats, type ReportSeries, type EntityAppearance, type RevenueByQuarter } from './api';
+import { api, type FilingSummary, type FilingDetail, type IssueSummary, type Stats, type SyncStatus, type SyncCoverage, type SearchParams, type TopEntity, type NewsletterSummary, type NewsletterDetail, type EntitySummary, type EntityDetail, type NetworkData, type InfluenceStats, type ReportSeries, type EntityAppearance, type RevenueByQuarter, type IssueFirmHeatmap, type EntityLdaStats } from './api';
 import { formatDistanceToNow, format } from 'date-fns';
 import NetworkGraph, { computeEigenvectorCentrality, type SizeMode } from './NetworkGraph';
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from 'recharts';
@@ -9,6 +9,10 @@ type Page = 'dashboard' | 'search' | 'issues' | 'filing' | 'influence' | 'networ
 
 function formatMoney(val: number | null | undefined): string {
   if (val === null || val === undefined) return '-';
+  const abs = Math.abs(val);
+  if (abs >= 1e9) return `$${(val / 1e9).toFixed(3)}B`;
+  if (abs >= 1e6) return `$${(val / 1e6).toFixed(1)}M`;
+  if (abs >= 1e3) return `$${(val / 1e3).toFixed(0)}K`;
   return new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 0 }).format(val);
 }
 
@@ -199,8 +203,11 @@ function Dashboard({ onNavigate }: { onNavigate: (page: Page, ctx?: unknown) => 
         </div>
       )}
 
-      {stats?.latest_filing && (
-        <p className="text-xs text-gray-400">Latest filing: {formatDate(stats.latest_filing)}</p>
+      {stats && (
+        <p className="text-sm text-gray-500 -mt-4">
+          {stats.total_filings.toLocaleString()} filings stored
+          {stats.latest_filing && <> · Latest: {formatDate(stats.latest_filing)}</>}
+        </p>
       )}
 
       {/* Recent filings */}
@@ -1086,6 +1093,7 @@ function EntityDetailPage({ entityId, onBack, onNavigate }: { entityId: number; 
   const [entity, setEntity] = useState<EntityDetail | null>(null);
   const [loading, setLoading] = useState(true);
   const [updatingType, setUpdatingType] = useState(false);
+  const [ldaStats, setLdaStats] = useState<EntityLdaStats | null>(null);
   const [aiSummary, setAiSummary] = useState<string | null>(null);
   const [aiLoading, setAiLoading] = useState(false);
   const [aiError, setAiError] = useState<string | null>(null);
@@ -1119,6 +1127,7 @@ function EntityDetailPage({ entityId, onBack, onNavigate }: { entityId: number; 
   const loadEntity = useCallback(() => {
     setLoading(true);
     api.getEntity(entityId).then(e => { setEntity(e); setLoading(false); }).catch(() => setLoading(false));
+    api.getEntityLdaStats(entityId).then(setLdaStats).catch(() => setLdaStats(null));
   }, [entityId]);
 
   useEffect(() => { loadEntity(); }, [loadEntity]);
@@ -1310,6 +1319,65 @@ function EntityDetailPage({ entityId, onBack, onNavigate }: { entityId: number; 
                   )}
                 </>
               )}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* LDA Stats for consultants/registrants */}
+      {ldaStats?.has_lda_data && (
+        <div className="bg-white rounded-lg border border-gray-200 p-5">
+          <h2 className="text-lg font-semibold text-gray-900 mb-4">LDA Overview{ldaStats.registrant_name ? ` — ${ldaStats.registrant_name}` : ''}</h2>
+
+          {/* Key metrics */}
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-5">
+            <div className="bg-gray-50 rounded-lg p-3">
+              <p className="text-xl font-bold text-indigo-700">#{ldaStats.rank?.toLocaleString()}</p>
+              <p className="text-xs text-gray-500">Rank of {ldaStats.total_registrants?.toLocaleString()}</p>
+            </div>
+            <div className="bg-gray-50 rounded-lg p-3">
+              <p className="text-xl font-bold text-indigo-700">{ldaStats.filing_count?.toLocaleString()}</p>
+              <p className="text-xs text-gray-500">Total Filings</p>
+            </div>
+            <div className="bg-gray-50 rounded-lg p-3">
+              <p className="text-xl font-bold text-indigo-700">{formatMoney(ldaStats.total_revenue)}</p>
+              <p className="text-xs text-gray-500">Total Revenue</p>
+            </div>
+            <div className="bg-gray-50 rounded-lg p-3">
+              <p className="text-xl font-bold text-indigo-700">{ldaStats.unique_clients?.toLocaleString()}</p>
+              <p className="text-xs text-gray-500">Unique Clients</p>
+            </div>
+          </div>
+
+          {/* Issue area breakdown */}
+          {ldaStats.issues && ldaStats.issues.length > 0 && (
+            <div>
+              <h3 className="text-sm font-semibold text-gray-700 mb-2">Issue Areas</h3>
+              <div className="space-y-1.5">
+                {ldaStats.issues.map(iss => (
+                  <div key={iss.issue} className="flex items-center gap-2 text-sm">
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center justify-between mb-0.5">
+                        <span className="text-gray-700 truncate text-xs">{iss.issue}</span>
+                        <div className="flex items-center gap-2 shrink-0 ml-2">
+                          <span className="text-xs text-gray-500">{iss.pct}%</span>
+                          {iss.overindex > 1.5 ? (
+                            <span className="text-xs px-1.5 py-0.5 rounded-full bg-green-50 text-green-700">{iss.overindex}x</span>
+                          ) : iss.overindex < 0.5 && iss.overindex > 0 ? (
+                            <span className="text-xs px-1.5 py-0.5 rounded-full bg-red-50 text-red-600">{iss.overindex}x</span>
+                          ) : (
+                            <span className="text-xs px-1.5 py-0.5 rounded-full bg-gray-50 text-gray-500">{iss.overindex}x</span>
+                          )}
+                        </div>
+                      </div>
+                      <div className="w-full h-1.5 bg-gray-100 rounded-full overflow-hidden">
+                        <div className="h-full bg-indigo-400 rounded-full" style={{ width: `${Math.min(iss.pct, 100)}%` }} />
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+              <p className="text-xs text-gray-400 mt-2">Overindex: firm's % vs. average across all registrants. {'>'}1.5x = strong specialization.</p>
             </div>
           )}
         </div>
@@ -2135,6 +2203,60 @@ function ActivityHeatmap({ syncVersion }: { syncVersion?: number }) {
   );
 }
 
+function IssueFirmHeatmapChart({ syncVersion }: { syncVersion?: number }) {
+  const [data, setData] = useState<IssueFirmHeatmap | null>(null);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    setLoading(true);
+    api.getIssueFirmHeatmap(15)
+      .then(setData)
+      .catch(() => setData(null))
+      .finally(() => setLoading(false));
+  }, [syncVersion]);
+
+  if (loading) return <div className="bg-white rounded-lg border border-gray-200 p-6 flex justify-center"><Loader2 className="animate-spin text-gray-300" size={24} /></div>;
+  if (!data || !data.firms.length) return null;
+
+  const getHeatColor = (val: number) => {
+    if (val === 0) return 'bg-gray-50 text-gray-300';
+    if (val < 5) return 'bg-indigo-50 text-indigo-600';
+    if (val < 15) return 'bg-indigo-100 text-indigo-700';
+    if (val < 30) return 'bg-indigo-200 text-indigo-800';
+    return 'bg-indigo-400 text-white';
+  };
+
+  return (
+    <div className="bg-white rounded-lg border border-gray-200 p-4 overflow-x-auto">
+      <h3 className="font-semibold text-gray-900 mb-4">Issue Area by Firm (% of Filings)</h3>
+      <table className="text-xs w-full">
+        <thead>
+          <tr>
+            <th className="text-left py-1 pr-2 font-medium text-gray-600 sticky left-0 bg-white min-w-[140px]">Firm</th>
+            {data.issues.map(issue => (
+              <th key={issue} className="py-1 px-1 font-medium text-gray-500 whitespace-nowrap" style={{ writingMode: 'vertical-rl', textOrientation: 'mixed', maxHeight: 120 }}>
+                {issue.length > 25 ? issue.slice(0, 23) + '…' : issue}
+              </th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {data.firms.map((firm, fi) => (
+            <tr key={firm}>
+              <td className="py-0.5 pr-2 font-medium text-gray-700 truncate max-w-[180px] sticky left-0 bg-white">{firm}</td>
+              {data.cells[fi].map((val, ci) => (
+                <td key={ci} className={`py-0.5 px-1 text-center rounded-sm ${getHeatColor(val)}`}>
+                  {val > 0 ? `${val}%` : ''}
+                </td>
+              ))}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
 function RevenueChart({ data, loading }: { data: RevenueByQuarter | null; loading: boolean }) {
   if (loading) return <div className="bg-white rounded-lg border border-gray-200 p-6 flex justify-center"><Loader2 className="animate-spin text-gray-300" size={24} /></div>;
   if (!data || !data.overall.length) return null;
@@ -2305,6 +2427,9 @@ function ReportsPage({ syncVersion, onNavigate }: { syncVersion?: number; onNavi
 
       {/* Entity appearances leaderboard */}
       <EntityAppearancesLeaderboard onNavigate={onNavigate} />
+
+      {/* Issue-firm heatmap */}
+      <IssueFirmHeatmapChart syncVersion={syncVersion} />
 
       {/* Charts */}
       <ReportLineChart

@@ -102,6 +102,29 @@ export interface RevenueByQuarter {
   periods: string[];
 }
 
+export interface IssueFirmHeatmap {
+  firms: string[];
+  issues: string[];
+  cells: number[][];
+}
+
+export interface EntityLdaStats {
+  has_lda_data: boolean;
+  registrant_name?: string;
+  filing_count?: number;
+  total_revenue?: number;
+  unique_clients?: number;
+  rank?: number;
+  total_registrants?: number;
+  issues?: Array<{
+    issue: string;
+    count: number;
+    pct: number;
+    avg_pct: number;
+    overindex: number;
+  }>;
+}
+
 export interface Stats {
   total_filings: number;
   total_registrants: number;
@@ -389,4 +412,10 @@ export const api = {
 
   getEntityAppearances: (limit = 25, entityType?: string) =>
     fetchJson<EntityAppearance[]>(`${BASE}/reports/entity-appearances?limit=${limit}${entityType ? `&entity_type=${entityType}` : ''}`),
+
+  getIssueFirmHeatmap: (limit = 15) =>
+    fetchJson<IssueFirmHeatmap>(`${BASE}/reports/issue-firm-heatmap?limit=${limit}`),
+
+  getEntityLdaStats: (entityId: number) =>
+    fetchJson<EntityLdaStats>(`${BASE}/influence/entities/${entityId}/lda-stats`),
 };
