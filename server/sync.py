@@ -462,6 +462,81 @@ def sync_backfill(db_url: str = None) -> dict:
     return {"stored": total_stored, "pages": total_pages, "years_completed": years_completed}
 
 
+def sync_backfill_chunk(db_url: str = None, chunk_size: int = 1000) -> dict:
+    """
+    Backfill a chunk of filings going backward in time from the earliest filing
+    we have in the database. Finds the earliest dt_posted, then syncs the year
+    of that filing (and prior years) until chunk_size new filings are stored.
+    """
+    engine = init_db(db_url)
+    session = get_session(engine)
+
+    # Find earliest dt_posted in the database
+    earliest = session.query(func.min(Filing.dt_posted)).scalar()
+    session.close()
+
+    if not earliest:
+        # No filings at all — start from current year
+        start_year = datetime.utcnow().year
+    else:
+        start_year = earliest.year
+
+    _update_progress(
+        status="running", mode="backfill_chunk",
+        stored=0, skipped=0, duplicates=0, pages=0,
+        current_year=start_year, years_completed=[],
+        error=None,
+        started_at=datetime.utcnow().isoformat(),
+        finished_at=None,
+    )
+
+    total_stored = 0
+    total_pages = 0
+    years_completed = []
+
+    try:
+        for year in range(start_year, OLDEST_YEAR - 1, -1):
+            if _sync_progress.get("status") == "cancelling":
+                logger.info("Backfill chunk cancelled by user")
+                break
+
+            if total_stored >= chunk_size:
+                logger.info(f"Reached chunk size {chunk_size}, stopping")
+                break
+
+            _update_progress(current_year=year)
+            logger.info(f"Backfill chunk: syncing year {year} (have {total_stored}/{chunk_size})")
+
+            result = sync_year(year, db_url=db_url)
+            total_stored += result["stored"]
+            total_pages += result["pages"]
+            years_completed.append(year)
+
+            _update_progress(
+                stored=total_stored, pages=total_pages,
+                years_completed=list(years_completed),
+            )
+
+            if _sync_progress.get("status") == "cancelling":
+                break
+
+            time.sleep(0.5)
+
+    except Exception as e:
+        logger.error(f"Backfill chunk error: {e}")
+        _update_progress(status="error", error=str(e), finished_at=datetime.utcnow().isoformat())
+        raise
+
+    final_status = "cancelled" if _sync_progress.get("status") == "cancelling" else "completed"
+    _update_progress(
+        status=final_status, finished_at=datetime.utcnow().isoformat(),
+        stored=total_stored, pages=total_pages,
+        years_completed=list(years_completed),
+    )
+
+    return {"stored": total_stored, "pages": total_pages, "years_completed": years_completed}
+
+
 def sync_filings(
     filing_year: Optional[int] = None,
     filing_period: Optional[str] = None,

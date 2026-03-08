@@ -19,7 +19,7 @@ from .models import (
     ChatConversation, ChatMessage,
     get_engine, get_session, init_db, run_migrations,
 )
-from .sync import sync_filings, sync_incremental, sync_backfill, sync_year, get_sync_progress, _update_progress
+from .sync import sync_filings, sync_incremental, sync_backfill, sync_backfill_chunk, sync_year, get_sync_progress, _update_progress
 from .influence import scrape_and_store, reprocess_all_entities, get_scrape_progress, get_reprocess_progress, link_entities_to_lda, link_lobbyists_to_entities, merge_duplicate_entities
 from .ai import generate_entity_summary, chat as ai_chat
 
@@ -106,7 +106,7 @@ def trigger_sync(req: SyncRequest, background_tasks: BackgroundTasks):
     def _run():
         try:
             if req.mode == "backfill":
-                sync_backfill(db_url=DB_URL)
+                sync_backfill_chunk(db_url=DB_URL, chunk_size=1000)
             elif req.filing_year:
                 from datetime import datetime as dt
                 _update_progress(

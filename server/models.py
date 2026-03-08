@@ -1,6 +1,9 @@
 """SQLAlchemy models for LDA filings storage (PostgreSQL)."""
 import datetime
+import logging
 import os
+
+logger = logging.getLogger(__name__)
 from sqlalchemy import (
     Column, String, Integer, Float, Text, DateTime, Boolean,
     ForeignKey, Index, create_engine
@@ -270,6 +273,16 @@ def run_migrations(engine):
         ChatConversation.__table__.create(engine, checkfirst=True)
         ChatMessage.__table__.create(engine, checkfirst=True)
         applied.add("chat_tables")
+
+    # Migration: delete 2025 filings (one-time cleanup)
+    if "filings" in table_names:
+        with engine.begin() as conn:
+            count = conn.execute(sa_text("SELECT COUNT(*) FROM filings WHERE filing_year = 2025")).scalar()
+            if count and count > 0:
+                conn.execute(sa_text("DELETE FROM lobbying_activities WHERE filing_id IN (SELECT id FROM filings WHERE filing_year = 2025)"))
+                conn.execute(sa_text("DELETE FROM filings WHERE filing_year = 2025"))
+                logger.info(f"Deleted {count} filings from 2025")
+                applied.add("delete_2025_filings")
 
     return applied
 

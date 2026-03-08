@@ -215,7 +215,7 @@ function Dashboard({ onNavigate }: { onNavigate: (page: Page, ctx?: unknown) => 
                 {syncStatus.status === 'running' && syncStatus.mode === 'incremental' && (
                   <>Fetching new filings… {syncStatus.stored || 0} stored, page {syncStatus.pages || 0}</>
                 )}
-                {syncStatus.status === 'running' && syncStatus.mode === 'backfill' && (
+                {syncStatus.status === 'running' && (syncStatus.mode === 'backfill' || syncStatus.mode === 'backfill_chunk') && (
                   <>Backfilling {syncStatus.current_year || '…'} — {syncStatus.stored?.toLocaleString() || 0} stored, {syncStatus.years_completed?.length || 0} years done</>
                 )}
                 {syncStatus.status === 'cancelling' && 'Cancelling…'}
@@ -252,7 +252,7 @@ function Dashboard({ onNavigate }: { onNavigate: (page: Page, ctx?: unknown) => 
                   data-testid="button-sync-backfill"
                   className="flex items-center gap-2 bg-gray-700 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-gray-800 cursor-pointer"
                 >
-                  <Download size={16} /> Backfill All
+                  <Download size={16} /> Backfill 1,000 More
                 </button>
               </>
             )}
@@ -338,7 +338,7 @@ function Dashboard({ onNavigate }: { onNavigate: (page: Page, ctx?: unknown) => 
         <div className="text-center py-16">
           <FileText size={48} className="mx-auto text-gray-300 mb-4" />
           <h2 className="text-xl font-semibold text-gray-700 mb-2">No filings yet</h2>
-          <p className="text-gray-500 mb-4">Click "Sync New" to grab the latest filings, or "Backfill All" to download the complete historical archive (1999–present, ~1.9M filings).</p>
+          <p className="text-gray-500 mb-4">Click "Sync New" to grab the latest filings, or "Backfill 1,000 More" to fetch 1,000 more filings going backward in time from the earliest filing in the database.</p>
         </div>
       )}
     </div>
