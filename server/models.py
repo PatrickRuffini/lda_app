@@ -274,15 +274,6 @@ def run_migrations(engine):
         ChatMessage.__table__.create(engine, checkfirst=True)
         applied.add("chat_tables")
 
-    if "filings" in table_names:
-        with engine.begin() as conn:
-            count = conn.execute(sa_text("SELECT COUNT(*) FROM filings WHERE filing_year = 2025")).scalar()
-            if count and count > 0:
-                conn.execute(sa_text("UPDATE relationships SET filing_id = NULL WHERE filing_id IN (SELECT id FROM filings WHERE filing_year = 2025)"))
-                conn.execute(sa_text("DELETE FROM lobbying_activities WHERE filing_id IN (SELECT id FROM filings WHERE filing_year = 2025)"))
-                conn.execute(sa_text("DELETE FROM filings WHERE filing_year = 2025"))
-                logger.info(f"Deleted {count} filings from 2025")
-                applied.add("delete_2025_filings")
 
     return applied
 
