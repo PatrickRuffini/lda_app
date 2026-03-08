@@ -1899,8 +1899,6 @@ function EntityLeaderboard({ entityType, onBack, onNavigate }: { entityType: str
                 <span className="text-sm font-mono text-gray-400 w-8 text-right">{(page - 1) * pageSize + idx + 1}</span>
                 <div className="flex-1 min-w-0 flex items-center gap-2">
                   <span className="text-sm font-medium text-gray-900 truncate">{e.display_name || e.name}</span>
-                  {e.is_consultant && <span className="text-xs px-1.5 py-0.5 rounded-full shrink-0 text-blue-700 bg-blue-50">Consultant</span>}
-                  {e.is_client && <span className="text-xs px-1.5 py-0.5 rounded-full shrink-0 text-emerald-700 bg-emerald-50">Client</span>}
                 </div>
                 <span className={isPerson ? 'text-sm font-semibold text-indigo-600' : 'text-sm font-semibold text-amber-600'}>{e.mention_count}</span>
                 <span className="text-xs text-gray-400">mentions</span>
