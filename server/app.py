@@ -21,7 +21,7 @@ from .models import (
     get_engine, get_session, init_db, run_migrations,
 )
 from .sync import sync_filings, sync_incremental, sync_backfill, sync_backfill_chunk, sync_complete_years, sync_year, get_sync_progress, _update_progress
-from .influence import scrape_and_store, reprocess_all_entities, get_scrape_progress, get_reprocess_progress, link_entities_to_lda, link_lobbyists_to_entities, merge_duplicate_entities
+from .influence import scrape_and_store, reprocess_all_entities, get_scrape_progress, get_reprocess_progress, link_entities_to_lda, link_lobbyists_to_entities, merge_duplicate_entities, _normalize_org_aggressive
 from .ai import generate_entity_summary, chat as ai_chat
 
 logger = logging.getLogger(__name__)
@@ -54,6 +54,40 @@ def _cached(key, fn):
 def _invalidate_cache(*keys):
     for k in keys:
         _cache.pop(k, None)
+
+
+def _dedup_firms(rows: list[dict], name_key: str = "name") -> list[dict]:
+    """Merge rows that share the same normalized firm name.
+
+    Keeps the display name from the row with the most filings.
+    Sums numeric fields (filing_count, unique_clients, total_income/total_revenue, lobbyist_count).
+    Unions set fields (lobbyist_names).
+    """
+    groups: dict[str, dict] = {}
+    for row in rows:
+        key = _normalize_org_aggressive(row[name_key])
+        if key in groups:
+            g = groups[key]
+            for field in ("filing_count", "unique_clients", "total_income", "total_revenue"):
+                if field in row and field in g:
+                    g[field] = (g[field] or 0) + (row[field] or 0)
+            if "lobbyist_names" in row and "lobbyist_names" in g:
+                g["lobbyist_names"] = g["lobbyist_names"] | row["lobbyist_names"]
+            # Keep display name from the entry with more filings
+            if row.get("filing_count", 0) > g.get("_best_filings", 0):
+                g[name_key] = row[name_key]
+                g["_best_filings"] = row.get("filing_count", 0)
+                if "senate_id" in row:
+                    g["senate_id"] = row["senate_id"]
+                if "id" in row:
+                    g["id"] = row["id"]
+        else:
+            groups[key] = {**row, "_best_filings": row.get("filing_count", 0)}
+    # Strip internal field
+    for g in groups.values():
+        g.pop("_best_filings", None)
+    return list(groups.values())
+
 
 
 _engine = None
@@ -372,37 +406,29 @@ def list_registrants():
 
 
 @app.get("/api/top-registrants")
-def top_registrants(limit: int = Query(20, ge=1, le=100), sort: str = Query("filings", regex="^(filings|unique_clients)$")):
-    """Get top registrants by filing count or unique client count."""
+def top_registrants(limit: int = Query(20, ge=1, le=100), sort: str = Query("filings", regex="^(filings|unique_clients|revenue)$")):
+    """Get top registrants by filing count, unique client count, or revenue."""
     def _fetch():
         session = _get_session()
         try:
-            if sort == "unique_clients":
-                results = (
-                    session.query(
-                        Registrant.name, Registrant.senate_id,
-                        func.count(func.distinct(Client.id)).label("unique_clients"),
-                        func.count(Filing.id).label("filing_count"),
-                        func.sum(Filing.income).label("total_income"),
-                    )
-                    .join(Filing).join(Client)
-                    .group_by(Registrant.id)
-                    .order_by(desc("unique_clients")).limit(limit).all()
+            order_col = {"unique_clients": "unique_clients", "revenue": "total_income"}.get(sort, "filing_count")
+            # Fetch extra rows to account for dedup merging
+            fetch_limit = limit * 3
+            results = (
+                session.query(
+                    Registrant.name, Registrant.senate_id,
+                    func.count(Filing.id).label("filing_count"),
+                    func.count(func.distinct(Client.id)).label("unique_clients"),
+                    func.sum(Filing.income).label("total_income"),
                 )
-                return [{"name": r[0], "senate_id": r[1], "unique_clients": r[2], "filing_count": r[3], "total_income": float(r[4]) if r[4] else 0} for r in results]
-            else:
-                results = (
-                    session.query(
-                        Registrant.name, Registrant.senate_id,
-                        func.count(Filing.id).label("filing_count"),
-                        func.count(func.distinct(Client.id)).label("unique_clients"),
-                        func.sum(Filing.income).label("total_income"),
-                    )
-                    .join(Filing).join(Client)
-                    .group_by(Registrant.id)
-                    .order_by(desc("filing_count")).limit(limit).all()
-                )
-                return [{"name": r[0], "senate_id": r[1], "filing_count": r[2], "unique_clients": r[3], "total_income": float(r[4]) if r[4] else 0} for r in results]
+                .join(Filing).join(Client)
+                .group_by(Registrant.id)
+                .order_by(desc(order_col)).limit(fetch_limit).all()
+            )
+            rows = [{"name": r[0], "senate_id": r[1], "filing_count": r[2], "unique_clients": r[3], "total_income": float(r[4]) if r[4] else 0} for r in results]
+            deduped = _dedup_firms(rows)
+            deduped.sort(key=lambda x: x.get(order_col, 0) or 0, reverse=True)
+            return deduped[:limit]
         finally:
             session.close()
     return _cached(f"top_registrants_{limit}_{sort}", _fetch)
@@ -446,71 +472,143 @@ def top_clients(limit: int = Query(20, ge=1, le=100), sort: str = Query("filings
 
 
 @app.get("/api/revenue-per-lobbyist")
-def revenue_per_lobbyist(limit: int = Query(15, ge=1, le=50)):
-    """Top firms by filing count with revenue per lobbyist."""
-    session = _get_session()
-    try:
-        import json as _json
-        # Top firms by filing count
-        top_firms = (
-            session.query(
-                Registrant.id,
-                Registrant.name,
-                func.count(Filing.id).label("filing_count"),
-                func.sum(Filing.income).label("total_revenue"),
+def revenue_per_lobbyist(limit: int = Query(15, ge=1, le=50), min_clients: int = Query(0, ge=0)):
+    """Firms ranked by revenue per lobbyist. Optionally filter to firms with >= min_clients unique clients."""
+    def _fetch():
+        session = _get_session()
+        try:
+            import json as _json
+            # Fetch firms with revenue, client count, and enough rows for dedup
+            fetch_limit = max(limit * 5, 100)
+            firms = (
+                session.query(
+                    Registrant.id,
+                    Registrant.name,
+                    func.count(Filing.id).label("filing_count"),
+                    func.sum(Filing.income).label("total_revenue"),
+                    func.count(func.distinct(Client.id)).label("unique_clients"),
+                )
+                .join(Filing).join(Client)
+                .filter(Filing.income.isnot(None))
+                .group_by(Registrant.id, Registrant.name)
+                .having(func.count(func.distinct(Client.id)) >= min_clients)
+                .order_by(desc("total_revenue"))
+                .limit(fetch_limit)
+                .all()
             )
-            .join(Filing)
-            .filter(Filing.income.isnot(None))
-            .group_by(Registrant.id, Registrant.name)
-            .order_by(desc("filing_count"))
-            .limit(limit)
-            .all()
-        )
-        firm_ids = [r[0] for r in top_firms]
-        if not firm_ids:
-            return []
+            firm_ids = [r[0] for r in firms]
+            if not firm_ids:
+                return []
 
-        # Count distinct lobbyists per firm from LobbyingActivity JSON
-        activities = (
-            session.query(Filing.registrant_id, LobbyingActivity.lobbyists)
-            .select_from(LobbyingActivity)
-            .join(Filing)
-            .filter(Filing.registrant_id.in_(firm_ids))
-            .filter(LobbyingActivity.lobbyists.isnot(None))
-            .all()
-        )
-        firm_lobbyists: dict = {}
-        for reg_id, lob_json in activities:
-            try:
-                lob_list = _json.loads(lob_json)
-            except (ValueError, TypeError):
-                continue
-            if not isinstance(lob_list, list):
-                continue
-            names = firm_lobbyists.setdefault(reg_id, set())
-            for entry in lob_list:
-                lob = entry.get("lobbyist", {}) if isinstance(entry, dict) else {}
-                first = (lob.get("first_name") or "").strip()
-                last = (lob.get("last_name") or "").strip()
-                full = f"{first} {last}".strip()
-                if full:
-                    names.add(full.lower())
+            # Count distinct lobbyists per firm from LobbyingActivity JSON
+            activities = (
+                session.query(Filing.registrant_id, LobbyingActivity.lobbyists)
+                .select_from(LobbyingActivity)
+                .join(Filing)
+                .filter(Filing.registrant_id.in_(firm_ids))
+                .filter(LobbyingActivity.lobbyists.isnot(None))
+                .all()
+            )
+            firm_lobbyists: dict[int, set] = {}
+            for reg_id, lob_json in activities:
+                try:
+                    lob_list = _json.loads(lob_json)
+                except (ValueError, TypeError):
+                    continue
+                if not isinstance(lob_list, list):
+                    continue
+                names = firm_lobbyists.setdefault(reg_id, set())
+                for entry in lob_list:
+                    lob = entry.get("lobbyist", {}) if isinstance(entry, dict) else {}
+                    first = (lob.get("first_name") or "").strip()
+                    last = (lob.get("last_name") or "").strip()
+                    full = f"{first} {last}".strip()
+                    if full:
+                        names.add(full.lower())
 
-        result = []
-        for reg_id, name, filing_count, total_revenue in top_firms:
-            rev = float(total_revenue) if total_revenue else 0
-            lob_count = len(firm_lobbyists.get(reg_id, set()))
-            result.append({
-                "id": reg_id,
-                "name": name,
-                "filing_count": filing_count,
-                "total_revenue": rev,
-                "lobbyist_count": lob_count,
-                "revenue_per_lobbyist": round(rev / lob_count, 2) if lob_count > 0 else None,
-            })
-        return result
-    finally:
-        session.close()
+            rows = []
+            for reg_id, name, filing_count, total_revenue, unique_clients in firms:
+                rev = float(total_revenue) if total_revenue else 0
+                lob_names = firm_lobbyists.get(reg_id, set())
+                rows.append({
+                    "id": reg_id,
+                    "name": name,
+                    "filing_count": filing_count,
+                    "total_revenue": rev,
+                    "unique_clients": unique_clients,
+                    "lobbyist_count": len(lob_names),
+                    "lobbyist_names": lob_names,
+                    "revenue_per_lobbyist": round(rev / len(lob_names), 2) if lob_names else None,
+                })
+            # Dedup firms with similar names
+            deduped = _dedup_firms(rows)
+            # Recompute revenue_per_lobbyist after dedup (lobbyist_names are unioned)
+            for d in deduped:
+                lob_names = d.pop("lobbyist_names", set())
+                d["lobbyist_count"] = len(lob_names) if isinstance(lob_names, set) else d.get("lobbyist_count", 0)
+                d["revenue_per_lobbyist"] = round(d["total_revenue"] / d["lobbyist_count"], 2) if d["lobbyist_count"] > 0 else None
+            deduped.sort(key=lambda x: x.get("revenue_per_lobbyist") or 0, reverse=True)
+            return deduped[:limit]
+        finally:
+            session.close()
+    return _cached(f"revenue_per_lobbyist_{limit}_{min_clients}", _fetch)
+
+
+@app.get("/api/top-lobbyists-by-clients")
+def top_lobbyists_by_clients(limit: int = Query(15, ge=1, le=50)):
+    """Top individual lobbyists ranked by number of unique clients they've lobbied for, with firms."""
+    def _fetch():
+        session = _get_session()
+        try:
+            import json as _json
+            # Fetch all activities with lobbyist JSON + client and registrant info
+            activities = (
+                session.query(
+                    LobbyingActivity.lobbyists,
+                    Filing.client_id,
+                    Filing.registrant_id,
+                    Registrant.name,
+                )
+                .select_from(LobbyingActivity)
+                .join(Filing)
+                .join(Registrant)
+                .filter(LobbyingActivity.lobbyists.isnot(None))
+                .all()
+            )
+            # lobbyist_key -> {clients: set, firms: set(name)}
+            lobbyist_data: dict[str, dict] = {}
+            for lob_json, client_id, reg_id, reg_name in activities:
+                try:
+                    lob_list = _json.loads(lob_json)
+                except (ValueError, TypeError):
+                    continue
+                if not isinstance(lob_list, list):
+                    continue
+                for entry in lob_list:
+                    lob = entry.get("lobbyist", {}) if isinstance(entry, dict) else {}
+                    first = (lob.get("first_name") or "").strip()
+                    last = (lob.get("last_name") or "").strip()
+                    full = f"{first} {last}".strip()
+                    if not full:
+                        continue
+                    key = full.lower()
+                    if key not in lobbyist_data:
+                        lobbyist_data[key] = {"display_name": full, "clients": set(), "firms": set()}
+                    lobbyist_data[key]["clients"].add(client_id)
+                    lobbyist_data[key]["firms"].add(reg_name)
+
+            result = []
+            for key, d in lobbyist_data.items():
+                result.append({
+                    "name": d["display_name"],
+                    "unique_clients": len(d["clients"]),
+                    "firms": sorted(d["firms"]),
+                })
+            result.sort(key=lambda x: x["unique_clients"], reverse=True)
+            return result[:limit]
+        finally:
+            session.close()
+    return _cached(f"top_lobbyists_by_clients_{limit}", _fetch)
 
 
 @app.get("/api/top-consultants")

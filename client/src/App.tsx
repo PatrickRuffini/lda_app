@@ -135,36 +135,50 @@ function Pagination({ page, pageSize, total, onPage }: { page: number; pageSize:
   );
 }
 
-function RevenuePerLobbyistTable() {
-  const [data, setData] = useState<Array<{ id: number; name: string; filing_count: number; total_revenue: number; lobbyist_count: number; revenue_per_lobbyist: number | null }>>([]);
-  const [loading, setLoading] = useState(true);
-  useEffect(() => { api.getRevenuePerLobbyist(15).then(setData).catch(() => setData([])).finally(() => setLoading(false)); }, []);
-  if (loading) return <div className="bg-white rounded-lg border border-gray-200 p-4 flex justify-center py-8"><Loader2 className="animate-spin text-gray-300" size={20} /></div>;
-  if (!data.length) return null;
+// Shared leaderboard table component for consistent formatting across all 4 dashboard tables
+function LeaderboardTable({ title, icon, rows, loading: isLoading, valueLabel, valueKey, secondaryLabel, secondaryKey, tooltip }: {
+  title: string;
+  icon: React.ReactNode;
+  rows: Array<{ name: string; [k: string]: unknown }>;
+  loading: boolean;
+  valueLabel: string;
+  valueKey: string;
+  secondaryLabel?: string;
+  secondaryKey?: string;
+  tooltip?: (row: { name: string; [k: string]: unknown }) => string;
+}) {
+  if (isLoading) return (
+    <div className="bg-white rounded-lg border border-gray-200 p-4 flex justify-center py-12">
+      <Loader2 className="animate-spin text-gray-300" size={20} />
+    </div>
+  );
+  if (!rows.length) return null;
   return (
     <div className="bg-white rounded-lg border border-gray-200 p-4">
-      <h3 className="font-semibold text-gray-900 mb-3 flex items-center gap-2"><DollarSign size={16} /> Revenue per Lobbyist by Firm</h3>
+      <h3 className="font-semibold text-gray-900 mb-3 flex items-center gap-2">{icon} {title}</h3>
       <div className="overflow-x-auto">
         <table className="w-full text-sm">
           <thead>
             <tr className="text-left text-gray-500 border-b border-gray-100">
-              <th className="pb-2 pr-4 font-medium">#</th>
-              <th className="pb-2 pr-4 font-medium">Firm</th>
-              <th className="pb-2 pr-4 font-medium text-right">Filings</th>
-              <th className="pb-2 pr-4 font-medium text-right">Revenue</th>
-              <th className="pb-2 pr-4 font-medium text-right">Lobbyists</th>
-              <th className="pb-2 font-medium text-right">Rev / Lobbyist</th>
+              <th className="pb-2 pr-3 font-medium w-8">#</th>
+              <th className="pb-2 pr-3 font-medium">Name</th>
+              {secondaryLabel && <th className="pb-2 pr-3 font-medium text-right">{secondaryLabel}</th>}
+              <th className="pb-2 font-medium text-right">{valueLabel}</th>
             </tr>
           </thead>
           <tbody>
-            {data.map((d, i) => (
-              <tr key={d.id} className="border-b border-gray-50 last:border-0">
-                <td className="py-1.5 pr-4 text-gray-400">{i + 1}</td>
-                <td className="py-1.5 pr-4 text-gray-700 truncate max-w-[200px]">{d.name}</td>
-                <td className="py-1.5 pr-4 text-right text-gray-500">{d.filing_count.toLocaleString()}</td>
-                <td className="py-1.5 pr-4 text-right text-gray-600">{formatMoney(d.total_revenue)}</td>
-                <td className="py-1.5 pr-4 text-right text-gray-500">{d.lobbyist_count}</td>
-                <td className="py-1.5 text-right font-medium text-green-600">{d.revenue_per_lobbyist != null ? formatMoney(d.revenue_per_lobbyist) : '—'}</td>
+            {rows.map((r, i) => (
+              <tr key={r.name + i} className="border-b border-gray-50 last:border-0" title={tooltip ? tooltip(r) : undefined}>
+                <td className="py-1.5 pr-3 text-gray-400">{i + 1}</td>
+                <td className="py-1.5 pr-3 text-gray-700 truncate max-w-[220px]">{r.name}</td>
+                {secondaryKey && <td className="py-1.5 pr-3 text-right text-gray-500">{typeof r[secondaryKey] === 'number' ? (r[secondaryKey] as number).toLocaleString() : r[secondaryKey] as string}</td>}
+                <td className="py-1.5 text-right font-medium text-indigo-600">
+                  {typeof r[valueKey] === 'number'
+                    ? (valueKey.includes('revenue') || valueKey.includes('income') || valueKey.includes('per_lobbyist')
+                        ? formatMoney(r[valueKey] as number)
+                        : (r[valueKey] as number).toLocaleString())
+                    : (r[valueKey] as string) ?? '—'}
+                </td>
               </tr>
             ))}
           </tbody>
@@ -178,33 +192,47 @@ function RevenuePerLobbyistTable() {
 function Dashboard({ onNavigate }: { onNavigate: (page: Page, ctx?: unknown) => void }) {
   const [stats, setStats] = useState<Stats | null>(null);
   const [recent, setRecent] = useState<FilingSummary[]>([]);
-  const [topRegistrants, setTopRegistrants] = useState<TopEntity[]>([]);
-  const [topClients, setTopClients] = useState<TopEntity[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  // 4 chart datasets
+  const [firmsByRevenue, setFirmsByRevenue] = useState<TopEntity[]>([]);
+  const [firmsByClients, setFirmsByClients] = useState<TopEntity[]>([]);
+  const [lobbyistsByClients, setLobbyistsByClients] = useState<Array<{ name: string; unique_clients: number; firms: string[] }>>([]);
+  const [revPerLobbyist, setRevPerLobbyist] = useState<Array<{ name: string; revenue_per_lobbyist: number | null; lobbyist_count: number; total_revenue: number; [k: string]: unknown }>>([]);
+  const [chartsLoading, setChartsLoading] = useState(true);
+
+  // Consultants & lobbyists (Politico Influence)
   const [topConsultants, setTopConsultants] = useState<Array<{ id: number; name: string; display_name: string; mention_count: number; filing_count: number; unique_clients: number; total_revenue?: number }>>([]);
   const [topLobbyists, setTopLobbyists] = useState<Array<{ id: number; name: string; display_name: string; mention_count: number }>>([]);
-  const [loading, setLoading] = useState(true);
-  const [regSort, setRegSort] = useState<'filings' | 'unique_clients'>('filings');
-  const [clientSort, setClientSort] = useState<'filings' | 'unique_registrants'>('filings');
   const [consultantSort, setConsultantSort] = useState<'filings' | 'mention_count' | 'revenue'>('filings');
 
-  // Initial load — fetch everything once
+  // Initial load
   useEffect(() => {
     let cancelled = false;
     (async () => {
       setLoading(true);
       try {
         api.getStats().then(setStats).catch(console.error);
-        const [r, tr, tc] = await Promise.all([
+        const [r] = await Promise.all([
           api.searchFilings({ sort: '-dt_posted', page_size: 10 }),
-          api.getTopRegistrants(10, 'filings'),
-          api.getTopClients(10, 'filings'),
         ]);
         if (cancelled) return;
         setRecent(r.results);
-        setTopRegistrants(tr);
-        setTopClients(tc);
         setLoading(false);
-        // Load influence leaderboards in background
+        // Load all 4 charts + influence leaderboards in background
+        Promise.all([
+          api.getTopRegistrants(15, 'revenue'),
+          api.getTopRegistrants(15, 'unique_clients'),
+          api.getTopLobbyistsByClients(15),
+          api.getRevenuePerLobbyist(15, 11),
+        ]).then(([rev, clients, lob, rpl]) => {
+          if (cancelled) return;
+          setFirmsByRevenue(rev);
+          setFirmsByClients(clients);
+          setLobbyistsByClients(lob);
+          setRevPerLobbyist(rpl);
+          setChartsLoading(false);
+        }).catch(console.error);
         api.getTopConsultants(10, 'filings').then(d => { if (!cancelled) setTopConsultants(d); }).catch(console.error);
         api.getTopLobbyists(10).then(d => { if (!cancelled) setTopLobbyists(d); }).catch(console.error);
       } catch (e) {
@@ -215,13 +243,6 @@ function Dashboard({ onNavigate }: { onNavigate: (page: Page, ctx?: unknown) => 
     return () => { cancelled = true; };
   }, []);
 
-  // Reload only the specific leaderboard when its sort changes
-  useEffect(() => {
-    api.getTopRegistrants(10, regSort).then(setTopRegistrants).catch(console.error);
-  }, [regSort]);
-  useEffect(() => {
-    api.getTopClients(10, clientSort).then(setTopClients).catch(console.error);
-  }, [clientSort]);
   useEffect(() => {
     if (consultantSort === 'revenue') {
       api.getTopConsultantsByRevenue(10).then(d =>
@@ -236,7 +257,7 @@ function Dashboard({ onNavigate }: { onNavigate: (page: Page, ctx?: unknown) => 
     <div className="space-y-6">
       {/* Stats cards */}
       {stats && stats.total_filings > 0 && (
-        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-4">
+        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-4">
           <div className="bg-white rounded-lg border border-gray-200 p-4">
             <p className="text-2xl font-bold text-indigo-700">{stats.total_filings.toLocaleString()}</p>
             <p className="text-sm text-gray-500">Total Filings</p>
@@ -257,10 +278,6 @@ function Dashboard({ onNavigate }: { onNavigate: (page: Page, ctx?: unknown) => 
             <p className="text-2xl font-bold text-indigo-700">{formatMoney(stats.total_revenue)}</p>
             <p className="text-sm text-gray-500">Total Revenue</p>
           </div>
-          <div className="bg-white rounded-lg border border-gray-200 p-4">
-            <p className="text-2xl font-bold text-green-700">{stats.total_lobbyists > 0 ? formatMoney(stats.total_revenue / stats.total_lobbyists) : '$0'}</p>
-            <p className="text-sm text-gray-500">Rev / Lobbyist</p>
-          </div>
         </div>
       )}
 
@@ -271,74 +288,50 @@ function Dashboard({ onNavigate }: { onNavigate: (page: Page, ctx?: unknown) => 
         </p>
       )}
 
-      {/* Recent filings */}
-      {loading && <div className="flex items-center justify-center py-8"><Loader2 className="animate-spin text-gray-300" size={24} /></div>}
-      {!loading && recent.length > 0 && (
-        <div>
-          <div className="flex items-center justify-between mb-3">
-            <h2 className="text-lg font-semibold text-gray-900">Recent Filings</h2>
-            <button onClick={() => onNavigate('search')} className="text-sm text-indigo-600 hover:underline cursor-pointer">View all</button>
-          </div>
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-            {recent.map(f => (
-              <FilingCard key={f.filing_uuid} filing={f} onClick={() => onNavigate('filing', f.filing_uuid)} />
-            ))}
-          </div>
-        </div>
-      )}
+      {/* 2x2 Leaderboard Grid */}
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+        <LeaderboardTable
+          title="Lobbying Firms by Revenue"
+          icon={<DollarSign size={16} />}
+          rows={firmsByRevenue}
+          loading={chartsLoading}
+          valueLabel="Revenue"
+          valueKey="total_income"
+          secondaryLabel="Clients"
+          secondaryKey="unique_clients"
+        />
+        <LeaderboardTable
+          title="Lobbying Firms by Unique Clients"
+          icon={<Users size={16} />}
+          rows={firmsByClients}
+          loading={chartsLoading}
+          valueLabel="Clients"
+          valueKey="unique_clients"
+          secondaryLabel="Revenue"
+          secondaryKey="total_income"
+        />
+        <LeaderboardTable
+          title="Top Lobbyists by Unique Clients"
+          icon={<User size={16} />}
+          rows={lobbyistsByClients}
+          loading={chartsLoading}
+          valueLabel="Clients"
+          valueKey="unique_clients"
+          tooltip={(r) => `Firms: ${(r.firms as string[] || []).join(', ')}`}
+        />
+        <LeaderboardTable
+          title="Revenue per Lobbyist (>10 Clients)"
+          icon={<TrendingUp size={16} />}
+          rows={revPerLobbyist}
+          loading={chartsLoading}
+          valueLabel="Rev / Lobbyist"
+          valueKey="revenue_per_lobbyist"
+          secondaryLabel="Lobbyists"
+          secondaryKey="lobbyist_count"
+        />
+      </div>
 
-      {/* Top registrants & clients */}
-      {(topRegistrants.length > 0 || topClients.length > 0) && (
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-          {topRegistrants.length > 0 && (
-            <div className="bg-white rounded-lg border border-gray-200 p-4">
-              <div className="flex items-center justify-between mb-3">
-                <h3 className="font-semibold text-gray-900 flex items-center gap-2"><Building2 size={16} /> Top Registrants</h3>
-                <div className="flex rounded border border-gray-200 overflow-hidden text-xs">
-                  <button onClick={() => setRegSort('filings')} className={`px-2 py-1 cursor-pointer ${regSort === 'filings' ? 'bg-indigo-600 text-white' : 'text-gray-600 hover:bg-gray-50'}`}>Filings</button>
-                  <button onClick={() => setRegSort('unique_clients')} className={`px-2 py-1 cursor-pointer ${regSort === 'unique_clients' ? 'bg-indigo-600 text-white' : 'text-gray-600 hover:bg-gray-50'}`}>Clients</button>
-                </div>
-              </div>
-              <div className="space-y-2">
-                {topRegistrants.map((r, i) => (
-                  <div key={r.senate_id} className="flex items-center justify-between text-sm">
-                    <span className="text-gray-700 truncate"><span className="text-gray-400 mr-2">{i + 1}.</span>{r.name}</span>
-                    <span className="text-gray-500 shrink-0 ml-2">
-                      {regSort === 'unique_clients' ? `${r.unique_clients ?? 0} clients` : `${r.filing_count} filings`}
-                    </span>
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
-          {topClients.length > 0 && (
-            <div className="bg-white rounded-lg border border-gray-200 p-4">
-              <div className="flex items-center justify-between mb-3">
-                <h3 className="font-semibold text-gray-900 flex items-center gap-2"><Users size={16} /> Top Clients</h3>
-                <div className="flex rounded border border-gray-200 overflow-hidden text-xs">
-                  <button onClick={() => setClientSort('filings')} className={`px-2 py-1 cursor-pointer ${clientSort === 'filings' ? 'bg-indigo-600 text-white' : 'text-gray-600 hover:bg-gray-50'}`}>Filings</button>
-                  <button onClick={() => setClientSort('unique_registrants')} className={`px-2 py-1 cursor-pointer ${clientSort === 'unique_registrants' ? 'bg-indigo-600 text-white' : 'text-gray-600 hover:bg-gray-50'}`}>Firms</button>
-                </div>
-              </div>
-              <div className="space-y-2">
-                {topClients.map((c, i) => (
-                  <div key={c.senate_id} className="flex items-center justify-between text-sm">
-                    <span className="text-gray-700 truncate"><span className="text-gray-400 mr-2">{i + 1}.</span>{c.name}</span>
-                    <span className="text-gray-500 shrink-0 ml-2">
-                      {clientSort === 'unique_registrants' ? `${c.unique_registrants ?? 0} firms` : `${c.filing_count} filings`}
-                    </span>
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
-        </div>
-      )}
-
-      {/* Revenue per lobbyist by firm */}
-      <RevenuePerLobbyistTable />
-
-      {/* Top consultants & lobbyists */}
+      {/* Top consultants & lobbyists (Politico Influence) */}
       {(topConsultants.length > 0 || topLobbyists.length > 0) && (
         <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
           {topConsultants.length > 0 && (
@@ -382,6 +375,22 @@ function Dashboard({ onNavigate }: { onNavigate: (page: Page, ctx?: unknown) => 
               </div>
             </div>
           )}
+        </div>
+      )}
+
+      {/* Recent filings */}
+      {loading && <div className="flex items-center justify-center py-8"><Loader2 className="animate-spin text-gray-300" size={24} /></div>}
+      {!loading && recent.length > 0 && (
+        <div>
+          <div className="flex items-center justify-between mb-3">
+            <h2 className="text-lg font-semibold text-gray-900">Recent Filings</h2>
+            <button onClick={() => onNavigate('search')} className="text-sm text-indigo-600 hover:underline cursor-pointer">View all</button>
+          </div>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+            {recent.map(f => (
+              <FilingCard key={f.filing_uuid} filing={f} onClick={() => onNavigate('filing', f.filing_uuid)} />
+            ))}
+          </div>
         </div>
       )}
 
