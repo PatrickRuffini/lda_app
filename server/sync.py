@@ -467,12 +467,14 @@ def sync_backfill_chunk(db_url: str = None, chunk_size: int = 1000) -> dict:
     Backfill a chunk of filings going backward in time from the earliest filing
     we have in the database. Finds the earliest dt_posted, then syncs the year
     of that filing (and prior years) until chunk_size new filings are stored.
+    Skips years where our count already matches the API count.
     """
     engine = init_db(db_url)
     session = get_session(engine)
 
     # Find earliest dt_posted in the database
     earliest = session.query(func.min(Filing.dt_posted)).scalar()
+    db_coverage = _get_db_year_coverage(session)
     session.close()
 
     if not earliest:
@@ -504,8 +506,18 @@ def sync_backfill_chunk(db_url: str = None, chunk_size: int = 1000) -> dict:
                 logger.info(f"Reached chunk size {chunk_size}, stopping")
                 break
 
+            # Skip years we already have fully
+            db_count = db_coverage.get(year, 0)
+            api_count = _get_api_year_count(year)
+
+            if api_count is not None and db_count >= api_count and api_count > 0:
+                logger.info(f"Year {year}: already complete ({db_count}/{api_count}), skipping")
+                years_completed.append(year)
+                _update_progress(current_year=year, years_completed=list(years_completed))
+                continue
+
             _update_progress(current_year=year)
-            logger.info(f"Backfill chunk: syncing year {year} (have {total_stored}/{chunk_size})")
+            logger.info(f"Backfill chunk: syncing year {year} (have {db_count}, API has {api_count or '?'}, stored so far {total_stored}/{chunk_size})")
 
             result = sync_year(year, db_url=db_url)
             total_stored += result["stored"]
