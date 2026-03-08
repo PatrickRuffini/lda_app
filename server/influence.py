@@ -635,7 +635,8 @@ def _get_or_create_entity(session, name: str, entity_type: str = "unknown",
 
 def _upsert_relationship(session, entity_a: Entity, entity_b: Entity,
                          rel_type: str, context: str,
-                         date: Optional[datetime] = None):
+                         date: Optional[datetime] = None,
+                         initial_weight: float = 1):
     """Create or update a relationship between two entities."""
     if entity_a.id > entity_b.id:
         entity_a, entity_b = entity_b, entity_a
@@ -654,7 +655,7 @@ def _upsert_relationship(session, entity_a: Entity, entity_b: Entity,
             entity_a_id=entity_a.id,
             entity_b_id=entity_b.id,
             relationship_type=rel_type,
-            weight=1,
+            weight=initial_weight,
             first_seen=date,
             last_seen=date,
             context_snippets=json.dumps([context[:300]]),
@@ -862,7 +863,7 @@ def process_newsletter_entities(session, newsletter: Newsletter):
         # Create pairwise relationships between all entities on this line
         rel_type = "lobbying_registration" if pair["section_type"] == "registration" else "lobbying_termination"
         for ent_a, ent_b in combinations(line_entities, 2):
-            _upsert_relationship(session, ent_a, ent_b, rel_type, ctx, pub_date)
+            _upsert_relationship(session, ent_a, ent_b, rel_type, ctx, pub_date, initial_weight=1.5)
 
     newsletter.entities_extracted = True
 
@@ -1242,6 +1243,11 @@ def link_lobbyists_to_entities(session) -> dict:
     for ent in session.query(Entity).filter(Entity.registrant_id != None).all():
         firm_entities[ent.registrant_id] = ent
 
+    # Build client_id -> Entity lookup (clients that have entity records)
+    client_entities: dict[int, Entity] = {}
+    for ent in session.query(Entity).filter(Entity.client_id != None).all():
+        client_entities[ent.client_id] = ent
+
     # Build lowercase name -> Entity lookup for existing entities
     existing_by_name: dict[str, Entity] = {}
     for ent in session.query(Entity).all():
@@ -1402,6 +1408,46 @@ def link_lobbyists_to_entities(session) -> dict:
                         snippets.append(ctx[:500])
                         rel.context_snippets = json.dumps(snippets[-10:])
                 edges_updated += 1
+
+            # Create/update lobbyist -> client edge (weight=1.5)
+            client_entity = client_entities.get(filing.client_id) if filing.client_id else None
+            if client_entity and client_entity.id != lobbyist_entity.id:
+                c_a_id = min(lobbyist_entity.id, client_entity.id)
+                c_b_id = max(lobbyist_entity.id, client_entity.id)
+
+                client_rel = (
+                    session.query(Relationship)
+                    .filter(
+                        Relationship.entity_a_id == c_a_id,
+                        Relationship.entity_b_id == c_b_id,
+                    )
+                    .first()
+                )
+
+                client_ctx = f"Lobbyist for {client_entity.display_name or client_entity.name} (via {firm_entity.display_name or firm_entity.name})"
+
+                if not client_rel:
+                    client_rel = Relationship(
+                        entity_a_id=c_a_id,
+                        entity_b_id=c_b_id,
+                        relationship_type="affiliation",
+                        weight=1.5,
+                        first_seen=filing.dt_posted,
+                        last_seen=filing.dt_posted,
+                        context_snippets=json.dumps([client_ctx[:500]]),
+                        match_confidence=confidence,
+                    )
+                    session.add(client_rel)
+                    edges_created += 1
+                else:
+                    if client_rel.weight < 1.5:
+                        client_rel.weight = 1.5
+                    if filing.dt_posted:
+                        if not client_rel.first_seen or filing.dt_posted < client_rel.first_seen:
+                            client_rel.first_seen = filing.dt_posted
+                        if not client_rel.last_seen or filing.dt_posted > client_rel.last_seen:
+                            client_rel.last_seen = filing.dt_posted
+                    edges_updated += 1
 
     session.commit()
     logger.info(
