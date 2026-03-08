@@ -135,80 +135,48 @@ function Pagination({ page, pageSize, total, onPage }: { page: number; pageSize:
   );
 }
 
-function LatestNewslettersFeed({ onNavigate }: { onNavigate: (page: Page, ctx?: unknown) => void }) {
-  const [newsletters, setNewsletters] = useState<Array<{ id: number; title: string; published_date: string | null; body_preview: string }>>([]);
-  const [loading, setLoading] = useState(true);
-  useEffect(() => {
-    api.getNewsletters(1, 5).then(d => setNewsletters(d.results)).catch(() => setNewsletters([])).finally(() => setLoading(false));
-  }, []);
-  if (loading) return <div className="flex justify-center py-4"><Loader2 className="animate-spin text-gray-300" size={20} /></div>;
-  if (!newsletters.length) return null;
-  return (
-    <div>
-      <div className="flex items-center justify-between mb-3">
-        <h2 className="text-lg font-semibold text-gray-900 flex items-center gap-2"><Newspaper size={18} /> Latest Influence Reports</h2>
-        <button onClick={() => onNavigate('influence')} className="text-sm text-indigo-600 hover:underline cursor-pointer">View all</button>
-      </div>
-      <div className="space-y-2">
-        {newsletters.map(n => (
-          <button key={n.id} onClick={() => onNavigate('newsletter', n.id)}
-            className="w-full text-left bg-white rounded-lg border border-gray-200 p-3 hover:border-indigo-300 hover:shadow-sm transition cursor-pointer">
-            <div className="flex items-start justify-between gap-2">
-              <div className="min-w-0">
-                <h4 className="text-sm font-medium text-gray-900 truncate">{n.title}</h4>
-                <p className="text-xs text-gray-500 mt-0.5 line-clamp-2">{n.body_preview}</p>
-              </div>
-              {n.published_date && (
-                <span className="text-xs text-gray-400 shrink-0">{formatDate(n.published_date)}</span>
-              )}
-            </div>
-          </button>
-        ))}
-      </div>
-    </div>
-  );
-}
-
 // ---------- Dashboard ----------
 function Dashboard({ onNavigate }: { onNavigate: (page: Page, ctx?: unknown) => void }) {
   const [stats, setStats] = useState<Stats | null>(null);
   const [recent, setRecent] = useState<FilingSummary[]>([]);
   const [topRegistrants, setTopRegistrants] = useState<TopEntity[]>([]);
   const [topClients, setTopClients] = useState<TopEntity[]>([]);
-  const [topConsultants, setTopConsultants] = useState<Array<{ id: number; name: string; display_name: string; mention_count: number; filing_count: number; unique_clients: number }>>([]);
+  const [topConsultants, setTopConsultants] = useState<Array<{ id: number; name: string; display_name: string; mention_count: number; filing_count: number; unique_clients: number; total_revenue?: number }>>([]);
   const [topLobbyists, setTopLobbyists] = useState<Array<{ id: number; name: string; display_name: string; mention_count: number }>>([]);
   const [loading, setLoading] = useState(true);
   const [regSort, setRegSort] = useState<'filings' | 'unique_clients'>('filings');
   const [clientSort, setClientSort] = useState<'filings' | 'unique_registrants'>('filings');
-  const [consultantSort, setConsultantSort] = useState<'mention_count' | 'filings'>('filings');
+  const [consultantSort, setConsultantSort] = useState<'filings' | 'mention_count' | 'revenue'>('filings');
 
-  const load = useCallback(async (retry = 0) => {
-    setLoading(true);
-    try {
-      api.getStats().then(setStats).catch(console.error);
-      const [r, tr, tc] = await Promise.all([
-        api.searchFilings({ sort: '-dt_posted', page_size: 10 }),
-        api.getTopRegistrants(10, regSort),
-        api.getTopClients(10, clientSort),
-      ]);
-      setRecent(r.results);
-      setTopRegistrants(tr);
-      setTopClients(tc);
-      setLoading(false);
-      // Load influence leaderboards in background
-      api.getTopConsultants(10, consultantSort).then(setTopConsultants).catch(console.error);
-      api.getTopLobbyists(10).then(setTopLobbyists).catch(console.error);
-    } catch (e) {
-      console.error(e);
-      setLoading(false);
-      if (retry < 3) setTimeout(() => load(retry + 1), 2000);
-    }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [regSort, clientSort]);
+  // Initial load — fetch everything once
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      setLoading(true);
+      try {
+        api.getStats().then(setStats).catch(console.error);
+        const [r, tr, tc] = await Promise.all([
+          api.searchFilings({ sort: '-dt_posted', page_size: 10 }),
+          api.getTopRegistrants(10, 'filings'),
+          api.getTopClients(10, 'filings'),
+        ]);
+        if (cancelled) return;
+        setRecent(r.results);
+        setTopRegistrants(tr);
+        setTopClients(tc);
+        setLoading(false);
+        // Load influence leaderboards in background
+        api.getTopConsultants(10, 'filings').then(d => { if (!cancelled) setTopConsultants(d); }).catch(console.error);
+        api.getTopLobbyists(10).then(d => { if (!cancelled) setTopLobbyists(d); }).catch(console.error);
+      } catch (e) {
+        console.error(e);
+        if (!cancelled) setLoading(false);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, []);
 
-  useEffect(() => { load(); }, [load]);
-
-  // Reload leaderboards when sort changes
+  // Reload only the specific leaderboard when its sort changes
   useEffect(() => {
     api.getTopRegistrants(10, regSort).then(setTopRegistrants).catch(console.error);
   }, [regSort]);
@@ -216,7 +184,13 @@ function Dashboard({ onNavigate }: { onNavigate: (page: Page, ctx?: unknown) => 
     api.getTopClients(10, clientSort).then(setTopClients).catch(console.error);
   }, [clientSort]);
   useEffect(() => {
-    api.getTopConsultants(10, consultantSort).then(setTopConsultants).catch(console.error);
+    if (consultantSort === 'revenue') {
+      api.getTopConsultantsByRevenue(10).then(d =>
+        setTopConsultants(d.map(r => ({ ...r, filing_count: r.filing_count, mention_count: 0 })))
+      ).catch(console.error);
+    } else {
+      api.getTopConsultants(10, consultantSort).then(setTopConsultants).catch(console.error);
+    }
   }, [consultantSort]);
 
   return (
@@ -327,6 +301,7 @@ function Dashboard({ onNavigate }: { onNavigate: (page: Page, ctx?: unknown) => 
                 <h3 className="font-semibold text-gray-900 flex items-center gap-2"><Briefcase size={16} /> Top Consultants</h3>
                 <div className="flex rounded border border-gray-200 overflow-hidden text-xs">
                   <button onClick={() => setConsultantSort('filings')} className={`px-2 py-1 cursor-pointer ${consultantSort === 'filings' ? 'bg-indigo-600 text-white' : 'text-gray-600 hover:bg-gray-50'}`}>Clients</button>
+                  <button onClick={() => setConsultantSort('revenue')} className={`px-2 py-1 cursor-pointer ${consultantSort === 'revenue' ? 'bg-indigo-600 text-white' : 'text-gray-600 hover:bg-gray-50'}`}>$</button>
                   <button onClick={() => setConsultantSort('mention_count')} className={`px-2 py-1 cursor-pointer ${consultantSort === 'mention_count' ? 'bg-indigo-600 text-white' : 'text-gray-600 hover:bg-gray-50'}`}>Appearances</button>
                 </div>
               </div>
@@ -336,8 +311,8 @@ function Dashboard({ onNavigate }: { onNavigate: (page: Page, ctx?: unknown) => 
                     <button onClick={() => onNavigate('entity', c.id)} className="text-gray-700 truncate hover:text-indigo-600 cursor-pointer text-left">
                       <span className="text-gray-400 mr-2">{i + 1}.</span>{c.display_name}
                     </button>
-                    <span className="text-gray-500 shrink-0 ml-2">
-                      {consultantSort === 'filings' ? `${c.unique_clients} clients` : `${c.mention_count} apps`}
+                    <span className={`shrink-0 ml-2 ${consultantSort === 'revenue' ? 'text-green-600 font-medium' : 'text-gray-500'}`}>
+                      {consultantSort === 'filings' ? `${c.unique_clients} clients` : consultantSort === 'revenue' ? formatMoney(c.total_revenue) : `${c.mention_count} apps`}
                     </span>
                   </div>
                 ))}
@@ -363,9 +338,6 @@ function Dashboard({ onNavigate }: { onNavigate: (page: Page, ctx?: unknown) => 
           )}
         </div>
       )}
-
-      {/* Latest Politico Influence reports */}
-      <LatestNewslettersFeed onNavigate={onNavigate} />
 
       {/* Empty state */}
       {stats && stats.total_filings === 0 && (
