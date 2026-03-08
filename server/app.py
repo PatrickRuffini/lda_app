@@ -428,6 +428,118 @@ def top_clients(limit: int = Query(20, ge=1, le=100), sort: str = Query("filings
     return _cached(f"top_clients_{limit}_{sort}", _fetch)
 
 
+@app.get("/api/top-consultants")
+def top_consultants(limit: int = Query(10, ge=1, le=50), sort: str = Query("mention_count", regex="^(mention_count|filings)$")):
+    """Top consultants (entities with is_consultant=True), ranked by mention count or filing count."""
+    session = _get_session()
+    try:
+        query = (
+            session.query(
+                Entity.id,
+                Entity.name,
+                Entity.display_name,
+                Entity.mention_count,
+                Entity.registrant_id,
+            )
+            .filter(Entity.is_consultant == True)
+        )
+
+        if sort == "filings":
+            query = (
+                session.query(
+                    Entity.id,
+                    Entity.name,
+                    Entity.display_name,
+                    Entity.mention_count,
+                    Entity.registrant_id,
+                    func.count(Filing.id).label("filing_count"),
+                    func.count(func.distinct(Client.id)).label("unique_clients"),
+                )
+                .outerjoin(Filing, Filing.registrant_id == Entity.registrant_id)
+                .outerjoin(Client, Filing.client_id == Client.id)
+                .filter(Entity.is_consultant == True)
+                .group_by(Entity.id, Entity.name, Entity.display_name, Entity.mention_count, Entity.registrant_id)
+                .order_by(desc("filing_count"))
+                .limit(limit)
+            )
+            results = query.all()
+            return [
+                {"id": r[0], "name": r[1], "display_name": r[2] or r[1], "mention_count": r[3] or 0,
+                 "filing_count": r[5], "unique_clients": r[6]}
+                for r in results
+            ]
+        else:
+            results = query.order_by(desc(Entity.mention_count)).limit(limit).all()
+            # Get filing counts separately
+            entity_ids = [r[0] for r in results]
+            reg_ids = [r[4] for r in results if r[4]]
+            filing_counts = {}
+            client_counts = {}
+            if reg_ids:
+                fc_rows = (
+                    session.query(
+                        Filing.registrant_id,
+                        func.count(Filing.id),
+                        func.count(func.distinct(Client.id)),
+                    )
+                    .join(Client)
+                    .filter(Filing.registrant_id.in_(reg_ids))
+                    .group_by(Filing.registrant_id)
+                    .all()
+                )
+                for reg_id, fc, cc in fc_rows:
+                    filing_counts[reg_id] = fc
+                    client_counts[reg_id] = cc
+            return [
+                {"id": r[0], "name": r[1], "display_name": r[2] or r[1], "mention_count": r[3] or 0,
+                 "filing_count": filing_counts.get(r[4], 0), "unique_clients": client_counts.get(r[4], 0)}
+                for r in results
+            ]
+    finally:
+        session.close()
+
+
+@app.get("/api/top-lobbyists")
+def top_lobbyists(limit: int = Query(10, ge=1, le=50), sort: str = Query("mention_count", regex="^(mention_count|filings)$")):
+    """Top lobbyists (entities with is_lobbyist=True), ranked by mention count or filing count."""
+    session = _get_session()
+    try:
+        if sort == "filings":
+            # Count filings where the lobbyist's name appears in lobbyist data
+            # Since lobbyists are linked through registrant_id or lobbyist_senate_id
+            results = (
+                session.query(
+                    Entity.id,
+                    Entity.name,
+                    Entity.display_name,
+                    Entity.mention_count,
+                )
+                .filter(Entity.is_lobbyist == True)
+                .order_by(desc(Entity.mention_count))
+                .limit(limit)
+                .all()
+            )
+        else:
+            results = (
+                session.query(
+                    Entity.id,
+                    Entity.name,
+                    Entity.display_name,
+                    Entity.mention_count,
+                )
+                .filter(Entity.is_lobbyist == True)
+                .order_by(desc(Entity.mention_count))
+                .limit(limit)
+                .all()
+            )
+        return [
+            {"id": r[0], "name": r[1], "display_name": r[2] or r[1], "mention_count": r[3] or 0}
+            for r in results
+        ]
+    finally:
+        session.close()
+
+
 @app.get("/api/stats")
 def get_stats():
     """Get overall database statistics."""

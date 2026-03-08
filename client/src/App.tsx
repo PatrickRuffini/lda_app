@@ -141,9 +141,12 @@ function Dashboard({ onNavigate }: { onNavigate: (page: Page, ctx?: unknown) => 
   const [recent, setRecent] = useState<FilingSummary[]>([]);
   const [topRegistrants, setTopRegistrants] = useState<TopEntity[]>([]);
   const [topClients, setTopClients] = useState<TopEntity[]>([]);
+  const [topConsultants, setTopConsultants] = useState<Array<{ id: number; name: string; display_name: string; mention_count: number; filing_count: number; unique_clients: number }>>([]);
+  const [topLobbyists, setTopLobbyists] = useState<Array<{ id: number; name: string; display_name: string; mention_count: number }>>([]);
   const [loading, setLoading] = useState(true);
   const [regSort, setRegSort] = useState<'filings' | 'unique_clients'>('filings');
   const [clientSort, setClientSort] = useState<'filings' | 'unique_registrants'>('filings');
+  const [consultantSort, setConsultantSort] = useState<'mention_count' | 'filings'>('mention_count');
 
   const load = useCallback(async (retry = 0) => {
     setLoading(true);
@@ -158,12 +161,15 @@ function Dashboard({ onNavigate }: { onNavigate: (page: Page, ctx?: unknown) => 
       setTopRegistrants(tr);
       setTopClients(tc);
       setLoading(false);
+      // Load influence leaderboards in background
+      api.getTopConsultants(10, consultantSort).then(setTopConsultants).catch(console.error);
+      api.getTopLobbyists(10).then(setTopLobbyists).catch(console.error);
     } catch (e) {
       console.error(e);
       setLoading(false);
       if (retry < 3) setTimeout(() => load(retry + 1), 2000);
     }
-  }, [regSort, clientSort]);
+  }, [regSort, clientSort, consultantSort]);
 
   useEffect(() => { load(); }, [load]);
 
@@ -174,6 +180,9 @@ function Dashboard({ onNavigate }: { onNavigate: (page: Page, ctx?: unknown) => 
   useEffect(() => {
     api.getTopClients(10, clientSort).then(setTopClients).catch(console.error);
   }, [clientSort]);
+  useEffect(() => {
+    api.getTopConsultants(10, consultantSort).then(setTopConsultants).catch(console.error);
+  }, [consultantSort]);
 
   return (
     <div className="space-y-6">
@@ -266,6 +275,52 @@ function Dashboard({ onNavigate }: { onNavigate: (page: Page, ctx?: unknown) => 
                     <span className="text-gray-500 shrink-0 ml-2">
                       {clientSort === 'unique_registrants' ? `${c.unique_registrants ?? 0} firms` : `${c.filing_count} filings`}
                     </span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Top consultants & lobbyists */}
+      {(topConsultants.length > 0 || topLobbyists.length > 0) && (
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+          {topConsultants.length > 0 && (
+            <div className="bg-white rounded-lg border border-gray-200 p-4">
+              <div className="flex items-center justify-between mb-3">
+                <h3 className="font-semibold text-gray-900 flex items-center gap-2"><Briefcase size={16} /> Top Consultants</h3>
+                <div className="flex rounded border border-gray-200 overflow-hidden text-xs">
+                  <button onClick={() => setConsultantSort('mention_count')} className={`px-2 py-1 cursor-pointer ${consultantSort === 'mention_count' ? 'bg-indigo-600 text-white' : 'text-gray-600 hover:bg-gray-50'}`}>Appearances</button>
+                  <button onClick={() => setConsultantSort('filings')} className={`px-2 py-1 cursor-pointer ${consultantSort === 'filings' ? 'bg-indigo-600 text-white' : 'text-gray-600 hover:bg-gray-50'}`}>Clients</button>
+                </div>
+              </div>
+              <div className="space-y-2">
+                {topConsultants.map((c, i) => (
+                  <div key={c.id} className="flex items-center justify-between text-sm">
+                    <button onClick={() => onNavigate('entity', c.id)} className="text-gray-700 truncate hover:text-indigo-600 cursor-pointer text-left">
+                      <span className="text-gray-400 mr-2">{i + 1}.</span>{c.display_name}
+                    </button>
+                    <span className="text-gray-500 shrink-0 ml-2">
+                      {consultantSort === 'filings' ? `${c.unique_clients} clients` : `${c.mention_count} apps`}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+          {topLobbyists.length > 0 && (
+            <div className="bg-white rounded-lg border border-gray-200 p-4">
+              <div className="flex items-center justify-between mb-3">
+                <h3 className="font-semibold text-gray-900 flex items-center gap-2"><User size={16} /> Top Lobbyists</h3>
+              </div>
+              <div className="space-y-2">
+                {topLobbyists.map((l, i) => (
+                  <div key={l.id} className="flex items-center justify-between text-sm">
+                    <button onClick={() => onNavigate('entity', l.id)} className="text-gray-700 truncate hover:text-indigo-600 cursor-pointer text-left">
+                      <span className="text-gray-400 mr-2">{i + 1}.</span>{l.display_name}
+                    </button>
+                    <span className="text-gray-500 shrink-0 ml-2">{l.mention_count} apps</span>
                   </div>
                 ))}
               </div>
@@ -2258,6 +2313,8 @@ function IssueFirmHeatmapChart({ syncVersion }: { syncVersion?: number }) {
 }
 
 function RevenueChart({ data, loading }: { data: RevenueByQuarter | null; loading: boolean }) {
+  const [view, setView] = useState<'overall' | 'by_firm'>('overall');
+
   if (loading) return <div className="bg-white rounded-lg border border-gray-200 p-6 flex justify-center"><Loader2 className="animate-spin text-gray-300" size={24} /></div>;
   if (!data || !data.overall.length) return null;
 
@@ -2275,18 +2332,30 @@ function RevenueChart({ data, loading }: { data: RevenueByQuarter | null; loadin
 
   return (
     <div className="bg-white rounded-lg border border-gray-200 p-4">
-      <h3 className="font-semibold text-gray-900 mb-4">Revenue by Quarter</h3>
+      <div className="flex items-center justify-between mb-4">
+        <h3 className="font-semibold text-gray-900">Revenue by Quarter</h3>
+        <div className="flex rounded border border-gray-200 overflow-hidden text-xs">
+          <button onClick={() => setView('overall')} className={`px-2 py-1 cursor-pointer ${view === 'overall' ? 'bg-indigo-600 text-white' : 'text-gray-600 hover:bg-gray-50'}`}>Overall</button>
+          <button onClick={() => setView('by_firm')} className={`px-2 py-1 cursor-pointer ${view === 'by_firm' ? 'bg-indigo-600 text-white' : 'text-gray-600 hover:bg-gray-50'}`}>By Firm</button>
+        </div>
+      </div>
       <ResponsiveContainer width="100%" height={350}>
         <LineChart data={chartData} margin={{ top: 5, right: 20, left: 0, bottom: 5 }}>
           <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
           <XAxis dataKey="period" tick={{ fontSize: 11 }} />
           <YAxis tick={{ fontSize: 11 }} tickFormatter={v => `$${(v / 1e6).toFixed(0)}M`} />
-          <Tooltip formatter={(v: number) => formatMoney(v)} />
+          <Tooltip
+            formatter={(v: number, name: string) => [formatMoney(v), name]}
+            labelFormatter={(label: string) => `Period: ${label}`}
+          />
           <Legend />
-          <Line type="monotone" dataKey="Total" stroke="#374151" strokeWidth={2} dot={false} />
-          {allNames.slice(0, 8).map((name, i) => (
-            <Line key={name} type="monotone" dataKey={name} stroke={REPORT_COLORS[i % REPORT_COLORS.length]} strokeWidth={1.5} dot={false} />
-          ))}
+          {view === 'overall' ? (
+            <Line type="monotone" dataKey="Total" stroke="#374151" strokeWidth={2} dot={false} />
+          ) : (
+            allNames.slice(0, 8).map((name, i) => (
+              <Line key={name} type="monotone" dataKey={name} stroke={REPORT_COLORS[i % REPORT_COLORS.length]} strokeWidth={2} dot={false} />
+            ))
+          )}
         </LineChart>
       </ResponsiveContainer>
     </div>
@@ -2519,14 +2588,7 @@ function ReportsPage({ syncVersion, onNavigate }: { syncVersion?: number; onNavi
         <RegistrationTrendChart granularity={granularity} syncVersion={syncVersion} />
       </div>
 
-      {/* Row 2: Leaderboards side by side */}
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-        <EntityAppearancesLeaderboard onNavigate={onNavigate} />
-        <TopClientsBySpend />
-        <TopIssuesByRevenue />
-      </div>
-
-      {/* Row 3: Filing type + time series charts */}
+      {/* Row 2: Filing type + time series charts */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
         <FilingTypeDonut />
         <div className="lg:col-span-2">
@@ -2534,10 +2596,10 @@ function ReportsPage({ syncVersion, onNavigate }: { syncVersion?: number; onNavi
         </div>
       </div>
 
-      {/* Row 4: Issue activity chart full width */}
+      {/* Row 3: Issue activity chart full width */}
       <ReportLineChart data={issueData} title="Lobbying Activity by Issue Area" loading={issueLoading} />
 
-      {/* Row 5: Issue-firm heatmap full width */}
+      {/* Row 4: Issue-firm heatmap full width */}
       <IssueFirmHeatmapChart syncVersion={syncVersion} />
     </div>
   );

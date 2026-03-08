@@ -319,6 +319,12 @@ export const api = {
   getTopClients: (limit = 20, sort = 'filings') =>
     fetchJson<TopEntity[]>(`${BASE}/top-clients?limit=${limit}&sort=${sort}`),
 
+  getTopConsultants: (limit = 10, sort = 'mention_count') =>
+    fetchJson<Array<{ id: number; name: string; display_name: string; mention_count: number; filing_count: number; unique_clients: number }>>(`${BASE}/top-consultants?limit=${limit}&sort=${sort}`),
+
+  getTopLobbyists: (limit = 10, sort = 'mention_count') =>
+    fetchJson<Array<{ id: number; name: string; display_name: string; mention_count: number }>>(`${BASE}/top-lobbyists?limit=${limit}&sort=${sort}`),
+
   getStats: () =>
     fetchJson<Stats>(`${BASE}/stats`),
 
