@@ -355,45 +355,77 @@ def filings_by_issue(
 
 
 @app.get("/api/top-registrants")
-def top_registrants(limit: int = Query(20, ge=1, le=100)):
-    """Get top registrants by filing count."""
+def top_registrants(limit: int = Query(20, ge=1, le=100), sort: str = Query("filings", regex="^(filings|unique_clients)$")):
+    """Get top registrants by filing count or unique client count."""
     def _fetch():
         session = _get_session()
         try:
-            results = (
-                session.query(
-                    Registrant.name, Registrant.senate_id,
-                    func.count(Filing.id).label("filing_count"),
-                    func.sum(Filing.income).label("total_income"),
+            if sort == "unique_clients":
+                results = (
+                    session.query(
+                        Registrant.name, Registrant.senate_id,
+                        func.count(func.distinct(Client.id)).label("unique_clients"),
+                        func.count(Filing.id).label("filing_count"),
+                        func.sum(Filing.income).label("total_income"),
+                    )
+                    .join(Filing).join(Client)
+                    .group_by(Registrant.id)
+                    .order_by(desc("unique_clients")).limit(limit).all()
                 )
-                .join(Filing).group_by(Registrant.id)
-                .order_by(desc("filing_count")).limit(limit).all()
-            )
-            return [{"name": r[0], "senate_id": r[1], "filing_count": r[2], "total_income": float(r[3]) if r[3] else 0} for r in results]
+                return [{"name": r[0], "senate_id": r[1], "unique_clients": r[2], "filing_count": r[3], "total_income": float(r[4]) if r[4] else 0} for r in results]
+            else:
+                results = (
+                    session.query(
+                        Registrant.name, Registrant.senate_id,
+                        func.count(Filing.id).label("filing_count"),
+                        func.count(func.distinct(Client.id)).label("unique_clients"),
+                        func.sum(Filing.income).label("total_income"),
+                    )
+                    .join(Filing).join(Client)
+                    .group_by(Registrant.id)
+                    .order_by(desc("filing_count")).limit(limit).all()
+                )
+                return [{"name": r[0], "senate_id": r[1], "filing_count": r[2], "unique_clients": r[3], "total_income": float(r[4]) if r[4] else 0} for r in results]
         finally:
             session.close()
-    return _cached(f"top_registrants_{limit}", _fetch)
+    return _cached(f"top_registrants_{limit}_{sort}", _fetch)
 
 
 @app.get("/api/top-clients")
-def top_clients(limit: int = Query(20, ge=1, le=100)):
-    """Get top clients by filing count."""
+def top_clients(limit: int = Query(20, ge=1, le=100), sort: str = Query("filings", regex="^(filings|unique_registrants)$")):
+    """Get top clients by filing count or unique registrant count."""
     def _fetch():
         session = _get_session()
         try:
-            results = (
-                session.query(
-                    Client.name, Client.senate_id,
-                    func.count(Filing.id).label("filing_count"),
-                    func.sum(Filing.income).label("total_income"),
+            if sort == "unique_registrants":
+                results = (
+                    session.query(
+                        Client.name, Client.senate_id,
+                        func.count(func.distinct(Registrant.id)).label("unique_registrants"),
+                        func.count(Filing.id).label("filing_count"),
+                        func.sum(Filing.income).label("total_income"),
+                    )
+                    .join(Filing).join(Registrant)
+                    .group_by(Client.id)
+                    .order_by(desc("unique_registrants")).limit(limit).all()
                 )
-                .join(Filing).group_by(Client.id)
-                .order_by(desc("filing_count")).limit(limit).all()
-            )
-            return [{"name": r[0], "senate_id": r[1], "filing_count": r[2], "total_income": float(r[3]) if r[3] else 0} for r in results]
+                return [{"name": r[0], "senate_id": r[1], "unique_registrants": r[2], "filing_count": r[3], "total_income": float(r[4]) if r[4] else 0} for r in results]
+            else:
+                results = (
+                    session.query(
+                        Client.name, Client.senate_id,
+                        func.count(Filing.id).label("filing_count"),
+                        func.count(func.distinct(Registrant.id)).label("unique_registrants"),
+                        func.sum(Filing.income).label("total_income"),
+                    )
+                    .join(Filing).join(Registrant)
+                    .group_by(Client.id)
+                    .order_by(desc("filing_count")).limit(limit).all()
+                )
+                return [{"name": r[0], "senate_id": r[1], "filing_count": r[2], "unique_registrants": r[3], "total_income": float(r[4]) if r[4] else 0} for r in results]
         finally:
             session.close()
-    return _cached(f"top_clients_{limit}", _fetch)
+    return _cached(f"top_clients_{limit}_{sort}", _fetch)
 
 
 @app.get("/api/stats")
@@ -406,6 +438,8 @@ def get_stats():
             total_registrants = session.query(func.count(Registrant.id)).scalar() or 0
             total_clients = session.query(func.count(Client.id)).scalar() or 0
             latest_filing = session.query(func.max(Filing.dt_posted)).scalar()
+            total_revenue = session.query(func.sum(Filing.income)).filter(Filing.income.isnot(None)).scalar() or 0
+            total_lobbyists = session.query(func.count(Entity.id)).filter(Entity.is_lobbyist == True).scalar() or 0
             year_counts = (
                 session.query(Filing.filing_year, func.count(Filing.id))
                 .group_by(Filing.filing_year)
@@ -416,6 +450,8 @@ def get_stats():
                 "total_filings": total_filings,
                 "total_registrants": total_registrants,
                 "total_clients": total_clients,
+                "total_lobbyists": total_lobbyists,
+                "total_revenue": float(total_revenue),
                 "latest_filing": latest_filing.isoformat() if latest_filing else None,
                 "filings_by_year": [{"year": y, "count": c} for y, c in year_counts],
             }
@@ -606,6 +642,114 @@ def activity_heatmap():
                 for row in rows if row.day
             ]
         }
+    finally:
+        session.close()
+
+
+@app.get("/api/reports/revenue-by-quarter")
+def revenue_by_quarter(limit: int = Query(10, ge=1, le=25)):
+    """Total revenue by quarter, and top firms' revenue over time."""
+    session = _get_session()
+    try:
+        period_expr = func.concat(Filing.filing_year, '-', Filing.filing_period)
+
+        # Overall revenue by quarter
+        overall = (
+            session.query(
+                Filing.filing_year,
+                Filing.filing_period,
+                func.sum(Filing.income).label("revenue"),
+                func.count(Filing.id).label("filing_count"),
+            )
+            .filter(Filing.income.isnot(None))
+            .group_by(Filing.filing_year, Filing.filing_period)
+            .order_by(Filing.filing_year, Filing.filing_period)
+            .all()
+        )
+        overall_data = [
+            {"year": r[0], "period": r[1], "revenue": float(r[2]) if r[2] else 0, "filing_count": r[3]}
+            for r in overall
+        ]
+
+        # Top firms by total revenue
+        top_firms = (
+            session.query(
+                Registrant.id, Registrant.name,
+                func.sum(Filing.income).label("total_revenue"),
+            )
+            .join(Filing)
+            .filter(Filing.income.isnot(None))
+            .group_by(Registrant.id, Registrant.name)
+            .order_by(desc("total_revenue"))
+            .limit(limit)
+            .all()
+        )
+        top_firm_ids = [r[0] for r in top_firms]
+        top_firm_names = {r[0]: r[1] for r in top_firms}
+
+        # Revenue by quarter per top firm
+        firm_series = {}
+        if top_firm_ids:
+            rows = (
+                session.query(
+                    Registrant.id,
+                    Filing.filing_year,
+                    Filing.filing_period,
+                    func.sum(Filing.income).label("revenue"),
+                )
+                .select_from(Filing)
+                .join(Registrant)
+                .filter(Filing.income.isnot(None), Registrant.id.in_(top_firm_ids))
+                .group_by(Registrant.id, Filing.filing_year, Filing.filing_period)
+                .all()
+            )
+            for reg_id, year, period, revenue in rows:
+                name = top_firm_names[reg_id]
+                if name not in firm_series:
+                    firm_series[name] = {}
+                key = f"{year}-{period}"
+                firm_series[name][key] = float(revenue) if revenue else 0
+
+        all_periods = sorted(set(f"{r['year']}-{r['period']}" for r in overall_data))
+        series = []
+        for name, data in firm_series.items():
+            series.append({
+                "name": name,
+                "data": [{"period": p, "revenue": data.get(p, 0)} for p in all_periods],
+            })
+        series.sort(key=lambda x: sum(d["revenue"] for d in x["data"]), reverse=True)
+
+        return {"overall": overall_data, "series": series, "periods": all_periods}
+    finally:
+        session.close()
+
+
+@app.get("/api/reports/entity-appearances")
+def entity_appearances(limit: int = Query(25, ge=1, le=100), entity_type: Optional[str] = Query(None)):
+    """Leaderboard of entities by number of newsletter appearances."""
+    session = _get_session()
+    try:
+        q = (
+            session.query(
+                Entity.id, Entity.name, Entity.entity_type, Entity.display_name,
+                Entity.mention_count,
+                func.count(func.distinct(EntityMention.newsletter_id)).label("newsletter_count"),
+            )
+            .join(EntityMention, EntityMention.entity_id == Entity.id)
+            .group_by(Entity.id)
+            .order_by(desc("newsletter_count"))
+        )
+        if entity_type:
+            q = q.filter(Entity.entity_type == entity_type)
+        rows = q.limit(limit).all()
+        return [
+            {
+                "id": r[0], "name": r[1], "entity_type": r[2],
+                "display_name": r[3] or r[1], "mention_count": r[4],
+                "newsletter_count": r[5],
+            }
+            for r in rows
+        ]
     finally:
         session.close()
 

@@ -1,11 +1,11 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
-import { Search, FileText, Tag, BarChart3, RefreshCw, Building2, Users, ChevronLeft, ChevronRight, ExternalLink, DollarSign, Calendar, Loader2, Network, Newspaper, User, Briefcase, Menu, X, Download, Square, ChevronDown, Target, Sparkles, Send, MessageCircle, Bot, PanelLeftOpen, PanelLeftClose, TrendingUp } from 'lucide-react';
-import { api, type FilingSummary, type FilingDetail, type IssueSummary, type Stats, type SyncStatus, type SyncCoverage, type SearchParams, type TopEntity, type NewsletterSummary, type NewsletterDetail, type EntitySummary, type EntityDetail, type NetworkData, type InfluenceStats, type ReportSeries } from './api';
+import { Search, FileText, Tag, BarChart3, RefreshCw, Building2, Users, ChevronLeft, ChevronRight, ExternalLink, DollarSign, Calendar, Loader2, Network, Newspaper, User, Briefcase, Menu, X, Download, Square, ChevronDown, Target, Sparkles, Send, MessageCircle, Bot, PanelLeftOpen, PanelLeftClose, TrendingUp, Settings } from 'lucide-react';
+import { api, type FilingSummary, type FilingDetail, type IssueSummary, type Stats, type SyncStatus, type SyncCoverage, type SearchParams, type TopEntity, type NewsletterSummary, type NewsletterDetail, type EntitySummary, type EntityDetail, type NetworkData, type InfluenceStats, type ReportSeries, type EntityAppearance, type RevenueByQuarter } from './api';
 import { formatDistanceToNow, format } from 'date-fns';
 import NetworkGraph, { computeEigenvectorCentrality, type SizeMode } from './NetworkGraph';
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from 'recharts';
 
-type Page = 'dashboard' | 'search' | 'issues' | 'filing' | 'influence' | 'network' | 'entity' | 'newsletter' | 'leaderboard' | 'chat' | 'reports';
+type Page = 'dashboard' | 'search' | 'issues' | 'filing' | 'influence' | 'network' | 'entity' | 'newsletter' | 'leaderboard' | 'chat' | 'reports' | 'utilities';
 
 function formatMoney(val: number | null | undefined): string {
   if (val === null || val === undefined) return '-';
@@ -34,6 +34,7 @@ function Nav({ page, setPage }: { page: Page; setPage: (p: Page) => void }) {
     { id: 'reports', label: 'Reports', icon: <TrendingUp size={18} /> },
     { id: 'chat', label: 'AI Chat', icon: <Bot size={18} /> },
   ];
+  const allLinks = [...links, { id: 'utilities' as Page, label: 'Utilities', icon: <Settings size={18} /> }];
   const handleNav = (p: Page) => { setPage(p); setMobileOpen(false); };
   return (
     <header className="bg-white border-b border-gray-200 sticky top-0 z-50">
@@ -42,7 +43,7 @@ function Nav({ page, setPage }: { page: Page; setPage: (p: Page) => void }) {
           <FileText size={22} /> LDA Tracker
         </button>
         <nav className="hidden md:flex gap-1">
-          {links.map(l => (
+          {allLinks.map(l => (
             <button
               key={l.id}
               data-testid={`link-nav-${l.id}`}
@@ -63,7 +64,7 @@ function Nav({ page, setPage }: { page: Page; setPage: (p: Page) => void }) {
       </div>
       {mobileOpen && (
         <nav className="md:hidden border-t border-gray-100 bg-white px-4 pb-3 pt-1" data-testid="nav-mobile-menu">
-          {links.map(l => (
+          {allLinks.map(l => (
             <button
               key={l.id}
               data-testid={`link-mobile-nav-${l.id}`}
@@ -131,25 +132,23 @@ function Pagination({ page, pageSize, total, onPage }: { page: number; pageSize:
 }
 
 // ---------- Dashboard ----------
-function Dashboard({ onNavigate, onSyncComplete }: { onNavigate: (page: Page, ctx?: unknown) => void; onSyncComplete?: () => void }) {
+function Dashboard({ onNavigate }: { onNavigate: (page: Page, ctx?: unknown) => void }) {
   const [stats, setStats] = useState<Stats | null>(null);
   const [recent, setRecent] = useState<FilingSummary[]>([]);
   const [topRegistrants, setTopRegistrants] = useState<TopEntity[]>([]);
   const [topClients, setTopClients] = useState<TopEntity[]>([]);
-  const [syncStatus, setSyncStatus] = useState<SyncStatus | null>(null);
-  const [syncing, setSyncing] = useState(false);
   const [loading, setLoading] = useState(true);
-  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const [regSort, setRegSort] = useState<'filings' | 'unique_clients'>('filings');
+  const [clientSort, setClientSort] = useState<'filings' | 'unique_registrants'>('filings');
 
   const load = useCallback(async (retry = 0) => {
     setLoading(true);
     try {
       api.getStats().then(setStats).catch(console.error);
-      api.getSyncStatus().then(ss => { setSyncStatus(ss); if (ss.status === 'running') setSyncing(true); }).catch(console.error);
       const [r, tr, tc] = await Promise.all([
         api.searchFilings({ sort: '-dt_posted', page_size: 10 }),
-        api.getTopRegistrants(10),
-        api.getTopClients(10),
+        api.getTopRegistrants(10, regSort),
+        api.getTopClients(10, clientSort),
       ]);
       setRecent(r.results);
       setTopRegistrants(tr);
@@ -160,127 +159,23 @@ function Dashboard({ onNavigate, onSyncComplete }: { onNavigate: (page: Page, ct
       setLoading(false);
       if (retry < 3) setTimeout(() => load(retry + 1), 2000);
     }
-  }, []);
+  }, [regSort, clientSort]);
 
   useEffect(() => { load(); }, [load]);
 
+  // Reload leaderboards when sort changes
   useEffect(() => {
-    if (syncing && !pollRef.current) {
-      pollRef.current = setInterval(async () => {
-        try {
-          const s = await api.getSyncStatus();
-          setSyncStatus(s);
-          if (s.status !== 'running' && s.status !== 'cancelling' && s.status !== 'started') {
-            if (pollRef.current) clearInterval(pollRef.current);
-            pollRef.current = null;
-            setSyncing(false);
-            load();
-            onSyncComplete?.();
-          }
-        } catch (e) { console.error(e); }
-      }, 2000);
-    }
-    return () => {
-      if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; }
-    };
-  }, [syncing, load]);
-
-  const handleSync = async (mode: string) => {
-    setSyncing(true);
-    try {
-      await api.triggerSync({ mode });
-    } catch (e) {
-      console.error(e);
-      setSyncing(false);
-    }
-  };
-
-  const handleCancel = async () => {
-    try { await api.cancelSync(); } catch (e) { console.error(e); }
-  };
-
-  const syncRunning = syncing || syncStatus?.status === 'running';
+    api.getTopRegistrants(10, regSort).then(setTopRegistrants).catch(console.error);
+  }, [regSort]);
+  useEffect(() => {
+    api.getTopClients(10, clientSort).then(setTopClients).catch(console.error);
+  }, [clientSort]);
 
   return (
     <div className="space-y-6">
-      {/* Sync bar */}
-      <div className="bg-white rounded-lg border border-gray-200 p-4">
-        <div className="flex items-center justify-between flex-wrap gap-3">
-          <div>
-            <p className="text-sm text-gray-700 font-medium" data-testid="text-filing-count">
-              {stats === null ? <span className="text-gray-400">Loading...</span> : stats.total_filings ? `${stats.total_filings.toLocaleString()} filings stored` : 'No filings synced yet'}
-              {stats?.latest_filing && ` · Latest: ${formatDate(stats.latest_filing)}`}
-            </p>
-            {syncStatus && syncStatus.status !== 'idle' && (
-              <p className="text-xs text-gray-400 mt-0.5" data-testid="text-sync-status">
-                {syncStatus.status === 'running' && syncStatus.mode === 'incremental' && (
-                  <>Fetching new filings… {syncStatus.stored || 0} stored, page {syncStatus.pages || 0}</>
-                )}
-                {syncStatus.status === 'running' && (syncStatus.mode === 'backfill' || syncStatus.mode === 'backfill_chunk') && (
-                  <>Backfilling {syncStatus.current_year || '…'} — {syncStatus.stored?.toLocaleString() || 0} new, {syncStatus.duplicates?.toLocaleString() || 0} skipped, page {syncStatus.pages || 0}</>
-                )}
-                {syncStatus.status === 'running' && syncStatus.mode === 'complete_years' && (
-                  <>Completing {syncStatus.current_year || '…'} — {syncStatus.stored?.toLocaleString() || 0} new, {syncStatus.duplicates?.toLocaleString() || 0} dupes, page {syncStatus.pages || 0}</>
-                )}
-                {syncStatus.status === 'cancelling' && 'Cancelling…'}
-                {syncStatus.status === 'completed' && (
-                  <>Completed: {syncStatus.stored?.toLocaleString() || 0} new filings{syncStatus.duplicates ? `, ${syncStatus.duplicates.toLocaleString()} already had` : ''}</>
-                )}
-                {syncStatus.status === 'cancelled' && (
-                  <>Cancelled: {syncStatus.stored?.toLocaleString() || 0} filings stored before stopping</>
-                )}
-                {syncStatus.status === 'error' && <>Error: {syncStatus.error}</>}
-              </p>
-            )}
-          </div>
-          <div className="flex items-center gap-2">
-            {syncRunning ? (
-              <button
-                onClick={handleCancel}
-                data-testid="button-cancel-sync"
-                className="flex items-center gap-2 bg-red-600 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-red-700 cursor-pointer"
-              >
-                <Square size={14} /> Stop
-              </button>
-            ) : (
-              <>
-                <button
-                  onClick={() => handleSync('incremental')}
-                  data-testid="button-sync-incremental"
-                  className="flex items-center gap-2 bg-indigo-600 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-indigo-700 cursor-pointer"
-                >
-                  <RefreshCw size={16} /> Sync New
-                </button>
-                <button
-                  onClick={() => handleSync('backfill')}
-                  data-testid="button-sync-backfill"
-                  className="flex items-center gap-2 bg-gray-700 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-gray-800 cursor-pointer"
-                >
-                  <Download size={16} /> Backfill 1,000 More
-                </button>
-                <button
-                  onClick={() => handleSync('complete_years')}
-                  data-testid="button-sync-complete-years"
-                  className="flex items-center gap-2 bg-amber-600 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-amber-700 cursor-pointer"
-                >
-                  <Download size={16} /> Complete 2025+2026
-                </button>
-              </>
-            )}
-          </div>
-        </div>
-        {syncRunning && (
-          <div className="mt-3">
-            <div className="w-full bg-gray-200 rounded-full h-1.5">
-              <div className="bg-indigo-600 h-1.5 rounded-full animate-pulse" style={{ width: '100%' }} />
-            </div>
-          </div>
-        )}
-      </div>
-
       {/* Stats cards */}
       {stats && stats.total_filings > 0 && (
-        <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-4">
           <div className="bg-white rounded-lg border border-gray-200 p-4">
             <p className="text-2xl font-bold text-indigo-700">{stats.total_filings.toLocaleString()}</p>
             <p className="text-sm text-gray-500">Total Filings</p>
@@ -293,7 +188,19 @@ function Dashboard({ onNavigate, onSyncComplete }: { onNavigate: (page: Page, ct
             <p className="text-2xl font-bold text-indigo-700">{stats.total_clients.toLocaleString()}</p>
             <p className="text-sm text-gray-500">Clients</p>
           </div>
+          <div className="bg-white rounded-lg border border-gray-200 p-4">
+            <p className="text-2xl font-bold text-indigo-700">{stats.total_lobbyists.toLocaleString()}</p>
+            <p className="text-sm text-gray-500">Lobbyists</p>
+          </div>
+          <div className="bg-white rounded-lg border border-gray-200 p-4">
+            <p className="text-2xl font-bold text-indigo-700">{formatMoney(stats.total_revenue)}</p>
+            <p className="text-sm text-gray-500">Total Revenue</p>
+          </div>
         </div>
+      )}
+
+      {stats?.latest_filing && (
+        <p className="text-xs text-gray-400">Latest filing: {formatDate(stats.latest_filing)}</p>
       )}
 
       {/* Recent filings */}
@@ -317,12 +224,20 @@ function Dashboard({ onNavigate, onSyncComplete }: { onNavigate: (page: Page, ct
         <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
           {topRegistrants.length > 0 && (
             <div className="bg-white rounded-lg border border-gray-200 p-4">
-              <h3 className="font-semibold text-gray-900 mb-3 flex items-center gap-2"><Building2 size={16} /> Top Registrants</h3>
+              <div className="flex items-center justify-between mb-3">
+                <h3 className="font-semibold text-gray-900 flex items-center gap-2"><Building2 size={16} /> Top Registrants</h3>
+                <div className="flex rounded border border-gray-200 overflow-hidden text-xs">
+                  <button onClick={() => setRegSort('filings')} className={`px-2 py-1 cursor-pointer ${regSort === 'filings' ? 'bg-indigo-600 text-white' : 'text-gray-600 hover:bg-gray-50'}`}>Filings</button>
+                  <button onClick={() => setRegSort('unique_clients')} className={`px-2 py-1 cursor-pointer ${regSort === 'unique_clients' ? 'bg-indigo-600 text-white' : 'text-gray-600 hover:bg-gray-50'}`}>Clients</button>
+                </div>
+              </div>
               <div className="space-y-2">
                 {topRegistrants.map((r, i) => (
                   <div key={r.senate_id} className="flex items-center justify-between text-sm">
                     <span className="text-gray-700 truncate"><span className="text-gray-400 mr-2">{i + 1}.</span>{r.name}</span>
-                    <span className="text-gray-500 shrink-0 ml-2">{r.filing_count} filings</span>
+                    <span className="text-gray-500 shrink-0 ml-2">
+                      {regSort === 'unique_clients' ? `${r.unique_clients ?? 0} clients` : `${r.filing_count} filings`}
+                    </span>
                   </div>
                 ))}
               </div>
@@ -330,12 +245,20 @@ function Dashboard({ onNavigate, onSyncComplete }: { onNavigate: (page: Page, ct
           )}
           {topClients.length > 0 && (
             <div className="bg-white rounded-lg border border-gray-200 p-4">
-              <h3 className="font-semibold text-gray-900 mb-3 flex items-center gap-2"><Users size={16} /> Top Clients</h3>
+              <div className="flex items-center justify-between mb-3">
+                <h3 className="font-semibold text-gray-900 flex items-center gap-2"><Users size={16} /> Top Clients</h3>
+                <div className="flex rounded border border-gray-200 overflow-hidden text-xs">
+                  <button onClick={() => setClientSort('filings')} className={`px-2 py-1 cursor-pointer ${clientSort === 'filings' ? 'bg-indigo-600 text-white' : 'text-gray-600 hover:bg-gray-50'}`}>Filings</button>
+                  <button onClick={() => setClientSort('unique_registrants')} className={`px-2 py-1 cursor-pointer ${clientSort === 'unique_registrants' ? 'bg-indigo-600 text-white' : 'text-gray-600 hover:bg-gray-50'}`}>Firms</button>
+                </div>
+              </div>
               <div className="space-y-2">
                 {topClients.map((c, i) => (
                   <div key={c.senate_id} className="flex items-center justify-between text-sm">
                     <span className="text-gray-700 truncate"><span className="text-gray-400 mr-2">{i + 1}.</span>{c.name}</span>
-                    <span className="text-gray-500 shrink-0 ml-2">{c.filing_count} filings</span>
+                    <span className="text-gray-500 shrink-0 ml-2">
+                      {clientSort === 'unique_registrants' ? `${c.unique_registrants ?? 0} firms` : `${c.filing_count} filings`}
+                    </span>
                   </div>
                 ))}
               </div>
@@ -349,7 +272,7 @@ function Dashboard({ onNavigate, onSyncComplete }: { onNavigate: (page: Page, ct
         <div className="text-center py-16">
           <FileText size={48} className="mx-auto text-gray-300 mb-4" />
           <h2 className="text-xl font-semibold text-gray-700 mb-2">No filings yet</h2>
-          <p className="text-gray-500 mb-4">Click "Sync New" to grab the latest filings, "Backfill 1,000 More" to resume fetching from where you left off, or "Complete 2025+2026" to get every filing for those years.</p>
+          <p className="text-gray-500 mb-4">Go to <button onClick={() => onNavigate('utilities')} className="text-indigo-600 hover:underline cursor-pointer">Utilities</button> to sync filings from the Senate LDA API.</p>
         </div>
       )}
     </div>
@@ -689,7 +612,6 @@ function InfluencePage({ onNavigate }: { onNavigate: (page: Page, ctx?: unknown)
   const [total, setTotal] = useState(0);
   const [page, setPageNum] = useState(1);
   const [loading, setLoading] = useState(true);
-  const [scraping, setScraping] = useState(false);
 
   const [searchQuery, setSearchQuery] = useState('');
   const [searchInput, setSearchInput] = useState('');
@@ -747,67 +669,11 @@ function InfluencePage({ onNavigate }: { onNavigate: (page: Page, ctx?: unknown)
     setSearchResults(null);
   };
 
-  const [reprocessing, setReprocessing] = useState(false);
-  const [reprocessProgress, setReprocessProgress] = useState<{ processed?: number; total?: number } | null>(null);
-
-  const handleReprocess = async () => {
-    if (!confirm('Re-run classification on all newsletters? This keeps existing entities but rebuilds all relationships. This may take a few minutes.')) return;
-    setReprocessing(true);
-    setReprocessProgress(null);
-    try {
-      await api.reprocessEntities();
-      const poll = setInterval(async () => {
-        try {
-          const p = await api.getReprocessStatus();
-          if (p.status === 'running') {
-            setReprocessProgress({ processed: p.processed, total: p.total });
-          }
-          if (p.status === 'done' || p.status === 'error') {
-            clearInterval(poll);
-            setReprocessProgress(null);
-            setReprocessing(false);
-            load();
-          }
-        } catch {}
-      }, 2000);
-    } catch (err) {
-      console.error(err);
-      setReprocessing(false);
-      setReprocessProgress(null);
-    }
-  };
-
-  const [scrapeProgress, setScrapeProgress] = useState<any>(null);
-
-  const handleScrape = async () => {
-    setScraping(true);
-    setScrapeProgress(null);
-    try {
-      await api.triggerInfluenceScrape({ max_newsletters: 100, max_discovery_pages: 10 });
-      const poll = setInterval(async () => {
-        const s = await api.getInfluenceScrapeStatus();
-        if (s.status === 'running' && s.progress) {
-          setScrapeProgress(s.progress);
-        }
-        if (s.status !== 'running') {
-          clearInterval(poll);
-          setScraping(false);
-          setScrapeProgress(null);
-          load();
-        }
-      }, 3000);
-    } catch (err) {
-      console.error(err);
-      setScraping(false);
-      setScrapeProgress(null);
-    }
-  };
-
   if (loading) return <div className="flex items-center justify-center h-64"><Loader2 className="animate-spin text-indigo-600" size={32} /></div>;
 
   return (
     <div className="space-y-6">
-      {/* Header with scrape button */}
+      {/* Header */}
       <div className="bg-white rounded-lg border border-gray-200 p-4">
         <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
           <div>
@@ -817,48 +683,7 @@ function InfluencePage({ onNavigate }: { onNavigate: (page: Page, ctx?: unknown)
               {stats?.latest_newsletter && ` · Latest: ${formatDate(stats.latest_newsletter)}`}
             </p>
           </div>
-          <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2">
-            {scraping && scrapeProgress && (
-              <span className="text-xs text-gray-500" data-testid="text-scrape-progress">
-                {scrapeProgress.phase === 'discovering' ? 'Discovering archive...' :
-                  `${scrapeProgress.stored} stored, ${scrapeProgress.skipped} skipped${scrapeProgress.total ? ` / ${scrapeProgress.total} total` : ''}`}
-              </span>
-            )}
-            <button
-              onClick={handleScrape}
-              disabled={scraping || reprocessing}
-              className="flex items-center justify-center gap-2 bg-amber-600 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-amber-700 disabled:opacity-50 cursor-pointer"
-              data-testid="button-scrape"
-            >
-              {scraping ? <Loader2 size={16} className="animate-spin" /> : <RefreshCw size={16} />}
-              {scraping ? 'Scraping...' : 'Scrape Newsletters'}
-            </button>
-            <button
-              onClick={handleReprocess}
-              disabled={reprocessing || scraping}
-              className="flex items-center justify-center gap-2 border border-amber-600 text-amber-700 px-4 py-2 rounded-lg text-sm font-medium hover:bg-amber-50 disabled:opacity-50 cursor-pointer"
-              data-testid="button-reprocess"
-              title="Re-run classification: keeps entities, rebuilds all relationships"
-            >
-              {reprocessing ? <Loader2 size={16} className="animate-spin" /> : <RefreshCw size={16} />}
-              {reprocessing ? 'Reprocessing...' : 'Re-run Classification'}
-            </button>
-          </div>
         </div>
-        {reprocessing && reprocessProgress && reprocessProgress.total && reprocessProgress.total > 0 && (
-          <div className="mt-3 pt-3 border-t border-gray-100">
-            <div className="flex items-center justify-between mb-1.5">
-              <span className="text-xs font-medium text-gray-600">Reprocessing newsletters...</span>
-              <span className="text-xs text-gray-500">{reprocessProgress.processed ?? 0} / {reprocessProgress.total}</span>
-            </div>
-            <div className="w-full h-2 bg-gray-100 rounded-full overflow-hidden">
-              <div
-                className="h-full bg-amber-500 rounded-full transition-all duration-500"
-                style={{ width: `${Math.round(((reprocessProgress.processed ?? 0) / reprocessProgress.total) * 100)}%` }}
-              />
-            </div>
-          </div>
-        )}
       </div>
 
       {/* Search */}
@@ -1925,6 +1750,174 @@ function EntityLeaderboard({ entityType, onBack, onNavigate }: { entityType: str
 
 
 // ---------- Reports Page ----------
+// ---------- Utilities Page ----------
+function UtilitiesPage({ onSyncComplete }: { onSyncComplete?: () => void }) {
+  // LDA Sync state
+  const [syncStatus, setSyncStatus] = useState<SyncStatus | null>(null);
+  const [syncing, setSyncing] = useState(false);
+  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  // Influence scrape state
+  const [scraping, setScraping] = useState(false);
+  const [scrapeProgress, setScrapeProgress] = useState<any>(null);
+
+  // Reprocess state
+  const [reprocessing, setReprocessing] = useState(false);
+  const [reprocessProgress, setReprocessProgress] = useState<{ processed?: number; total?: number } | null>(null);
+
+  useEffect(() => {
+    api.getSyncStatus().then(ss => { setSyncStatus(ss); if (ss.status === 'running') setSyncing(true); }).catch(console.error);
+  }, []);
+
+  useEffect(() => {
+    if (syncing && !pollRef.current) {
+      pollRef.current = setInterval(async () => {
+        try {
+          const s = await api.getSyncStatus();
+          setSyncStatus(s);
+          if (s.status !== 'running' && s.status !== 'cancelling' && s.status !== 'started') {
+            if (pollRef.current) clearInterval(pollRef.current);
+            pollRef.current = null;
+            setSyncing(false);
+            onSyncComplete?.();
+          }
+        } catch (e) { console.error(e); }
+      }, 2000);
+    }
+    return () => {
+      if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; }
+    };
+  }, [syncing]);
+
+  const handleSync = async (mode: string) => {
+    setSyncing(true);
+    try { await api.triggerSync({ mode }); } catch (e) { console.error(e); setSyncing(false); }
+  };
+  const handleCancel = async () => {
+    try { await api.cancelSync(); } catch (e) { console.error(e); }
+  };
+
+  const handleScrape = async () => {
+    setScraping(true);
+    setScrapeProgress(null);
+    try {
+      await api.triggerInfluenceScrape({ max_newsletters: 100, max_discovery_pages: 10 });
+      const poll = setInterval(async () => {
+        const s = await api.getInfluenceScrapeStatus();
+        if (s.status === 'running' && s.progress) setScrapeProgress(s.progress);
+        if (s.status !== 'running') { clearInterval(poll); setScraping(false); setScrapeProgress(null); }
+      }, 3000);
+    } catch (err) { console.error(err); setScraping(false); setScrapeProgress(null); }
+  };
+
+  const handleReprocess = async () => {
+    if (!confirm('Re-run classification on all newsletters? This keeps existing entities but rebuilds all relationships.')) return;
+    setReprocessing(true);
+    setReprocessProgress(null);
+    try {
+      await api.reprocessEntities();
+      const poll = setInterval(async () => {
+        try {
+          const p = await api.getReprocessStatus();
+          if (p.status === 'running') setReprocessProgress({ processed: p.processed, total: p.total });
+          if (p.status === 'done' || p.status === 'error') { clearInterval(poll); setReprocessProgress(null); setReprocessing(false); }
+        } catch {}
+      }, 2000);
+    } catch (err) { console.error(err); setReprocessing(false); setReprocessProgress(null); }
+  };
+
+  const syncRunning = syncing || syncStatus?.status === 'running';
+
+  return (
+    <div className="space-y-6">
+      <h1 className="text-xl font-bold text-gray-900 flex items-center gap-2"><Settings size={22} /> Utilities</h1>
+
+      {/* LDA Filing Sync */}
+      <div className="bg-white rounded-lg border border-gray-200 p-5">
+        <h2 className="font-semibold text-gray-900 mb-3">LDA Filing Sync</h2>
+        {syncStatus && syncStatus.status !== 'idle' && (
+          <p className="text-xs text-gray-500 mb-3">
+            {syncStatus.status === 'running' && syncStatus.mode === 'incremental' && (
+              <>Fetching new filings… {syncStatus.stored || 0} stored, page {syncStatus.pages || 0}</>
+            )}
+            {syncStatus.status === 'running' && (syncStatus.mode === 'backfill' || syncStatus.mode === 'backfill_chunk') && (
+              <>Backfilling {syncStatus.current_year || '…'} — {syncStatus.stored?.toLocaleString() || 0} new, {syncStatus.duplicates?.toLocaleString() || 0} skipped, page {syncStatus.pages || 0}</>
+            )}
+            {syncStatus.status === 'running' && syncStatus.mode === 'complete_years' && (
+              <>Completing {syncStatus.current_year || '…'} — {syncStatus.stored?.toLocaleString() || 0} new, {syncStatus.duplicates?.toLocaleString() || 0} dupes, page {syncStatus.pages || 0}</>
+            )}
+            {syncStatus.status === 'cancelling' && 'Cancelling…'}
+            {syncStatus.status === 'completed' && (
+              <>Completed: {syncStatus.stored?.toLocaleString() || 0} new filings{syncStatus.duplicates ? `, ${syncStatus.duplicates.toLocaleString()} already had` : ''}</>
+            )}
+            {syncStatus.status === 'cancelled' && <>Cancelled: {syncStatus.stored?.toLocaleString() || 0} filings stored</>}
+            {syncStatus.status === 'error' && <>Error: {syncStatus.error}</>}
+          </p>
+        )}
+        <div className="flex flex-wrap gap-2">
+          {syncRunning ? (
+            <button onClick={handleCancel} className="flex items-center gap-2 bg-red-600 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-red-700 cursor-pointer">
+              <Square size={14} /> Stop
+            </button>
+          ) : (
+            <>
+              <button onClick={() => handleSync('incremental')} className="flex items-center gap-2 bg-indigo-600 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-indigo-700 cursor-pointer">
+                <RefreshCw size={16} /> Sync New
+              </button>
+              <button onClick={() => handleSync('backfill')} className="flex items-center gap-2 bg-gray-700 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-gray-800 cursor-pointer">
+                <Download size={16} /> Backfill 1,000 More
+              </button>
+              <button onClick={() => handleSync('complete_years')} className="flex items-center gap-2 bg-amber-600 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-amber-700 cursor-pointer">
+                <Download size={16} /> Complete 2025+2026
+              </button>
+            </>
+          )}
+        </div>
+        {syncRunning && (
+          <div className="mt-3"><div className="w-full bg-gray-200 rounded-full h-1.5"><div className="bg-indigo-600 h-1.5 rounded-full animate-pulse" style={{ width: '100%' }} /></div></div>
+        )}
+      </div>
+
+      {/* Influence Scraping */}
+      <div className="bg-white rounded-lg border border-gray-200 p-5">
+        <h2 className="font-semibold text-gray-900 mb-3">Politico Influence</h2>
+        {scraping && scrapeProgress && (
+          <p className="text-xs text-gray-500 mb-3">
+            {scrapeProgress.phase === 'discovering' ? 'Discovering archive...' :
+              `${scrapeProgress.stored} stored, ${scrapeProgress.skipped} skipped${scrapeProgress.total ? ` / ${scrapeProgress.total} total` : ''}`}
+          </p>
+        )}
+        <div className="flex flex-wrap gap-2">
+          <button onClick={handleScrape} disabled={scraping || reprocessing}
+            className="flex items-center gap-2 bg-amber-600 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-amber-700 disabled:opacity-50 cursor-pointer">
+            {scraping ? <Loader2 size={16} className="animate-spin" /> : <RefreshCw size={16} />}
+            {scraping ? 'Scraping...' : 'Scrape Newsletters'}
+          </button>
+          <button onClick={handleReprocess} disabled={reprocessing || scraping}
+            className="flex items-center gap-2 border border-amber-600 text-amber-700 px-4 py-2 rounded-lg text-sm font-medium hover:bg-amber-50 disabled:opacity-50 cursor-pointer"
+            title="Re-run classification: keeps entities, rebuilds all relationships">
+            {reprocessing ? <Loader2 size={16} className="animate-spin" /> : <RefreshCw size={16} />}
+            {reprocessing ? 'Reprocessing...' : 'Re-run Classification'}
+          </button>
+        </div>
+        {reprocessing && reprocessProgress && reprocessProgress.total && reprocessProgress.total > 0 && (
+          <div className="mt-3 pt-3 border-t border-gray-100">
+            <div className="flex items-center justify-between mb-1.5">
+              <span className="text-xs font-medium text-gray-600">Reprocessing newsletters...</span>
+              <span className="text-xs text-gray-500">{reprocessProgress.processed ?? 0} / {reprocessProgress.total}</span>
+            </div>
+            <div className="w-full h-2 bg-gray-100 rounded-full overflow-hidden">
+              <div className="h-full bg-amber-500 rounded-full transition-all duration-500"
+                style={{ width: `${Math.round(((reprocessProgress.processed ?? 0) / reprocessProgress.total) * 100)}%` }} />
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+
 const REPORT_COLORS = ['#6366f1', '#f59e0b', '#10b981', '#ef4444', '#8b5cf6', '#ec4899', '#14b8a6', '#f97316', '#06b6d4', '#84cc16'];
 
 type DatePreset = 'past_day' | 'past_week' | 'past_30' | 'past_365' | 'this_year' | 'last_year';
@@ -2142,18 +2135,102 @@ function ActivityHeatmap({ syncVersion }: { syncVersion?: number }) {
   );
 }
 
-function ReportsPage({ syncVersion }: { syncVersion?: number }) {
+function RevenueChart({ data, loading }: { data: RevenueByQuarter | null; loading: boolean }) {
+  if (loading) return <div className="bg-white rounded-lg border border-gray-200 p-6 flex justify-center"><Loader2 className="animate-spin text-gray-300" size={24} /></div>;
+  if (!data || !data.overall.length) return null;
+
+  const chartData = data.overall.map(q => {
+    const key = `${q.year}-${q.period}`;
+    const entry: Record<string, any> = { period: key, Total: q.revenue };
+    data.series.forEach(s => {
+      const pt = s.data.find(d => d.period === key);
+      entry[s.name] = pt?.revenue || 0;
+    });
+    return entry;
+  });
+
+  const allNames = data.series.map(s => s.name);
+
+  return (
+    <div className="bg-white rounded-lg border border-gray-200 p-4">
+      <h3 className="font-semibold text-gray-900 mb-4">Revenue by Quarter</h3>
+      <ResponsiveContainer width="100%" height={350}>
+        <LineChart data={chartData} margin={{ top: 5, right: 20, left: 0, bottom: 5 }}>
+          <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
+          <XAxis dataKey="period" tick={{ fontSize: 11 }} />
+          <YAxis tick={{ fontSize: 11 }} tickFormatter={v => `$${(v / 1e6).toFixed(0)}M`} />
+          <Tooltip formatter={(v: number) => formatMoney(v)} />
+          <Legend />
+          <Line type="monotone" dataKey="Total" stroke="#374151" strokeWidth={2} dot={false} />
+          {allNames.slice(0, 8).map((name, i) => (
+            <Line key={name} type="monotone" dataKey={name} stroke={REPORT_COLORS[i % REPORT_COLORS.length]} strokeWidth={1.5} dot={false} />
+          ))}
+        </LineChart>
+      </ResponsiveContainer>
+    </div>
+  );
+}
+
+function EntityAppearancesLeaderboard({ onNavigate }: { onNavigate?: (page: Page, ctx?: unknown) => void }) {
+  const [data, setData] = useState<EntityAppearance[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [typeFilter, setTypeFilter] = useState<string>('');
+
+  useEffect(() => {
+    setLoading(true);
+    api.getEntityAppearances(25, typeFilter || undefined)
+      .then(setData)
+      .catch(() => setData([]))
+      .finally(() => setLoading(false));
+  }, [typeFilter]);
+
+  return (
+    <div className="bg-white rounded-lg border border-gray-200 p-4">
+      <div className="flex items-center justify-between mb-3">
+        <h3 className="font-semibold text-gray-900">Top Report Appearances</h3>
+        <div className="flex rounded border border-gray-200 overflow-hidden text-xs">
+          <button onClick={() => setTypeFilter('')} className={`px-2 py-1 cursor-pointer ${!typeFilter ? 'bg-indigo-600 text-white' : 'text-gray-600 hover:bg-gray-50'}`}>All</button>
+          <button onClick={() => setTypeFilter('person')} className={`px-2 py-1 cursor-pointer ${typeFilter === 'person' ? 'bg-indigo-600 text-white' : 'text-gray-600 hover:bg-gray-50'}`}>People</button>
+          <button onClick={() => setTypeFilter('organization')} className={`px-2 py-1 cursor-pointer ${typeFilter === 'organization' ? 'bg-indigo-600 text-white' : 'text-gray-600 hover:bg-gray-50'}`}>Orgs</button>
+        </div>
+      </div>
+      {loading ? (
+        <div className="flex justify-center py-4"><Loader2 className="animate-spin text-gray-300" size={20} /></div>
+      ) : (
+        <div className="space-y-1.5">
+          {data.map((e, i) => (
+            <div key={e.id} className="flex items-center justify-between text-sm">
+              <span className="text-gray-700 truncate">
+                <span className="text-gray-400 mr-2">{i + 1}.</span>
+                {onNavigate ? (
+                  <button onClick={() => onNavigate('entity', e.id)} className="text-indigo-600 hover:underline cursor-pointer">{e.display_name}</button>
+                ) : e.display_name}
+              </span>
+              <span className="text-gray-500 shrink-0 ml-2">{e.newsletter_count} newsletters</span>
+            </div>
+          ))}
+          {data.length === 0 && <p className="text-sm text-gray-400">No data yet</p>}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ReportsPage({ syncVersion, onNavigate }: { syncVersion?: number; onNavigate?: (page: Page, ctx?: unknown) => void }) {
   const [preset, setPreset] = useState<DatePreset>('past_365');
   const [granularity, setGranularity] = useState<'week' | 'month'>('month');
   const [regData, setRegData] = useState<ReportSeries | null>(null);
   const [issueData, setIssueData] = useState<ReportSeries | null>(null);
   const [regLoading, setRegLoading] = useState(false);
   const [issueLoading, setIssueLoading] = useState(false);
+  const [revenueData, setRevenueData] = useState<RevenueByQuarter | null>(null);
+  const [revenueLoading, setRevenueLoading] = useState(false);
 
   const loadData = useCallback(() => {
     const { start, end } = getPresetDates(preset);
     setRegLoading(true);
     setIssueLoading(true);
+    setRevenueLoading(true);
     api.getRegistrationsByPeriod({ granularity, start_date: start, end_date: end, limit: 10 })
       .then(d => setRegData(d))
       .catch(() => setRegData(null))
@@ -2162,6 +2239,10 @@ function ReportsPage({ syncVersion }: { syncVersion?: number }) {
       .then(d => setIssueData(d))
       .catch(() => setIssueData(null))
       .finally(() => setIssueLoading(false));
+    api.getRevenueByQuarter(10)
+      .then(d => setRevenueData(d))
+      .catch(() => setRevenueData(null))
+      .finally(() => setRevenueLoading(false));
   }, [preset, granularity, syncVersion]);
 
   useEffect(() => { loadData(); }, [loadData]);
@@ -2218,6 +2299,12 @@ function ReportsPage({ syncVersion }: { syncVersion?: number }) {
 
       {/* Activity heatmap */}
       <ActivityHeatmap syncVersion={syncVersion} />
+
+      {/* Revenue chart */}
+      <RevenueChart data={revenueData} loading={revenueLoading} />
+
+      {/* Entity appearances leaderboard */}
+      <EntityAppearancesLeaderboard onNavigate={onNavigate} />
 
       {/* Charts */}
       <ReportLineChart
@@ -2555,7 +2642,7 @@ export default function App() {
     <div className="min-h-screen">
       <Nav page={navPage} setPage={p => { setNavHistory([]); setNavState({ page: p }); }} />
       <main className="max-w-7xl mx-auto px-4 sm:px-6 py-6">
-        {page === 'dashboard' && <Dashboard onNavigate={handleNavigate} onSyncComplete={() => setSyncVersion(v => v + 1)} />}
+        {page === 'dashboard' && <Dashboard onNavigate={handleNavigate} />}
         {page === 'search' && <SearchPage onNavigate={handleNavigate} />}
         {page === 'issues' && <IssuesPage onNavigate={handleNavigate} />}
         {page === 'filing' && filingUuid && (
@@ -2572,7 +2659,8 @@ export default function App() {
         {page === 'leaderboard' && navState.leaderboardType && (
           <EntityLeaderboard entityType={navState.leaderboardType} onBack={handleBack} onNavigate={handleNavigate} />
         )}
-        {page === 'reports' && <ReportsPage syncVersion={syncVersion} />}
+        {page === 'reports' && <ReportsPage syncVersion={syncVersion} onNavigate={handleNavigate} />}
+        {page === 'utilities' && <UtilitiesPage onSyncComplete={() => setSyncVersion(v => v + 1)} />}
         {page === 'chat' && (
           <ChatPage onNavigate={handleNavigate} initialConversationId={navState.conversationId} />
         )}

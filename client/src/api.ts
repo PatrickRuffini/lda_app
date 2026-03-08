@@ -82,13 +82,32 @@ export interface TopEntity {
   name: string;
   senate_id: number;
   filing_count: number;
+  unique_clients?: number;
+  unique_registrants?: number;
   total_income: number;
+}
+
+export interface EntityAppearance {
+  id: number;
+  name: string;
+  entity_type: string;
+  display_name: string;
+  mention_count: number;
+  newsletter_count: number;
+}
+
+export interface RevenueByQuarter {
+  overall: Array<{ year: number; period: string; revenue: number; filing_count: number }>;
+  series: Array<{ name: string; data: Array<{ period: string; revenue: number }> }>;
+  periods: string[];
 }
 
 export interface Stats {
   total_filings: number;
   total_registrants: number;
   total_clients: number;
+  total_lobbyists: number;
+  total_revenue: number;
   latest_filing: string | null;
   filings_by_year: Array<{ year: number; count: number }>;
 }
@@ -271,11 +290,11 @@ export const api = {
   getFilingsByIssue: (code: string, page = 1) =>
     fetchJson<PaginatedResponse<FilingSummary>>(`${BASE}/issues/${code}/filings?page=${page}`),
 
-  getTopRegistrants: (limit = 20) =>
-    fetchJson<TopEntity[]>(`${BASE}/top-registrants?limit=${limit}`),
+  getTopRegistrants: (limit = 20, sort = 'filings') =>
+    fetchJson<TopEntity[]>(`${BASE}/top-registrants?limit=${limit}&sort=${sort}`),
 
-  getTopClients: (limit = 20) =>
-    fetchJson<TopEntity[]>(`${BASE}/top-clients?limit=${limit}`),
+  getTopClients: (limit = 20, sort = 'filings') =>
+    fetchJson<TopEntity[]>(`${BASE}/top-clients?limit=${limit}&sort=${sort}`),
 
   getStats: () =>
     fetchJson<Stats>(`${BASE}/stats`),
@@ -364,4 +383,10 @@ export const api = {
 
   getActivityHeatmap: () =>
     fetchJson<{ days: Array<{ date: string; count: number }> }>(`${BASE}/reports/activity-heatmap`),
+
+  getRevenueByQuarter: (limit = 10) =>
+    fetchJson<RevenueByQuarter>(`${BASE}/reports/revenue-by-quarter?limit=${limit}`),
+
+  getEntityAppearances: (limit = 25, entityType?: string) =>
+    fetchJson<EntityAppearance[]>(`${BASE}/reports/entity-appearances?limit=${limit}${entityType ? `&entity_type=${entityType}` : ''}`),
 };
