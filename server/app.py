@@ -561,29 +561,44 @@ def top_lobbyists_by_clients(limit: int = Query(15, ge=1, le=50)):
         session = _get_session()
         try:
             import json as _json
-            # Fetch all activities with lobbyist JSON + client and registrant info
+            # Only scan activities from the top 100 registrants by filing count
+            # to avoid a full table scan on large databases
+            top_reg_ids = [
+                r[0] for r in session.query(Filing.registrant_id)
+                .group_by(Filing.registrant_id)
+                .order_by(desc(func.count(Filing.id)))
+                .limit(100)
+                .all()
+            ]
+            if not top_reg_ids:
+                return []
+            # Build registrant name lookup
+            reg_names = {
+                r.id: r.name for r in
+                session.query(Registrant).filter(Registrant.id.in_(top_reg_ids)).all()
+            }
             activities = (
                 session.query(
                     LobbyingActivity.lobbyists,
                     Filing.client_id,
                     Filing.registrant_id,
-                    Registrant.name,
                 )
                 .select_from(LobbyingActivity)
                 .join(Filing)
-                .join(Registrant)
+                .filter(Filing.registrant_id.in_(top_reg_ids))
                 .filter(LobbyingActivity.lobbyists.isnot(None))
                 .all()
             )
             # lobbyist_key -> {clients: set, firms: set(name)}
             lobbyist_data: dict[str, dict] = {}
-            for lob_json, client_id, reg_id, reg_name in activities:
+            for lob_json, client_id, reg_id in activities:
                 try:
                     lob_list = _json.loads(lob_json)
                 except (ValueError, TypeError):
                     continue
                 if not isinstance(lob_list, list):
                     continue
+                reg_name = reg_names.get(reg_id, "")
                 for entry in lob_list:
                     lob = entry.get("lobbyist", {}) if isinstance(entry, dict) else {}
                     first = (lob.get("first_name") or "").strip()
@@ -595,7 +610,8 @@ def top_lobbyists_by_clients(limit: int = Query(15, ge=1, le=50)):
                     if key not in lobbyist_data:
                         lobbyist_data[key] = {"display_name": full, "clients": set(), "firms": set()}
                     lobbyist_data[key]["clients"].add(client_id)
-                    lobbyist_data[key]["firms"].add(reg_name)
+                    if reg_name:
+                        lobbyist_data[key]["firms"].add(reg_name)
 
             result = []
             for key, d in lobbyist_data.items():

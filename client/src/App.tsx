@@ -194,17 +194,16 @@ function Dashboard({ onNavigate }: { onNavigate: (page: Page, ctx?: unknown) => 
   const [recent, setRecent] = useState<FilingSummary[]>([]);
   const [loading, setLoading] = useState(true);
 
-  // 4 chart datasets
+  // 4 chart datasets — each loads independently
   const [firmsByRevenue, setFirmsByRevenue] = useState<TopEntity[]>([]);
+  const [firmsByRevenueLoading, setFirmsByRevenueLoading] = useState(true);
   const [firmsByClients, setFirmsByClients] = useState<TopEntity[]>([]);
+  const [firmsByClientsLoading, setFirmsByClientsLoading] = useState(true);
   const [lobbyistsByClients, setLobbyistsByClients] = useState<Array<{ name: string; unique_clients: number; firms: string[] }>>([]);
+  const [lobbyistsByClientsLoading, setLobbyistsByClientsLoading] = useState(true);
   const [revPerLobbyist, setRevPerLobbyist] = useState<Array<{ name: string; revenue_per_lobbyist: number | null; lobbyist_count: number; total_revenue: number; [k: string]: unknown }>>([]);
-  const [chartsLoading, setChartsLoading] = useState(true);
+  const [revPerLobbyistLoading, setRevPerLobbyistLoading] = useState(true);
 
-  // Consultants & lobbyists (Politico Influence)
-  const [topConsultants, setTopConsultants] = useState<Array<{ id: number; name: string; display_name: string; mention_count: number; filing_count: number; unique_clients: number; total_revenue?: number }>>([]);
-  const [topLobbyists, setTopLobbyists] = useState<Array<{ id: number; name: string; display_name: string; mention_count: number }>>([]);
-  const [consultantSort, setConsultantSort] = useState<'filings' | 'mention_count' | 'revenue'>('filings');
 
   // Initial load
   useEffect(() => {
@@ -219,22 +218,11 @@ function Dashboard({ onNavigate }: { onNavigate: (page: Page, ctx?: unknown) => 
         if (cancelled) return;
         setRecent(r.results);
         setLoading(false);
-        // Load all 4 charts + influence leaderboards in background
-        Promise.all([
-          api.getTopRegistrants(15, 'revenue'),
-          api.getTopRegistrants(15, 'unique_clients'),
-          api.getTopLobbyistsByClients(15),
-          api.getRevenuePerLobbyist(15, 11),
-        ]).then(([rev, clients, lob, rpl]) => {
-          if (cancelled) return;
-          setFirmsByRevenue(rev);
-          setFirmsByClients(clients);
-          setLobbyistsByClients(lob);
-          setRevPerLobbyist(rpl);
-          setChartsLoading(false);
-        }).catch(console.error);
-        api.getTopConsultants(10, 'filings').then(d => { if (!cancelled) setTopConsultants(d); }).catch(console.error);
-        api.getTopLobbyists(10).then(d => { if (!cancelled) setTopLobbyists(d); }).catch(console.error);
+        // Load each chart independently so one slow endpoint doesn't block others
+        api.getTopRegistrants(15, 'revenue').then(d => { if (!cancelled) { setFirmsByRevenue(d); setFirmsByRevenueLoading(false); } }).catch(() => setFirmsByRevenueLoading(false));
+        api.getTopRegistrants(15, 'unique_clients').then(d => { if (!cancelled) { setFirmsByClients(d); setFirmsByClientsLoading(false); } }).catch(() => setFirmsByClientsLoading(false));
+        api.getTopLobbyistsByClients(15).then(d => { if (!cancelled) { setLobbyistsByClients(d); setLobbyistsByClientsLoading(false); } }).catch(() => setLobbyistsByClientsLoading(false));
+        api.getRevenuePerLobbyist(15, 11).then(d => { if (!cancelled) { setRevPerLobbyist(d); setRevPerLobbyistLoading(false); } }).catch(() => setRevPerLobbyistLoading(false));
       } catch (e) {
         console.error(e);
         if (!cancelled) setLoading(false);
@@ -243,21 +231,12 @@ function Dashboard({ onNavigate }: { onNavigate: (page: Page, ctx?: unknown) => 
     return () => { cancelled = true; };
   }, []);
 
-  useEffect(() => {
-    if (consultantSort === 'revenue') {
-      api.getTopConsultantsByRevenue(10).then(d =>
-        setTopConsultants(d.map(r => ({ ...r, filing_count: r.filing_count, mention_count: 0 })))
-      ).catch(console.error);
-    } else {
-      api.getTopConsultants(10, consultantSort).then(setTopConsultants).catch(console.error);
-    }
-  }, [consultantSort]);
 
   return (
     <div className="space-y-6">
       {/* Stats cards */}
       {stats && stats.total_filings > 0 && (
-        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-4">
+        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-4">
           <div className="bg-white rounded-lg border border-gray-200 p-4">
             <p className="text-2xl font-bold text-indigo-700">{stats.total_filings.toLocaleString()}</p>
             <p className="text-sm text-gray-500">Total Filings</p>
@@ -278,6 +257,10 @@ function Dashboard({ onNavigate }: { onNavigate: (page: Page, ctx?: unknown) => 
             <p className="text-2xl font-bold text-indigo-700">{formatMoney(stats.total_revenue)}</p>
             <p className="text-sm text-gray-500">Total Revenue</p>
           </div>
+          <div className="bg-white rounded-lg border border-gray-200 p-4">
+            <p className="text-2xl font-bold text-green-700">{stats.total_lobbyists > 0 ? formatMoney(stats.total_revenue / stats.total_lobbyists) : '$0'}</p>
+            <p className="text-sm text-gray-500">Rev / Lobbyist</p>
+          </div>
         </div>
       )}
 
@@ -294,7 +277,7 @@ function Dashboard({ onNavigate }: { onNavigate: (page: Page, ctx?: unknown) => 
           title="Lobbying Firms by Revenue"
           icon={<DollarSign size={16} />}
           rows={firmsByRevenue}
-          loading={chartsLoading}
+          loading={firmsByRevenueLoading}
           valueLabel="Revenue"
           valueKey="total_income"
           secondaryLabel="Clients"
@@ -304,7 +287,7 @@ function Dashboard({ onNavigate }: { onNavigate: (page: Page, ctx?: unknown) => 
           title="Lobbying Firms by Unique Clients"
           icon={<Users size={16} />}
           rows={firmsByClients}
-          loading={chartsLoading}
+          loading={firmsByClientsLoading}
           valueLabel="Clients"
           valueKey="unique_clients"
           secondaryLabel="Revenue"
@@ -314,7 +297,7 @@ function Dashboard({ onNavigate }: { onNavigate: (page: Page, ctx?: unknown) => 
           title="Top Lobbyists by Unique Clients"
           icon={<User size={16} />}
           rows={lobbyistsByClients}
-          loading={chartsLoading}
+          loading={lobbyistsByClientsLoading}
           valueLabel="Clients"
           valueKey="unique_clients"
           tooltip={(r) => `Firms: ${(r.firms as string[] || []).join(', ')}`}
@@ -323,60 +306,13 @@ function Dashboard({ onNavigate }: { onNavigate: (page: Page, ctx?: unknown) => 
           title="Revenue per Lobbyist (>10 Clients)"
           icon={<TrendingUp size={16} />}
           rows={revPerLobbyist}
-          loading={chartsLoading}
+          loading={revPerLobbyistLoading}
           valueLabel="Rev / Lobbyist"
           valueKey="revenue_per_lobbyist"
           secondaryLabel="Lobbyists"
           secondaryKey="lobbyist_count"
         />
       </div>
-
-      {/* Top consultants & lobbyists (Politico Influence) */}
-      {(topConsultants.length > 0 || topLobbyists.length > 0) && (
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-          {topConsultants.length > 0 && (
-            <div className="bg-white rounded-lg border border-gray-200 p-4">
-              <div className="flex items-center justify-between mb-3">
-                <h3 className="font-semibold text-gray-900 flex items-center gap-2"><Briefcase size={16} /> Top Consultants</h3>
-                <div className="flex rounded border border-gray-200 overflow-hidden text-xs">
-                  <button onClick={() => setConsultantSort('filings')} className={`px-2 py-1 cursor-pointer ${consultantSort === 'filings' ? 'bg-indigo-600 text-white' : 'text-gray-600 hover:bg-gray-50'}`}>Clients</button>
-                  <button onClick={() => setConsultantSort('revenue')} className={`px-2 py-1 cursor-pointer ${consultantSort === 'revenue' ? 'bg-indigo-600 text-white' : 'text-gray-600 hover:bg-gray-50'}`}>$</button>
-                  <button onClick={() => setConsultantSort('mention_count')} className={`px-2 py-1 cursor-pointer ${consultantSort === 'mention_count' ? 'bg-indigo-600 text-white' : 'text-gray-600 hover:bg-gray-50'}`}>Appearances</button>
-                </div>
-              </div>
-              <div className="space-y-2">
-                {topConsultants.map((c, i) => (
-                  <div key={c.id} className="flex items-center justify-between text-sm">
-                    <button onClick={() => onNavigate('entity', c.id)} className="text-gray-700 truncate hover:text-indigo-600 cursor-pointer text-left">
-                      <span className="text-gray-400 mr-2">{i + 1}.</span>{c.display_name}
-                    </button>
-                    <span className={`shrink-0 ml-2 ${consultantSort === 'revenue' ? 'text-green-600 font-medium' : 'text-gray-500'}`}>
-                      {consultantSort === 'filings' ? `${c.unique_clients} clients` : consultantSort === 'revenue' ? formatMoney(c.total_revenue) : `${c.mention_count} apps`}
-                    </span>
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
-          {topLobbyists.length > 0 && (
-            <div className="bg-white rounded-lg border border-gray-200 p-4">
-              <div className="flex items-center justify-between mb-3">
-                <h3 className="font-semibold text-gray-900 flex items-center gap-2"><User size={16} /> Top Lobbyists</h3>
-              </div>
-              <div className="space-y-2">
-                {topLobbyists.map((l, i) => (
-                  <div key={l.id} className="flex items-center justify-between text-sm">
-                    <button onClick={() => onNavigate('entity', l.id)} className="text-gray-700 truncate hover:text-indigo-600 cursor-pointer text-left">
-                      <span className="text-gray-400 mr-2">{i + 1}.</span>{l.display_name}
-                    </button>
-                    <span className="text-gray-500 shrink-0 ml-2">{l.mention_count} apps</span>
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
-        </div>
-      )}
 
       {/* Recent filings */}
       {loading && <div className="flex items-center justify-center py-8"><Loader2 className="animate-spin text-gray-300" size={24} /></div>}
