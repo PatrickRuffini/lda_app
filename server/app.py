@@ -657,6 +657,7 @@ def _safe_json_loads(val):
 class InfluenceScrapeRequest(BaseModel):
     max_newsletters: int = 50
     max_discovery_pages: int = 5
+    cutoff_date: str = None
 
 
 _influence_status: dict = {"status": "idle"}
@@ -678,6 +679,7 @@ def trigger_influence_scrape(req: InfluenceScrapeRequest, background_tasks: Back
                 max_newsletters=req.max_newsletters,
                 max_discovery_pages=req.max_discovery_pages,
                 db_url=DB_URL,
+                cutoff_date=req.cutoff_date,
             )
             _influence_status = {"status": "completed", **result}
         except Exception as e:

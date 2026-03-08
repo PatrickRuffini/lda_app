@@ -91,9 +91,32 @@ def _fetch_with_browser(page, url: str, wait_ms: int = 5000) -> Optional[str]:
 ARCHIVE_URL = f"{BASE_URL}/newsletters/politico-influence/archive"
 
 
-def discover_newsletter_urls(page, max_pages: int = 5) -> list[str]:
+def _fetch_with_curl(url: str) -> Optional[str]:
+    try:
+        from curl_cffi import requests as cffi_requests
+        r = cffi_requests.get(url, impersonate="chrome", timeout=30)
+        if r.status_code == 200:
+            return r.text
+        logger.warning(f"curl_cffi got status {r.status_code} for {url}")
+        return None
+    except Exception as e:
+        logger.error(f"curl_cffi error for {url}: {e}")
+        return None
+
+
+def _can_use_playwright() -> bool:
+    try:
+        pw, browser, page = _get_browser_page()
+        browser.close()
+        pw.stop()
+        return True
+    except Exception:
+        return False
+
+
+def discover_newsletter_urls(page, max_pages: int = 5, use_curl: bool = False) -> list[str]:
     """
-    Discover newsletter edition URLs from the archive page using the browser.
+    Discover newsletter edition URLs from the archive page.
     Archive pages are numbered: /archive, /archive/2, /archive/3, etc.
     Each page has ~10 newsletter links.
     """
@@ -101,7 +124,10 @@ def discover_newsletter_urls(page, max_pages: int = 5) -> list[str]:
 
     for page_num in range(1, max_pages + 1):
         archive_page_url = ARCHIVE_URL if page_num == 1 else f"{ARCHIVE_URL}/{page_num}"
-        html = _fetch_with_browser(page, archive_page_url, wait_ms=5000 if page_num == 1 else 3000)
+        if use_curl:
+            html = _fetch_with_curl(archive_page_url)
+        else:
+            html = _fetch_with_browser(page, archive_page_url, wait_ms=5000 if page_num == 1 else 3000)
         if not html:
             logger.warning(f"Failed to fetch archive page {page_num}")
             break
@@ -122,16 +148,20 @@ def discover_newsletter_urls(page, max_pages: int = 5) -> list[str]:
         if new_count == 0:
             break
 
-        time.sleep(1)
+        time.sleep(1 if use_curl else 1)
 
     return urls
 
 
-def scrape_newsletter(page, url: str) -> Optional[dict]:
+def scrape_newsletter(page, url: str, use_curl: bool = False) -> Optional[dict]:
     """
-    Scrape a single newsletter page using the browser and return structured data.
+    Scrape a single newsletter page and return structured data.
+    Uses curl_cffi when use_curl=True, otherwise uses the browser page.
     """
-    html = _fetch_with_browser(page, url, wait_ms=3000)
+    if use_curl:
+        html = _fetch_with_curl(url)
+    else:
+        html = _fetch_with_browser(page, url, wait_ms=3000)
     if not html:
         return None
 
@@ -1402,10 +1432,13 @@ def scrape_and_store(
     max_newsletters: int = 100,
     max_discovery_pages: int = 10,
     db_url: str = None,
+    cutoff_date: str = None,
 ) -> dict:
     """
     Main entry point: discover, scrape, extract, and store newsletters.
-    Uses a headless browser to bypass Cloudflare.
+    Tries Playwright first, falls back to curl_cffi if browser unavailable.
+    cutoff_date: optional ISO date string (e.g. '2025-01-20') — stop scraping
+    when reaching newsletters older than this date.
     """
     global _scrape_progress
     engine = init_db(db_url)
@@ -1413,13 +1446,27 @@ def scrape_and_store(
 
     pw = None
     browser = None
+    use_curl = False
+
+    cutoff_dt = None
+    if cutoff_date:
+        try:
+            cutoff_dt = datetime.fromisoformat(cutoff_date)
+        except ValueError:
+            logger.warning(f"Invalid cutoff_date: {cutoff_date}")
 
     try:
-        pw, browser, page = _get_browser_page()
+        try:
+            pw, browser, page = _get_browser_page()
+            logger.info("Using Playwright browser for scraping")
+        except Exception as e:
+            logger.warning(f"Playwright unavailable ({e}), falling back to curl_cffi")
+            use_curl = True
+            page = None
 
         _scrape_progress = {"phase": "discovering", "stored": 0, "skipped": 0, "errors": 0}
         logger.info("Discovering newsletter URLs...")
-        urls = discover_newsletter_urls(page, max_pages=max_discovery_pages)
+        urls = discover_newsletter_urls(page, max_pages=max_discovery_pages, use_curl=use_curl)
         logger.info(f"Found {len(urls)} newsletter URLs")
 
         stored = 0
@@ -1431,6 +1478,17 @@ def scrape_and_store(
         _scrape_progress = {"phase": "scraping", "stored": 0, "skipped": 0, "errors": 0, "total": total, "current": 0}
 
         for i, url in enumerate(to_process):
+            if cutoff_dt:
+                date_match = re.search(r"/(\d{4})/(\d{2})/(\d{2})/", url)
+                if date_match:
+                    try:
+                        url_date = datetime(int(date_match.group(1)), int(date_match.group(2)), int(date_match.group(3)))
+                        if url_date < cutoff_dt:
+                            logger.info(f"Reached cutoff date {cutoff_date}, stopping. URL date: {url_date.date()}")
+                            break
+                    except ValueError:
+                        pass
+
             existing = session.query(Newsletter).filter_by(url=url).first()
             if existing:
                 skipped += 1
@@ -1440,7 +1498,7 @@ def scrape_and_store(
             logger.info(f"Scraping ({i+1}/{total}): {url}")
             _scrape_progress.update({"current": i + 1, "current_url": url.split("/")[-1][:50]})
 
-            data = scrape_newsletter(page, url)
+            data = scrape_newsletter(page, url, use_curl=use_curl)
             if not data:
                 errors += 1
                 _scrape_progress["errors"] = errors
@@ -1462,9 +1520,8 @@ def scrape_and_store(
 
             stored += 1
             _scrape_progress["stored"] = stored
-            time.sleep(2)
+            time.sleep(2 if not use_curl else 1.5)
 
-        # Merge duplicates, then link to LDA records
         merge_result = merge_duplicate_entities(session)
         link_result = link_entities_to_lda(session)
         lobbyist_result = link_lobbyists_to_entities(session)
