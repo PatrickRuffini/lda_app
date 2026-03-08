@@ -464,21 +464,24 @@ def sync_backfill(db_url: str = None) -> dict:
 
 def sync_backfill_chunk(db_url: str = None, chunk_size: int = 1000) -> dict:
     """
-    Backfill a chunk of filings going backward in time from the earliest filing
-    we have in the database. Finds the earliest dt_posted, then syncs the year
-    of that filing (and prior years) until chunk_size new filings are stored.
-    Skips years where our count already matches the API count.
+    Backfill filings going backward in time from the earliest filing we have.
+    Uses ordering=dt_posted (ascending) within each year, paging through
+    results and only storing filings we don't already have (by filing_uuid).
+    Stops after chunk_size new filings are stored.
+    Moves to the prior year when a year is exhausted.
     """
     engine = init_db(db_url)
     session = get_session(engine)
 
     # Find earliest dt_posted in the database
     earliest = session.query(func.min(Filing.dt_posted)).scalar()
-    db_coverage = _get_db_year_coverage(session)
+    # Collect all filing_uuids we already have for fast lookups
+    existing_uuids = set(
+        row[0] for row in session.query(Filing.filing_uuid).all()
+    )
     session.close()
 
     if not earliest:
-        # No filings at all — start from current year
         start_year = datetime.utcnow().year
     else:
         start_year = earliest.year
@@ -493,6 +496,7 @@ def sync_backfill_chunk(db_url: str = None, chunk_size: int = 1000) -> dict:
     )
 
     total_stored = 0
+    total_duplicates = 0
     total_pages = 0
     years_completed = []
 
@@ -506,31 +510,78 @@ def sync_backfill_chunk(db_url: str = None, chunk_size: int = 1000) -> dict:
                 logger.info(f"Reached chunk size {chunk_size}, stopping")
                 break
 
-            # Skip years we already have fully
-            db_count = db_coverage.get(year, 0)
-            api_count = _get_api_year_count(year)
-
-            if api_count is not None and db_count >= api_count and api_count > 0:
-                logger.info(f"Year {year}: already complete ({db_count}/{api_count}), skipping")
-                years_completed.append(year)
-                _update_progress(current_year=year, years_completed=list(years_completed))
-                continue
-
             _update_progress(current_year=year)
-            logger.info(f"Backfill chunk: syncing year {year} (have {db_count}, API has {api_count or '?'}, stored so far {total_stored}/{chunk_size})")
+            logger.info(f"Backfill chunk: year {year} (stored {total_stored}/{chunk_size})")
 
-            result = sync_year(year, db_url=db_url)
-            total_stored += result["stored"]
-            total_pages += result["pages"]
+            # Page through this year ordered by dt_posted ascending (oldest first)
+            params = {
+                "page_size": PAGE_SIZE,
+                "filing_year": year,
+                "ordering": "dt_posted",
+            }
+            page = 1
+            year_had_new = False
+
+            while True:
+                if _sync_progress.get("status") == "cancelling":
+                    break
+                if total_stored >= chunk_size:
+                    break
+
+                params["page"] = page
+                data = _fetch_page("filings", params)
+                if not data:
+                    break
+
+                results = data.get("results", [])
+                if not results:
+                    break
+
+                total_pages += 1
+                page_new = 0
+
+                session = get_session(engine)
+                for filing_data in results:
+                    uuid = filing_data.get("filing_uuid")
+                    if not uuid:
+                        continue
+
+                    if uuid in existing_uuids:
+                        total_duplicates += 1
+                        continue
+
+                    # New filing — store it
+                    filing, is_new = _store_filing(session, filing_data)
+                    if filing and is_new:
+                        existing_uuids.add(uuid)
+                        total_stored += 1
+                        page_new += 1
+                        year_had_new = True
+
+                        if total_stored >= chunk_size:
+                            break
+
+                session.commit()
+                session.close()
+
+                _update_progress(
+                    stored=total_stored, duplicates=total_duplicates,
+                    pages=total_pages,
+                )
+
+                logger.info(f"Year {year}, page {page}: {page_new} new, {len(results) - page_new} skipped")
+
+                if not data.get("next"):
+                    break
+
+                page += 1
+                time.sleep(0.3)
+
             years_completed.append(year)
+            _update_progress(years_completed=list(years_completed))
 
-            _update_progress(
-                stored=total_stored, pages=total_pages,
-                years_completed=list(years_completed),
-            )
-
-            if _sync_progress.get("status") == "cancelling":
-                break
+            if not year_had_new:
+                logger.info(f"Year {year}: no new filings found, all {page} pages already in DB")
 
             time.sleep(0.5)
 
@@ -542,11 +593,11 @@ def sync_backfill_chunk(db_url: str = None, chunk_size: int = 1000) -> dict:
     final_status = "cancelled" if _sync_progress.get("status") == "cancelling" else "completed"
     _update_progress(
         status=final_status, finished_at=datetime.utcnow().isoformat(),
-        stored=total_stored, pages=total_pages,
+        stored=total_stored, duplicates=total_duplicates, pages=total_pages,
         years_completed=list(years_completed),
     )
 
-    return {"stored": total_stored, "pages": total_pages, "years_completed": years_completed}
+    return {"stored": total_stored, "duplicates": total_duplicates, "pages": total_pages, "years_completed": years_completed}
 
 
 def sync_filings(

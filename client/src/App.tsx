@@ -216,7 +216,7 @@ function Dashboard({ onNavigate }: { onNavigate: (page: Page, ctx?: unknown) => 
                   <>Fetching new filings… {syncStatus.stored || 0} stored, page {syncStatus.pages || 0}</>
                 )}
                 {syncStatus.status === 'running' && (syncStatus.mode === 'backfill' || syncStatus.mode === 'backfill_chunk') && (
-                  <>Backfilling {syncStatus.current_year || '…'} — {syncStatus.stored?.toLocaleString() || 0} stored, {syncStatus.years_completed?.length || 0} years done</>
+                  <>Backfilling {syncStatus.current_year || '…'} — {syncStatus.stored?.toLocaleString() || 0} new, {syncStatus.duplicates?.toLocaleString() || 0} skipped, page {syncStatus.pages || 0}</>
                 )}
                 {syncStatus.status === 'cancelling' && 'Cancelling…'}
                 {syncStatus.status === 'completed' && (
