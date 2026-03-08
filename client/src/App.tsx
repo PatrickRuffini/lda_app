@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
-import { Search, FileText, Tag, BarChart3, RefreshCw, Building2, Users, ChevronLeft, ChevronRight, ExternalLink, DollarSign, Calendar, Loader2, Network, Newspaper, User, Briefcase, Menu, X, Download, Square, ChevronDown, Target, Sparkles, Send, MessageCircle, Bot } from 'lucide-react';
+import { Search, FileText, Tag, BarChart3, RefreshCw, Building2, Users, ChevronLeft, ChevronRight, ExternalLink, DollarSign, Calendar, Loader2, Network, Newspaper, User, Briefcase, Menu, X, Download, Square, ChevronDown, Target, Sparkles, Send, MessageCircle, Bot, PanelLeftOpen, PanelLeftClose } from 'lucide-react';
 import { api, type FilingSummary, type FilingDetail, type IssueSummary, type Stats, type SyncStatus, type SyncCoverage, type SearchParams, type TopEntity, type NewsletterSummary, type NewsletterDetail, type EntitySummary, type EntityDetail, type NetworkData, type InfluenceStats } from './api';
 import { formatDistanceToNow, format } from 'date-fns';
 import NetworkGraph, { computeEigenvectorCentrality, type SizeMode } from './NetworkGraph';
@@ -1934,9 +1934,22 @@ function ChatPage({ onNavigate, initialConversationId }: { onNavigate: (page: Pa
 
   return (
     <div className="flex h-[calc(100vh-5rem)] -mt-2">
+      {/* Sidebar overlay for mobile */}
+      {sidebarOpen && (
+        <div
+          className="fixed inset-0 bg-black/30 z-40 md:hidden"
+          onClick={() => setSidebarOpen(false)}
+        />
+      )}
       {/* Sidebar */}
-      <div className={`${sidebarOpen ? 'w-72' : 'w-0'} transition-all overflow-hidden border-r border-gray-200 bg-white flex flex-col shrink-0`}>
-        <div className="p-3 border-b border-gray-100">
+      <div className={`${sidebarOpen ? 'fixed inset-0 z-50 md:static md:inset-auto md:w-72' : 'w-0'} transition-all overflow-hidden border-r border-white/30 backdrop-blur-xl bg-white/70 flex flex-col shrink-0`}>
+        <div className="p-3 border-b border-white/30 flex items-center gap-2">
+          <button
+            onClick={() => setSidebarOpen(false)}
+            className="md:hidden text-gray-500 hover:text-gray-700 cursor-pointer p-1"
+          >
+            <X size={18} />
+          </button>
           <button
             onClick={startNewChat}
             className="w-full text-sm bg-indigo-600 text-white px-3 py-2 rounded-lg hover:bg-indigo-700 cursor-pointer flex items-center justify-center gap-2"
@@ -1949,7 +1962,7 @@ function ChatPage({ onNavigate, initialConversationId }: { onNavigate: (page: Pa
             <button
               key={c.id}
               onClick={() => loadConversation(c.id)}
-              className={`w-full text-left px-3 py-2.5 border-b border-gray-50 hover:bg-gray-50 cursor-pointer transition group ${activeConvoId === c.id ? 'bg-indigo-50' : ''}`}
+              className={`w-full text-left px-3 py-2.5 border-b border-white/30 hover:bg-white/40 cursor-pointer transition group ${activeConvoId === c.id ? 'bg-indigo-100/50' : ''}`}
             >
               <div className="flex items-start justify-between gap-1">
                 <span className="text-sm font-medium text-gray-800 line-clamp-2 flex-1">{c.title}</span>
@@ -1979,7 +1992,7 @@ function ChatPage({ onNavigate, initialConversationId }: { onNavigate: (page: Pa
             onClick={() => setSidebarOpen(o => !o)}
             className="text-gray-500 hover:text-gray-700 cursor-pointer p-1"
           >
-            <Menu size={18} />
+            {sidebarOpen ? <PanelLeftClose size={18} /> : <PanelLeftOpen size={18} />}
           </button>
           <Bot size={18} className="text-indigo-500" />
           <span className="text-sm font-medium text-gray-700">
