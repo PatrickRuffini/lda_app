@@ -419,6 +419,165 @@ def get_stats():
     return _cached("stats", _fetch)
 
 
+# ---------- Report endpoints ----------
+
+@app.get("/api/reports/registrations-by-period")
+def registrations_by_period(
+    granularity: str = Query("week", regex="^(week|month)$"),
+    start_date: Optional[str] = Query(None),
+    end_date: Optional[str] = Query(None),
+    limit: int = Query(10, ge=1, le=25),
+):
+    """Top lobbying firms by new registrations, grouped by week or month."""
+    session = _get_session()
+    try:
+        from sqlalchemy import case, extract, cast, Date
+        q = session.query(Filing).filter(Filing.filing_type == 'RR')
+        if start_date:
+            q = q.filter(Filing.dt_posted >= start_date)
+        if end_date:
+            q = q.filter(Filing.dt_posted <= end_date)
+
+        # Get top registrants in the period
+        top_regs = (
+            q.join(Registrant)
+            .with_entities(Registrant.id, Registrant.name, func.count(Filing.id).label("cnt"))
+            .group_by(Registrant.id, Registrant.name)
+            .order_by(desc("cnt"))
+            .limit(limit)
+            .all()
+        )
+        top_reg_ids = [r[0] for r in top_regs]
+        top_reg_names = {r[0]: r[1] for r in top_regs}
+
+        if not top_reg_ids:
+            return {"series": [], "granularity": granularity}
+
+        # Build time-series for each top registrant
+        if granularity == "week":
+            period_expr = func.to_char(Filing.dt_posted, 'IYYY-IW')
+        else:
+            period_expr = func.to_char(Filing.dt_posted, 'YYYY-MM')
+
+        rows = (
+            session.query(
+                Registrant.id,
+                period_expr.label("period"),
+                func.count(Filing.id).label("count"),
+            )
+            .select_from(Filing)
+            .join(Registrant)
+            .filter(Filing.filing_type == 'RR')
+            .filter(Registrant.id.in_(top_reg_ids))
+        )
+        if start_date:
+            rows = rows.filter(Filing.dt_posted >= start_date)
+        if end_date:
+            rows = rows.filter(Filing.dt_posted <= end_date)
+        rows = rows.group_by(Registrant.id, "period").all()
+
+        # Group by registrant
+        series = {}
+        for reg_id, period, count in rows:
+            name = top_reg_names[reg_id]
+            if name not in series:
+                series[name] = {}
+            series[name][period] = count
+
+        # Collect all periods and sort
+        all_periods = sorted(set(p for s in series.values() for p in s))
+
+        result = []
+        for name, data in series.items():
+            result.append({
+                "name": name,
+                "data": [{"period": p, "count": data.get(p, 0)} for p in all_periods],
+            })
+        # Sort by total count descending
+        result.sort(key=lambda x: sum(d["count"] for d in x["data"]), reverse=True)
+
+        return {"series": result, "granularity": granularity, "periods": all_periods}
+    finally:
+        session.close()
+
+
+@app.get("/api/reports/issues-by-period")
+def issues_by_period(
+    granularity: str = Query("week", regex="^(week|month)$"),
+    start_date: Optional[str] = Query(None),
+    end_date: Optional[str] = Query(None),
+    limit: int = Query(10, ge=1, le=25),
+):
+    """Top issue areas by filing count, grouped by week or month."""
+    session = _get_session()
+    try:
+        q = session.query(LobbyingActivity).join(Filing)
+        if start_date:
+            q = q.filter(Filing.dt_posted >= start_date)
+        if end_date:
+            q = q.filter(Filing.dt_posted <= end_date)
+
+        # Get top issues in the period
+        top_issues = (
+            q.with_entities(
+                LobbyingActivity.general_issue_code,
+                LobbyingActivity.general_issue_code_display,
+                func.count(LobbyingActivity.id).label("cnt"),
+            )
+            .group_by(LobbyingActivity.general_issue_code, LobbyingActivity.general_issue_code_display)
+            .order_by(desc("cnt"))
+            .limit(limit)
+            .all()
+        )
+        issue_names = {r[0]: r[1] for r in top_issues}
+        issue_codes = [r[0] for r in top_issues]
+
+        if not issue_codes:
+            return {"series": [], "granularity": granularity}
+
+        if granularity == "week":
+            period_expr = func.to_char(Filing.dt_posted, 'IYYY-IW')
+        else:
+            period_expr = func.to_char(Filing.dt_posted, 'YYYY-MM')
+
+        rows = (
+            session.query(
+                LobbyingActivity.general_issue_code,
+                period_expr.label("period"),
+                func.count(LobbyingActivity.id).label("count"),
+            )
+            .select_from(LobbyingActivity)
+            .join(Filing)
+            .filter(LobbyingActivity.general_issue_code.in_(issue_codes))
+        )
+        if start_date:
+            rows = rows.filter(Filing.dt_posted >= start_date)
+        if end_date:
+            rows = rows.filter(Filing.dt_posted <= end_date)
+        rows = rows.group_by(LobbyingActivity.general_issue_code, "period").all()
+
+        series = {}
+        for code, period, count in rows:
+            name = issue_names.get(code, code)
+            if name not in series:
+                series[name] = {}
+            series[name][period] = count
+
+        all_periods = sorted(set(p for s in series.values() for p in s))
+
+        result = []
+        for name, data in series.items():
+            result.append({
+                "name": name,
+                "data": [{"period": p, "count": data.get(p, 0)} for p in all_periods],
+            })
+        result.sort(key=lambda x: sum(d["count"] for d in x["data"]), reverse=True)
+
+        return {"series": result, "granularity": granularity, "periods": all_periods}
+    finally:
+        session.close()
+
+
 # ---------- Helpers ----------
 
 def _filing_to_dict(filing: Filing, full: bool = False) -> dict:

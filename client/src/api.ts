@@ -249,6 +249,15 @@ export interface InfluenceStats {
   latest_newsletter: string | null;
 }
 
+export interface ReportSeries {
+  series: Array<{
+    name: string;
+    data: Array<{ period: string; count: number }>;
+  }>;
+  granularity: string;
+  periods?: string[];
+}
+
 export const api = {
   searchFilings: (params: SearchParams) =>
     fetchJson<PaginatedResponse<FilingSummary>>(`${BASE}/filings?${toQuery(params)}`),
@@ -345,4 +354,11 @@ export const api = {
 
   deleteConversation: (id: number) =>
     fetch(`${BASE}/ai/conversations/${id}`, { method: 'DELETE' }).then(r => r.json()),
+
+  // Reports
+  getRegistrationsByPeriod: (params: { granularity?: string; start_date?: string; end_date?: string; limit?: number }) =>
+    fetchJson<ReportSeries>(`${BASE}/reports/registrations-by-period?${toQuery(params)}`),
+
+  getIssuesByPeriod: (params: { granularity?: string; start_date?: string; end_date?: string; limit?: number }) =>
+    fetchJson<ReportSeries>(`${BASE}/reports/issues-by-period?${toQuery(params)}`),
 };

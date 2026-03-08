@@ -1,10 +1,11 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
-import { Search, FileText, Tag, BarChart3, RefreshCw, Building2, Users, ChevronLeft, ChevronRight, ExternalLink, DollarSign, Calendar, Loader2, Network, Newspaper, User, Briefcase, Menu, X, Download, Square, ChevronDown, Target, Sparkles, Send, MessageCircle, Bot, PanelLeftOpen, PanelLeftClose } from 'lucide-react';
-import { api, type FilingSummary, type FilingDetail, type IssueSummary, type Stats, type SyncStatus, type SyncCoverage, type SearchParams, type TopEntity, type NewsletterSummary, type NewsletterDetail, type EntitySummary, type EntityDetail, type NetworkData, type InfluenceStats } from './api';
+import { Search, FileText, Tag, BarChart3, RefreshCw, Building2, Users, ChevronLeft, ChevronRight, ExternalLink, DollarSign, Calendar, Loader2, Network, Newspaper, User, Briefcase, Menu, X, Download, Square, ChevronDown, Target, Sparkles, Send, MessageCircle, Bot, PanelLeftOpen, PanelLeftClose, TrendingUp } from 'lucide-react';
+import { api, type FilingSummary, type FilingDetail, type IssueSummary, type Stats, type SyncStatus, type SyncCoverage, type SearchParams, type TopEntity, type NewsletterSummary, type NewsletterDetail, type EntitySummary, type EntityDetail, type NetworkData, type InfluenceStats, type ReportSeries } from './api';
 import { formatDistanceToNow, format } from 'date-fns';
 import NetworkGraph, { computeEigenvectorCentrality, type SizeMode } from './NetworkGraph';
+import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from 'recharts';
 
-type Page = 'dashboard' | 'search' | 'issues' | 'filing' | 'influence' | 'network' | 'entity' | 'newsletter' | 'leaderboard' | 'chat';
+type Page = 'dashboard' | 'search' | 'issues' | 'filing' | 'influence' | 'network' | 'entity' | 'newsletter' | 'leaderboard' | 'chat' | 'reports';
 
 function formatMoney(val: number | null | undefined): string {
   if (val === null || val === undefined) return '-';
@@ -30,6 +31,7 @@ function Nav({ page, setPage }: { page: Page; setPage: (p: Page) => void }) {
     { id: 'issues', label: 'Issues', icon: <Tag size={18} /> },
     { id: 'influence', label: 'Influence', icon: <Newspaper size={18} /> },
     { id: 'network', label: 'Network', icon: <Network size={18} /> },
+    { id: 'reports', label: 'Reports', icon: <TrendingUp size={18} /> },
     { id: 'chat', label: 'AI Chat', icon: <Bot size={18} /> },
   ];
   const handleNav = (p: Page) => { setPage(p); setMobileOpen(false); };
@@ -1913,6 +1915,176 @@ function EntityLeaderboard({ entityType, onBack, onNavigate }: { entityType: str
 }
 
 
+// ---------- Reports Page ----------
+const REPORT_COLORS = ['#6366f1', '#f59e0b', '#10b981', '#ef4444', '#8b5cf6', '#ec4899', '#14b8a6', '#f97316', '#06b6d4', '#84cc16'];
+
+type DatePreset = 'past_day' | 'past_week' | 'past_30' | 'past_365' | 'this_year' | 'last_year';
+
+function getPresetDates(preset: DatePreset): { start: string; end: string } {
+  const now = new Date();
+  const fmt = (d: Date) => d.toISOString().slice(0, 10);
+  const end = fmt(now);
+  switch (preset) {
+    case 'past_day': { const d = new Date(now); d.setDate(d.getDate() - 1); return { start: fmt(d), end }; }
+    case 'past_week': { const d = new Date(now); d.setDate(d.getDate() - 7); return { start: fmt(d), end }; }
+    case 'past_30': { const d = new Date(now); d.setDate(d.getDate() - 30); return { start: fmt(d), end }; }
+    case 'past_365': { const d = new Date(now); d.setDate(d.getDate() - 365); return { start: fmt(d), end }; }
+    case 'this_year': return { start: `${now.getFullYear()}-01-01`, end };
+    case 'last_year': return { start: `${now.getFullYear() - 1}-01-01`, end: `${now.getFullYear() - 1}-12-31` };
+  }
+}
+
+function ReportLineChart({ data, title, loading }: { data: ReportSeries | null; title: string; loading: boolean }) {
+  if (loading) return (
+    <div className="bg-white rounded-lg border border-gray-200 p-6">
+      <h3 className="text-base font-semibold text-gray-900 mb-4">{title}</h3>
+      <div className="flex items-center justify-center h-64"><Loader2 className="animate-spin text-indigo-600" size={24} /></div>
+    </div>
+  );
+  if (!data || !data.series.length) return (
+    <div className="bg-white rounded-lg border border-gray-200 p-6">
+      <h3 className="text-base font-semibold text-gray-900 mb-4">{title}</h3>
+      <div className="flex items-center justify-center h-64 text-gray-400 text-sm">No data for the selected period.</div>
+    </div>
+  );
+
+  // Transform into recharts format: [{period, series1: n, series2: n}, ...]
+  const periods = data.periods || [];
+  const chartData = periods.map(p => {
+    const row: Record<string, string | number> = { period: p };
+    data.series.forEach(s => {
+      const point = s.data.find(d => d.period === p);
+      row[s.name] = point ? point.count : 0;
+    });
+    return row;
+  });
+
+  return (
+    <div className="bg-white rounded-lg border border-gray-200 p-6">
+      <h3 className="text-base font-semibold text-gray-900 mb-4">{title}</h3>
+      <ResponsiveContainer width="100%" height={350}>
+        <LineChart data={chartData} margin={{ top: 5, right: 20, left: 0, bottom: 5 }}>
+          <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
+          <XAxis
+            dataKey="period"
+            tick={{ fontSize: 11, fill: '#6b7280' }}
+            angle={-45}
+            textAnchor="end"
+            height={60}
+          />
+          <YAxis tick={{ fontSize: 11, fill: '#6b7280' }} allowDecimals={false} />
+          <Tooltip
+            contentStyle={{ fontSize: 12, borderRadius: 8, border: '1px solid #e5e7eb' }}
+          />
+          <Legend wrapperStyle={{ fontSize: 12, paddingTop: 8 }} />
+          {data.series.map((s, i) => (
+            <Line
+              key={s.name}
+              type="monotone"
+              dataKey={s.name}
+              stroke={REPORT_COLORS[i % REPORT_COLORS.length]}
+              strokeWidth={2}
+              dot={{ r: 2 }}
+              activeDot={{ r: 4 }}
+            />
+          ))}
+        </LineChart>
+      </ResponsiveContainer>
+    </div>
+  );
+}
+
+function ReportsPage() {
+  const [preset, setPreset] = useState<DatePreset>('past_365');
+  const [granularity, setGranularity] = useState<'week' | 'month'>('month');
+  const [regData, setRegData] = useState<ReportSeries | null>(null);
+  const [issueData, setIssueData] = useState<ReportSeries | null>(null);
+  const [regLoading, setRegLoading] = useState(false);
+  const [issueLoading, setIssueLoading] = useState(false);
+
+  const loadData = useCallback(() => {
+    const { start, end } = getPresetDates(preset);
+    setRegLoading(true);
+    setIssueLoading(true);
+    api.getRegistrationsByPeriod({ granularity, start_date: start, end_date: end, limit: 10 })
+      .then(d => setRegData(d))
+      .catch(() => setRegData(null))
+      .finally(() => setRegLoading(false));
+    api.getIssuesByPeriod({ granularity, start_date: start, end_date: end, limit: 10 })
+      .then(d => setIssueData(d))
+      .catch(() => setIssueData(null))
+      .finally(() => setIssueLoading(false));
+  }, [preset, granularity]);
+
+  useEffect(() => { loadData(); }, [loadData]);
+
+  const presets: { id: DatePreset; label: string }[] = [
+    { id: 'past_day', label: 'Past Day' },
+    { id: 'past_week', label: 'Past Week' },
+    { id: 'past_30', label: 'Past 30 Days' },
+    { id: 'past_365', label: 'Past 365 Days' },
+    { id: 'this_year', label: 'This Year' },
+    { id: 'last_year', label: 'Last Year' },
+  ];
+
+  return (
+    <div className="space-y-6">
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+        <h1 className="text-xl font-bold text-gray-900 flex items-center gap-2">
+          <TrendingUp size={22} className="text-indigo-600" /> LDA Reports
+        </h1>
+        <div className="flex items-center gap-3">
+          <div className="flex rounded-lg border border-gray-200 overflow-hidden">
+            <button
+              onClick={() => setGranularity('week')}
+              className={`px-3 py-1.5 text-sm font-medium cursor-pointer transition ${granularity === 'week' ? 'bg-indigo-600 text-white' : 'bg-white text-gray-600 hover:bg-gray-50'}`}
+            >
+              Weekly
+            </button>
+            <button
+              onClick={() => setGranularity('month')}
+              className={`px-3 py-1.5 text-sm font-medium cursor-pointer transition ${granularity === 'month' ? 'bg-indigo-600 text-white' : 'bg-white text-gray-600 hover:bg-gray-50'}`}
+            >
+              Monthly
+            </button>
+          </div>
+        </div>
+      </div>
+
+      {/* Date preset pills */}
+      <div className="flex flex-wrap gap-2">
+        {presets.map(p => (
+          <button
+            key={p.id}
+            onClick={() => setPreset(p.id)}
+            className={`px-3 py-1.5 rounded-full text-sm font-medium cursor-pointer transition ${
+              preset === p.id
+                ? 'bg-indigo-600 text-white'
+                : 'bg-white text-gray-600 border border-gray-200 hover:bg-gray-50'
+            }`}
+          >
+            {p.label}
+          </button>
+        ))}
+      </div>
+
+      {/* Charts */}
+      <ReportLineChart
+        data={regData}
+        title="New Lobbying Registrations by Firm"
+        loading={regLoading}
+      />
+
+      <ReportLineChart
+        data={issueData}
+        title="Lobbying Activity by Issue Area"
+        loading={issueLoading}
+      />
+    </div>
+  );
+}
+
+
 // ---------- Chat Page ----------
 function ChatPage({ onNavigate, initialConversationId }: { onNavigate: (page: Page, ctx?: unknown) => void; initialConversationId?: number }) {
   const [conversations, setConversations] = useState<Array<{ id: number; title: string; entity_id: number | null; message_count: number; created_at: string | null; updated_at: string | null }>>([]);
@@ -2248,6 +2420,7 @@ export default function App() {
         {page === 'leaderboard' && navState.leaderboardType && (
           <EntityLeaderboard entityType={navState.leaderboardType} onBack={handleBack} onNavigate={handleNavigate} />
         )}
+        {page === 'reports' && <ReportsPage />}
         {page === 'chat' && (
           <ChatPage onNavigate={handleNavigate} initialConversationId={navState.conversationId} />
         )}
