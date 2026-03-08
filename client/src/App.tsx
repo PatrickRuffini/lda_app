@@ -1252,8 +1252,31 @@ function EntityDetailPage({ entityId, onBack, onNavigate }: { entityId: number; 
   const [aiLoading, setAiLoading] = useState(false);
   const [aiError, setAiError] = useState<string | null>(null);
   const [aiAvailable, setAiAvailable] = useState(false);
+  const [chatOpen, setChatOpen] = useState(false);
+  const [chatMessages, setChatMessages] = useState<Array<{ role: string; content: string }>>([]);
+  const [chatInput, setChatInput] = useState('');
+  const [chatSending, setChatSending] = useState(false);
+  const [chatConvoId, setChatConvoId] = useState<number | undefined>();
+  const chatEndRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => { api.getAiStatus().then(s => setAiAvailable(s.available)).catch(() => {}); }, []);
+  useEffect(() => { chatEndRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [chatMessages]);
+
+  const handleChatSend = async () => {
+    const text = chatInput.trim();
+    if (!text || chatSending) return;
+    setChatInput('');
+    setChatSending(true);
+    setChatMessages(prev => [...prev, { role: 'user', content: text }]);
+    try {
+      const result = await api.aiChat(text, chatConvoId, entityId);
+      setChatConvoId(result.conversation_id);
+      setChatMessages(prev => [...prev, { role: 'assistant', content: result.response }]);
+    } catch (err: unknown) {
+      setChatMessages(prev => [...prev, { role: 'assistant', content: `Error: ${err instanceof Error ? err.message : 'Failed to get response'}` }]);
+    }
+    setChatSending(false);
+  };
 
   const loadEntity = useCallback(() => {
     setLoading(true);
@@ -1282,6 +1305,11 @@ function EntityDetailPage({ entityId, onBack, onNavigate }: { entityId: number; 
     try {
       const result = await api.getEntitySummary(entity.id);
       setAiSummary(result.summary);
+      // Reset follow-up chat for new summary
+      setChatOpen(false);
+      setChatMessages([]);
+      setChatConvoId(undefined);
+      setChatInput('');
     } catch (err: unknown) {
       setAiError(err instanceof Error ? err.message : 'Failed to generate summary');
     }
@@ -1378,6 +1406,72 @@ function EntityDetailPage({ entityId, onBack, onNavigate }: { entityId: number; 
                 if (line.startsWith('- ')) return <li key={i} className="text-sm text-gray-700 ml-4">{line.slice(2)}</li>;
                 return <p key={i} className="text-sm text-gray-700 mb-1">{line}</p>;
               })}
+            </div>
+          )}
+
+          {/* Follow-up chat after summary */}
+          {aiSummary && aiAvailable && (
+            <div className="mt-4 border-t border-purple-200 pt-4">
+              {!chatOpen ? (
+                <button
+                  onClick={() => setChatOpen(true)}
+                  className="text-sm text-purple-600 hover:text-purple-800 cursor-pointer flex items-center gap-1.5"
+                >
+                  <MessageCircle size={14} /> Ask follow-up questions about {entity.display_name || entity.name}
+                </button>
+              ) : (
+                <>
+                  <div className="max-h-64 overflow-y-auto space-y-2 mb-3">
+                    {chatMessages.map((m, i) => (
+                      <div key={i} className={`flex ${m.role === 'user' ? 'justify-end' : 'justify-start'}`}>
+                        <div className={`max-w-[85%] rounded-lg px-3 py-2 ${
+                          m.role === 'user'
+                            ? 'bg-indigo-600 text-white'
+                            : 'bg-white border border-gray-200 text-gray-800'
+                        }`}>
+                          <p className="text-sm">{m.content}</p>
+                        </div>
+                      </div>
+                    ))}
+                    {chatSending && (
+                      <div className="flex justify-start">
+                        <div className="bg-white border border-gray-200 rounded-lg px-3 py-2">
+                          <div className="flex items-center gap-2 text-sm text-gray-500">
+                            <Loader2 size={14} className="animate-spin" /> Thinking...
+                          </div>
+                        </div>
+                      </div>
+                    )}
+                    <div ref={chatEndRef} />
+                  </div>
+                  <div className="flex gap-2">
+                    <input
+                      type="text"
+                      value={chatInput}
+                      onChange={e => setChatInput(e.target.value)}
+                      onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleChatSend(); } }}
+                      placeholder={`Ask about ${entity.display_name || entity.name}...`}
+                      className="flex-1 text-sm border border-purple-200 rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-purple-300 focus:border-purple-300"
+                      disabled={chatSending}
+                    />
+                    <button
+                      onClick={handleChatSend}
+                      disabled={!chatInput.trim() || chatSending}
+                      className="bg-purple-600 text-white px-3 py-2 rounded-lg hover:bg-purple-700 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-1"
+                    >
+                      <Send size={14} />
+                    </button>
+                  </div>
+                  {chatConvoId && (
+                    <button
+                      onClick={() => onNavigate('chat', chatConvoId)}
+                      className="mt-2 text-xs text-purple-500 hover:text-purple-700 cursor-pointer flex items-center gap-1"
+                    >
+                      <ExternalLink size={12} /> Continue in AI Chat
+                    </button>
+                  )}
+                </>
+              )}
             </div>
           )}
         </div>
@@ -2109,6 +2203,8 @@ export default function App() {
       next.centerEntityId = ctx;
     } else if (target === 'leaderboard' && typeof ctx === 'string') {
       next.leaderboardType = ctx;
+    } else if (target === 'chat' && typeof ctx === 'number') {
+      next.conversationId = ctx;
     }
     setNavHistory(h => [...h, navState]);
     setNavState(next);
