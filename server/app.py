@@ -581,6 +581,33 @@ def issues_by_period(
         session.close()
 
 
+@app.get("/api/reports/activity-heatmap")
+def activity_heatmap():
+    """Daily filing counts for the past 52 weeks, for a GitHub-style heatmap."""
+    session = _get_session()
+    try:
+        from sqlalchemy import func, cast, Date
+        cutoff = datetime.utcnow() - __import__('datetime').timedelta(weeks=52)
+        rows = (
+            session.query(
+                cast(Filing.dt_posted, Date).label("day"),
+                func.count().label("count"),
+            )
+            .filter(Filing.dt_posted >= cutoff)
+            .group_by("day")
+            .order_by("day")
+            .all()
+        )
+        return {
+            "days": [
+                {"date": row.day.isoformat(), "count": row.count}
+                for row in rows if row.day
+            ]
+        }
+    finally:
+        session.close()
+
+
 # ---------- Helpers ----------
 
 def _filing_to_dict(filing: Filing, full: bool = False) -> dict:

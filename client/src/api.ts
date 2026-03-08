@@ -361,4 +361,7 @@ export const api = {
 
   getIssuesByPeriod: (params: { granularity?: string; start_date?: string; end_date?: string; limit?: number }) =>
     fetchJson<ReportSeries>(`${BASE}/reports/issues-by-period?${toQuery(params)}`),
+
+  getActivityHeatmap: () =>
+    fetchJson<{ days: Array<{ date: string; count: number }> }>(`${BASE}/reports/activity-heatmap`),
 };

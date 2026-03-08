@@ -1992,6 +1992,144 @@ function ReportLineChart({ data, title, loading }: { data: ReportSeries | null; 
   );
 }
 
+function ActivityHeatmap() {
+  const [data, setData] = useState<Array<{ date: string; count: number }>>([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    api.getActivityHeatmap()
+      .then(d => setData(d.days))
+      .catch(() => setData([]))
+      .finally(() => setLoading(false));
+  }, []);
+
+  const heatmapData = useMemo(() => {
+    if (!data.length) return { weeks: [], maxCount: 0, months: [] };
+
+    const countMap = new Map(data.map(d => [d.date, d.count]));
+
+    // Build 52 full weeks ending on today
+    const today = new Date();
+    const dayOfWeek = today.getDay(); // 0=Sun
+    // Start from the Sunday 52 weeks ago
+    const start = new Date(today);
+    start.setDate(start.getDate() - (52 * 7) - dayOfWeek);
+
+    const weeks: Array<Array<{ date: string; count: number; month: number }>> = [];
+    let currentWeek: Array<{ date: string; count: number; month: number }> = [];
+
+    const cursor = new Date(start);
+    while (cursor <= today) {
+      const iso = cursor.toISOString().slice(0, 10);
+      currentWeek.push({ date: iso, count: countMap.get(iso) || 0, month: cursor.getMonth() });
+      if (currentWeek.length === 7) {
+        weeks.push(currentWeek);
+        currentWeek = [];
+      }
+      cursor.setDate(cursor.getDate() + 1);
+    }
+    if (currentWeek.length) weeks.push(currentWeek);
+
+    const maxCount = Math.max(1, ...data.map(d => d.count));
+
+    // Month labels: find the first week where a month starts
+    const monthNames = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+    const months: Array<{ label: string; col: number }> = [];
+    let lastMonth = -1;
+    weeks.forEach((week, wi) => {
+      const firstDay = week[0];
+      if (firstDay && firstDay.month !== lastMonth) {
+        months.push({ label: monthNames[firstDay.month], col: wi });
+        lastMonth = firstDay.month;
+      }
+    });
+
+    return { weeks, maxCount, months };
+  }, [data]);
+
+  const getColor = (count: number, max: number) => {
+    if (count === 0) return '#ebedf0';
+    const ratio = count / max;
+    if (ratio <= 0.25) return '#9be9a8';
+    if (ratio <= 0.5) return '#40c463';
+    if (ratio <= 0.75) return '#30a14e';
+    return '#216e39';
+  };
+
+  const dayLabels = ['', 'Mon', '', 'Wed', '', 'Fri', ''];
+  const cellSize = 13;
+  const cellGap = 3;
+  const step = cellSize + cellGap;
+  const leftPad = 32;
+
+  if (loading) return (
+    <div className="bg-white rounded-lg border border-gray-200 p-6">
+      <h3 className="text-base font-semibold text-gray-900 mb-4">Filing Activity</h3>
+      <div className="flex items-center justify-center h-32"><Loader2 className="animate-spin text-indigo-600" size={24} /></div>
+    </div>
+  );
+
+  if (!data.length) return (
+    <div className="bg-white rounded-lg border border-gray-200 p-6">
+      <h3 className="text-base font-semibold text-gray-900 mb-4">Filing Activity</h3>
+      <div className="flex items-center justify-center h-32 text-gray-400 text-sm">No filing data available.</div>
+    </div>
+  );
+
+  const totalFilings = data.reduce((s, d) => s + d.count, 0);
+
+  return (
+    <div className="bg-white rounded-lg border border-gray-200 p-6">
+      <div className="flex items-center justify-between mb-4">
+        <h3 className="text-base font-semibold text-gray-900">Filing Activity</h3>
+        <span className="text-sm text-gray-500">{totalFilings.toLocaleString()} filings in the last year</span>
+      </div>
+      <div className="overflow-x-auto">
+        <svg width={leftPad + heatmapData.weeks.length * step + 10} height={step * 7 + 30}>
+          {/* Month labels */}
+          {heatmapData.months.map((m, i) => (
+            <text key={i} x={leftPad + m.col * step} y={10} fontSize={11} fill="#6b7280">{m.label}</text>
+          ))}
+          {/* Day labels */}
+          {dayLabels.map((label, i) => (
+            label ? <text key={i} x={0} y={20 + i * step + cellSize - 2} fontSize={11} fill="#6b7280">{label}</text> : null
+          ))}
+          {/* Cells */}
+          {heatmapData.weeks.map((week, wi) =>
+            week.map((day, di) => (
+              <rect
+                key={`${wi}-${di}`}
+                x={leftPad + wi * step}
+                y={18 + di * step}
+                width={cellSize}
+                height={cellSize}
+                rx={2}
+                fill={getColor(day.count, heatmapData.maxCount)}
+              >
+                <title>{`${day.date}: ${day.count} filing${day.count !== 1 ? 's' : ''}`}</title>
+              </rect>
+            ))
+          )}
+          {/* Legend */}
+          <text x={leftPad} y={step * 7 + 28} fontSize={11} fill="#6b7280">Less</text>
+          {[0, 0.25, 0.5, 0.75, 1].map((ratio, i) => (
+            <rect
+              key={i}
+              x={leftPad + 30 + i * (cellSize + 2)}
+              y={step * 7 + 17}
+              width={cellSize}
+              height={cellSize}
+              rx={2}
+              fill={getColor(ratio === 0 ? 0 : ratio * heatmapData.maxCount, heatmapData.maxCount)}
+            />
+          ))}
+          <text x={leftPad + 30 + 5 * (cellSize + 2) + 4} y={step * 7 + 28} fontSize={11} fill="#6b7280">More</text>
+        </svg>
+      </div>
+    </div>
+  );
+}
+
 function ReportsPage() {
   const [preset, setPreset] = useState<DatePreset>('past_365');
   const [granularity, setGranularity] = useState<'week' | 'month'>('month');
@@ -2065,6 +2203,9 @@ function ReportsPage() {
           </button>
         ))}
       </div>
+
+      {/* Activity heatmap */}
+      <ActivityHeatmap />
 
       {/* Charts */}
       <ReportLineChart
