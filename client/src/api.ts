@@ -404,17 +404,20 @@ export const api = {
     fetch(`${BASE}/ai/conversations/${id}`, { method: 'DELETE' }).then(r => r.json()),
 
   // Reports
-  getRegistrationsByPeriod: (params: { granularity?: string; start_date?: string; end_date?: string; limit?: number }) =>
+  getRegistrants: () =>
+    fetchJson<Array<{ id: number; name: string; filing_count: number }>>(`${BASE}/registrants`),
+
+  getRegistrationsByPeriod: (params: { granularity?: string; start_date?: string; end_date?: string; limit?: number; registrant_id?: number; issue_code?: string }) =>
     fetchJson<ReportSeries>(`${BASE}/reports/registrations-by-period?${toQuery(params)}`),
 
-  getIssuesByPeriod: (params: { granularity?: string; start_date?: string; end_date?: string; limit?: number }) =>
+  getIssuesByPeriod: (params: { granularity?: string; start_date?: string; end_date?: string; limit?: number; registrant_id?: number; issue_code?: string }) =>
     fetchJson<ReportSeries>(`${BASE}/reports/issues-by-period?${toQuery(params)}`),
 
-  getActivityHeatmap: () =>
-    fetchJson<{ days: Array<{ date: string; count: number }> }>(`${BASE}/reports/activity-heatmap`),
+  getActivityHeatmap: (params?: { registrant_id?: number; issue_code?: string }) =>
+    fetchJson<{ days: Array<{ date: string; count: number }> }>(`${BASE}/reports/activity-heatmap${params ? '?' + toQuery(params) : ''}`),
 
-  getRevenueByQuarter: (limit = 10) =>
-    fetchJson<RevenueByQuarter>(`${BASE}/reports/revenue-by-quarter?limit=${limit}`),
+  getRevenueByQuarter: (limit = 10, params?: { registrant_id?: number; issue_code?: string }) =>
+    fetchJson<RevenueByQuarter>(`${BASE}/reports/revenue-by-quarter?limit=${limit}${params ? '&' + toQuery(params) : ''}`),
 
   getEntityAppearances: (limit = 25, entityType?: string) =>
     fetchJson<EntityAppearance[]>(`${BASE}/reports/entity-appearances?limit=${limit}${entityType ? `&entity_type=${entityType}` : ''}`),
@@ -428,11 +431,11 @@ export const api = {
   getTopClientsBySpend: (limit = 15) =>
     fetchJson<Array<{ name: string; total_spend: number; filing_count: number; firm_count: number }>>(`${BASE}/reports/top-clients-by-spend?limit=${limit}`),
 
-  getFilingTypeBreakdown: () =>
-    fetchJson<Array<{ type: string; display: string; count: number }>>(`${BASE}/reports/filing-type-breakdown`),
+  getFilingTypeBreakdown: (params?: { registrant_id?: number; issue_code?: string }) =>
+    fetchJson<Array<{ type: string; display: string; count: number }>>(`${BASE}/reports/filing-type-breakdown${params ? '?' + toQuery(params) : ''}`),
 
-  getRegistrationTrend: (granularity = 'month') =>
-    fetchJson<{ periods: string[]; registrations: number[]; terminations: number[]; granularity: string }>(`${BASE}/reports/registration-trend?granularity=${granularity}`),
+  getRegistrationTrend: (granularity = 'month', params?: { registrant_id?: number; issue_code?: string }) =>
+    fetchJson<{ periods: string[]; registrations: number[]; terminations: number[]; granularity: string }>(`${BASE}/reports/registration-trend?granularity=${granularity}${params ? '&' + toQuery(params) : ''}`),
 
   getTopIssuesByRevenue: (limit = 15) =>
     fetchJson<Array<{ issue: string; total_revenue: number; filing_count: number; firm_count: number }>>(`${BASE}/reports/top-issues-by-revenue?limit=${limit}`),

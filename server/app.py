@@ -354,6 +354,23 @@ def filings_by_issue(
         session.close()
 
 
+@app.get("/api/registrants")
+def list_registrants():
+    """List all registrants with filing counts, for filter dropdowns."""
+    session = _get_session()
+    try:
+        rows = (
+            session.query(Registrant.id, Registrant.name, func.count(Filing.id).label("cnt"))
+            .join(Filing)
+            .group_by(Registrant.id, Registrant.name)
+            .order_by(desc("cnt"))
+            .all()
+        )
+        return [{"id": r[0], "name": r[1], "filing_count": r[2]} for r in rows]
+    finally:
+        session.close()
+
+
 @app.get("/api/top-registrants")
 def top_registrants(limit: int = Query(20, ge=1, le=100), sort: str = Query("filings", regex="^(filings|unique_clients)$")):
     """Get top registrants by filing count or unique client count."""
@@ -580,6 +597,8 @@ def registrations_by_period(
     start_date: Optional[str] = Query(None),
     end_date: Optional[str] = Query(None),
     limit: int = Query(10, ge=1, le=25),
+    registrant_id: Optional[int] = Query(None),
+    issue_code: Optional[str] = Query(None),
 ):
     """Top lobbying firms by new registrations, grouped by week or month."""
     session = _get_session()
@@ -590,11 +609,15 @@ def registrations_by_period(
             q = q.filter(Filing.dt_posted >= start_date)
         if end_date:
             q = q.filter(Filing.dt_posted <= end_date)
+        if registrant_id:
+            q = q.filter(Filing.registrant_id == registrant_id)
+        if issue_code:
+            q = q.join(LobbyingActivity, LobbyingActivity.filing_uuid == Filing.filing_uuid).filter(LobbyingActivity.general_issue_code == issue_code)
 
         # Get top registrants in the period
         top_regs = (
             q.join(Registrant)
-            .with_entities(Registrant.id, Registrant.name, func.count(Filing.id).label("cnt"))
+            .with_entities(Registrant.id, Registrant.name, func.count(func.distinct(Filing.id)).label("cnt"))
             .group_by(Registrant.id, Registrant.name)
             .order_by(desc("cnt"))
             .limit(limit)
@@ -616,7 +639,7 @@ def registrations_by_period(
             session.query(
                 Registrant.id,
                 period_expr.label("period"),
-                func.count(Filing.id).label("count"),
+                func.count(func.distinct(Filing.id)).label("count"),
             )
             .select_from(Filing)
             .join(Registrant)
@@ -627,6 +650,8 @@ def registrations_by_period(
             rows = rows.filter(Filing.dt_posted >= start_date)
         if end_date:
             rows = rows.filter(Filing.dt_posted <= end_date)
+        if issue_code:
+            rows = rows.join(LobbyingActivity, LobbyingActivity.filing_uuid == Filing.filing_uuid).filter(LobbyingActivity.general_issue_code == issue_code)
         rows = rows.group_by(Registrant.id, "period").all()
 
         # Group by registrant
@@ -660,6 +685,8 @@ def issues_by_period(
     start_date: Optional[str] = Query(None),
     end_date: Optional[str] = Query(None),
     limit: int = Query(10, ge=1, le=25),
+    registrant_id: Optional[int] = Query(None),
+    issue_code: Optional[str] = Query(None),
 ):
     """Top issue areas by filing count, grouped by week or month."""
     session = _get_session()
@@ -669,6 +696,10 @@ def issues_by_period(
             q = q.filter(Filing.dt_posted >= start_date)
         if end_date:
             q = q.filter(Filing.dt_posted <= end_date)
+        if registrant_id:
+            q = q.filter(Filing.registrant_id == registrant_id)
+        if issue_code:
+            q = q.filter(LobbyingActivity.general_issue_code == issue_code)
 
         # Get top issues in the period
         top_issues = (
@@ -683,9 +714,9 @@ def issues_by_period(
             .all()
         )
         issue_names = {r[0]: r[1] for r in top_issues}
-        issue_codes = [r[0] for r in top_issues]
+        issue_codes_list = [r[0] for r in top_issues]
 
-        if not issue_codes:
+        if not issue_codes_list:
             return {"series": [], "granularity": granularity}
 
         if granularity == "week":
@@ -701,12 +732,14 @@ def issues_by_period(
             )
             .select_from(LobbyingActivity)
             .join(Filing)
-            .filter(LobbyingActivity.general_issue_code.in_(issue_codes))
+            .filter(LobbyingActivity.general_issue_code.in_(issue_codes_list))
         )
         if start_date:
             rows = rows.filter(Filing.dt_posted >= start_date)
         if end_date:
             rows = rows.filter(Filing.dt_posted <= end_date)
+        if registrant_id:
+            rows = rows.filter(Filing.registrant_id == registrant_id)
         rows = rows.group_by(LobbyingActivity.general_issue_code, "period").all()
 
         series = {}
@@ -732,22 +765,24 @@ def issues_by_period(
 
 
 @app.get("/api/reports/activity-heatmap")
-def activity_heatmap():
+def activity_heatmap(
+    registrant_id: Optional[int] = Query(None),
+    issue_code: Optional[str] = Query(None),
+):
     """Daily filing counts for the past 52 weeks, for a GitHub-style heatmap."""
     session = _get_session()
     try:
         from sqlalchemy import func, cast, Date
         cutoff = datetime.utcnow() - __import__('datetime').timedelta(weeks=52)
-        rows = (
-            session.query(
-                cast(Filing.dt_posted, Date).label("day"),
-                func.count().label("count"),
-            )
-            .filter(Filing.dt_posted >= cutoff)
-            .group_by("day")
-            .order_by("day")
-            .all()
-        )
+        q = session.query(
+            cast(Filing.dt_posted, Date).label("day"),
+            func.count(func.distinct(Filing.id)).label("count"),
+        ).filter(Filing.dt_posted >= cutoff)
+        if registrant_id:
+            q = q.filter(Filing.registrant_id == registrant_id)
+        if issue_code:
+            q = q.join(LobbyingActivity, LobbyingActivity.filing_uuid == Filing.filing_uuid).filter(LobbyingActivity.general_issue_code == issue_code)
+        rows = q.group_by("day").order_by("day").all()
         return {
             "days": [
                 {"date": row.day.isoformat(), "count": row.count}
@@ -759,21 +794,29 @@ def activity_heatmap():
 
 
 @app.get("/api/reports/revenue-by-quarter")
-def revenue_by_quarter(limit: int = Query(10, ge=1, le=25)):
+def revenue_by_quarter(
+    limit: int = Query(10, ge=1, le=25),
+    registrant_id: Optional[int] = Query(None),
+    issue_code: Optional[str] = Query(None),
+):
     """Total revenue by quarter, and top firms' revenue over time."""
     session = _get_session()
     try:
-        period_expr = func.concat(Filing.filing_year, '-', Filing.filing_period)
+        # Base query with optional filters
+        base_q = session.query(Filing).filter(Filing.income.isnot(None))
+        if registrant_id:
+            base_q = base_q.filter(Filing.registrant_id == registrant_id)
+        if issue_code:
+            base_q = base_q.join(LobbyingActivity, LobbyingActivity.filing_uuid == Filing.filing_uuid).filter(LobbyingActivity.general_issue_code == issue_code)
 
         # Overall revenue by quarter
         overall = (
-            session.query(
+            base_q.with_entities(
                 Filing.filing_year,
                 Filing.filing_period,
                 func.sum(Filing.income).label("revenue"),
-                func.count(Filing.id).label("filing_count"),
+                func.count(func.distinct(Filing.id)).label("filing_count"),
             )
-            .filter(Filing.income.isnot(None))
             .group_by(Filing.filing_year, Filing.filing_period)
             .order_by(Filing.filing_year, Filing.filing_period)
             .all()
@@ -783,44 +826,45 @@ def revenue_by_quarter(limit: int = Query(10, ge=1, le=25)):
             for r in overall
         ]
 
-        # Top firms by total revenue
-        top_firms = (
-            session.query(
+        # Top firms by total revenue (skip if already filtering to one firm)
+        firm_series = {}
+        if not registrant_id:
+            top_q = session.query(
                 Registrant.id, Registrant.name,
                 func.sum(Filing.income).label("total_revenue"),
-            )
-            .join(Filing)
-            .filter(Filing.income.isnot(None))
-            .group_by(Registrant.id, Registrant.name)
-            .order_by(desc("total_revenue"))
-            .limit(limit)
-            .all()
-        )
-        top_firm_ids = [r[0] for r in top_firms]
-        top_firm_names = {r[0]: r[1] for r in top_firms}
-
-        # Revenue by quarter per top firm
-        firm_series = {}
-        if top_firm_ids:
-            rows = (
-                session.query(
-                    Registrant.id,
-                    Filing.filing_year,
-                    Filing.filing_period,
-                    func.sum(Filing.income).label("revenue"),
-                )
-                .select_from(Filing)
-                .join(Registrant)
-                .filter(Filing.income.isnot(None), Registrant.id.in_(top_firm_ids))
-                .group_by(Registrant.id, Filing.filing_year, Filing.filing_period)
+            ).join(Filing).filter(Filing.income.isnot(None))
+            if issue_code:
+                top_q = top_q.join(LobbyingActivity, LobbyingActivity.filing_uuid == Filing.filing_uuid).filter(LobbyingActivity.general_issue_code == issue_code)
+            top_firms = (
+                top_q.group_by(Registrant.id, Registrant.name)
+                .order_by(desc("total_revenue"))
+                .limit(limit)
                 .all()
             )
-            for reg_id, year, period, revenue in rows:
-                name = top_firm_names[reg_id]
-                if name not in firm_series:
-                    firm_series[name] = {}
-                key = f"{year}-{period}"
-                firm_series[name][key] = float(revenue) if revenue else 0
+            top_firm_ids = [r[0] for r in top_firms]
+            top_firm_names = {r[0]: r[1] for r in top_firms}
+
+            if top_firm_ids:
+                firm_q = (
+                    session.query(
+                        Registrant.id,
+                        Filing.filing_year,
+                        Filing.filing_period,
+                        func.sum(Filing.income).label("revenue"),
+                    )
+                    .select_from(Filing)
+                    .join(Registrant)
+                    .filter(Filing.income.isnot(None), Registrant.id.in_(top_firm_ids))
+                )
+                if issue_code:
+                    firm_q = firm_q.join(LobbyingActivity, LobbyingActivity.filing_uuid == Filing.filing_uuid).filter(LobbyingActivity.general_issue_code == issue_code)
+                rows = firm_q.group_by(Registrant.id, Filing.filing_year, Filing.filing_period).all()
+                for reg_id, year, period, revenue in rows:
+                    name = top_firm_names[reg_id]
+                    if name not in firm_series:
+                        firm_series[name] = {}
+                    key = f"{year}-{period}"
+                    firm_series[name][key] = float(revenue) if revenue else 0
 
         all_periods = sorted(set(f"{r['year']}-{r['period']}" for r in overall_data))
         series = []
@@ -1061,17 +1105,24 @@ def top_clients_by_spend(limit: int = Query(15, ge=1, le=50)):
 
 
 @app.get("/api/reports/filing-type-breakdown")
-def filing_type_breakdown():
+def filing_type_breakdown(
+    registrant_id: Optional[int] = Query(None),
+    issue_code: Optional[str] = Query(None),
+):
     """Breakdown of filings by type."""
     session = _get_session()
     try:
+        q = session.query(
+            Filing.filing_type,
+            Filing.filing_type_display,
+            func.count(func.distinct(Filing.id)).label("count"),
+        )
+        if registrant_id:
+            q = q.filter(Filing.registrant_id == registrant_id)
+        if issue_code:
+            q = q.join(LobbyingActivity, LobbyingActivity.filing_uuid == Filing.filing_uuid).filter(LobbyingActivity.general_issue_code == issue_code)
         rows = (
-            session.query(
-                Filing.filing_type,
-                Filing.filing_type_display,
-                func.count(Filing.id).label("count"),
-            )
-            .group_by(Filing.filing_type, Filing.filing_type_display)
+            q.group_by(Filing.filing_type, Filing.filing_type_display)
             .order_by(desc("count"))
             .all()
         )
@@ -1081,7 +1132,11 @@ def filing_type_breakdown():
 
 
 @app.get("/api/reports/registration-trend")
-def registration_trend(granularity: str = Query("month", regex="^(week|month)$")):
+def registration_trend(
+    granularity: str = Query("month", regex="^(week|month)$"),
+    registrant_id: Optional[int] = Query(None),
+    issue_code: Optional[str] = Query(None),
+):
     """New registrations vs terminations over time."""
     session = _get_session()
     try:
@@ -1090,16 +1145,19 @@ def registration_trend(granularity: str = Query("month", regex="^(week|month)$")
         else:
             period_expr = func.to_char(Filing.dt_posted, 'YYYY-MM')
 
-        rows = (
+        q = (
             session.query(
                 Filing.filing_type,
                 period_expr.label("period"),
-                func.count(Filing.id).label("count"),
+                func.count(func.distinct(Filing.id)).label("count"),
             )
             .filter(Filing.filing_type.in_(['RR', 'TR']))
-            .group_by(Filing.filing_type, "period")
-            .all()
         )
+        if registrant_id:
+            q = q.filter(Filing.registrant_id == registrant_id)
+        if issue_code:
+            q = q.join(LobbyingActivity, LobbyingActivity.filing_uuid == Filing.filing_uuid).filter(LobbyingActivity.general_issue_code == issue_code)
+        rows = q.group_by(Filing.filing_type, "period").all()
 
         registrations: dict = {}
         terminations: dict = {}

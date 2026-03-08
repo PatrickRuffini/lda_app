@@ -2119,17 +2119,19 @@ function ReportLineChart({ data, title, loading }: { data: ReportSeries | null; 
   );
 }
 
-function ActivityHeatmap({ syncVersion }: { syncVersion?: number }) {
+type ReportFilters = { registrant_id?: number; issue_code?: string };
+
+function ActivityHeatmap({ syncVersion, filters }: { syncVersion?: number; filters?: ReportFilters }) {
   const [data, setData] = useState<Array<{ date: string; count: number }>>([]);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     setLoading(true);
-    api.getActivityHeatmap()
+    api.getActivityHeatmap(filters)
       .then(d => setData(d.days))
       .catch(() => setData([]))
       .finally(() => setLoading(false));
-  }, [syncVersion]);
+  }, [syncVersion, filters?.registrant_id, filters?.issue_code]);
 
   const heatmapData = useMemo(() => {
     if (!data.length) return { weeks: [], maxCount: 0, months: [] };
@@ -2407,10 +2409,13 @@ function EntityAppearancesLeaderboard({ onNavigate }: { onNavigate?: (page: Page
   );
 }
 
-function FilingTypeDonut() {
+function FilingTypeDonut({ filters }: { filters?: ReportFilters }) {
   const [data, setData] = useState<Array<{ type: string; display: string; count: number }>>([]);
   const [loading, setLoading] = useState(true);
-  useEffect(() => { api.getFilingTypeBreakdown().then(setData).catch(() => setData([])).finally(() => setLoading(false)); }, []);
+  useEffect(() => {
+    setLoading(true);
+    api.getFilingTypeBreakdown(filters).then(setData).catch(() => setData([])).finally(() => setLoading(false));
+  }, [filters?.registrant_id, filters?.issue_code]);
   if (loading) return <div className="bg-white rounded-lg border border-gray-200 p-4 flex justify-center py-8"><Loader2 className="animate-spin text-gray-300" size={20} /></div>;
   if (!data.length) return null;
   const total = data.reduce((s, d) => s + d.count, 0);
@@ -2435,13 +2440,13 @@ function FilingTypeDonut() {
   );
 }
 
-function RegistrationTrendChart({ granularity, syncVersion }: { granularity: string; syncVersion?: number }) {
+function RegistrationTrendChart({ granularity, syncVersion, filters }: { granularity: string; syncVersion?: number; filters?: ReportFilters }) {
   const [data, setData] = useState<{ periods: string[]; registrations: number[]; terminations: number[] } | null>(null);
   const [loading, setLoading] = useState(true);
   useEffect(() => {
     setLoading(true);
-    api.getRegistrationTrend(granularity).then(setData).catch(() => setData(null)).finally(() => setLoading(false));
-  }, [granularity, syncVersion]);
+    api.getRegistrationTrend(granularity, filters).then(setData).catch(() => setData(null)).finally(() => setLoading(false));
+  }, [granularity, syncVersion, filters?.registrant_id, filters?.issue_code]);
   if (loading) return <div className="bg-white rounded-lg border border-gray-200 p-6 flex justify-center"><Loader2 className="animate-spin text-gray-300" size={24} /></div>;
   if (!data || !data.periods.length) return null;
   const chartData = data.periods.map((p, i) => ({ period: p, Registrations: data.registrations[i], Terminations: data.terminations[i] }));
@@ -2524,24 +2529,46 @@ function ReportsPage({ syncVersion, onNavigate }: { syncVersion?: number; onNavi
   const [revenueData, setRevenueData] = useState<RevenueByQuarter | null>(null);
   const [revenueLoading, setRevenueLoading] = useState(false);
 
+  // Filter state
+  const [registrantList, setRegistrantList] = useState<Array<{ id: number; name: string; filing_count: number }>>([]);
+  const [issueList, setIssueList] = useState<IssueSummary[]>([]);
+  const [selectedRegistrant, setSelectedRegistrant] = useState<number | undefined>();
+  const [selectedIssue, setSelectedIssue] = useState<string | undefined>();
+  const [registrantSearch, setRegistrantSearch] = useState('');
+
+  // Load filter options once
+  useEffect(() => {
+    api.getRegistrants().then(setRegistrantList).catch(() => {});
+    api.getIssues().then(setIssueList).catch(() => {});
+  }, []);
+
+  const filters: ReportFilters = useMemo(() => {
+    const f: ReportFilters = {};
+    if (selectedRegistrant) f.registrant_id = selectedRegistrant;
+    if (selectedIssue) f.issue_code = selectedIssue;
+    return f;
+  }, [selectedRegistrant, selectedIssue]);
+
+  const hasFilters = selectedRegistrant || selectedIssue;
+
   const loadData = useCallback(() => {
     const { start, end } = getPresetDates(preset);
     setRegLoading(true);
     setIssueLoading(true);
     setRevenueLoading(true);
-    api.getRegistrationsByPeriod({ granularity, start_date: start, end_date: end, limit: 10 })
+    api.getRegistrationsByPeriod({ granularity, start_date: start, end_date: end, limit: 10, ...filters })
       .then(d => setRegData(d))
       .catch(() => setRegData(null))
       .finally(() => setRegLoading(false));
-    api.getIssuesByPeriod({ granularity, start_date: start, end_date: end, limit: 10 })
+    api.getIssuesByPeriod({ granularity, start_date: start, end_date: end, limit: 10, ...filters })
       .then(d => setIssueData(d))
       .catch(() => setIssueData(null))
       .finally(() => setIssueLoading(false));
-    api.getRevenueByQuarter(10)
+    api.getRevenueByQuarter(10, filters)
       .then(d => setRevenueData(d))
       .catch(() => setRevenueData(null))
       .finally(() => setRevenueLoading(false));
-  }, [preset, granularity, syncVersion]);
+  }, [preset, granularity, syncVersion, selectedRegistrant, selectedIssue]);
 
   useEffect(() => { loadData(); }, [loadData]);
 
@@ -2553,6 +2580,13 @@ function ReportsPage({ syncVersion, onNavigate }: { syncVersion?: number; onNavi
     { id: 'this_year', label: 'This Year' },
     { id: 'last_year', label: 'Last Year' },
   ];
+
+  const filteredRegistrants = registrantSearch
+    ? registrantList.filter(r => r.name.toLowerCase().includes(registrantSearch.toLowerCase())).slice(0, 20)
+    : registrantList.slice(0, 20);
+
+  const selectedRegName = selectedRegistrant ? registrantList.find(r => r.id === selectedRegistrant)?.name : undefined;
+  const selectedIssueName = selectedIssue ? issueList.find(i => i.code === selectedIssue)?.display : undefined;
 
   return (
     <div className="space-y-6">
@@ -2569,6 +2603,76 @@ function ReportsPage({ syncVersion, onNavigate }: { syncVersion?: number; onNavi
         </div>
       </div>
 
+      {/* Filters */}
+      <div className="bg-white rounded-lg border border-gray-200 p-4">
+        <div className="flex flex-col sm:flex-row gap-3 items-start sm:items-end">
+          <div className="flex-1 min-w-0">
+            <label className="block text-xs font-medium text-gray-500 mb-1">Consultant / Firm</label>
+            <div className="relative">
+              <input
+                type="text"
+                value={selectedRegName || registrantSearch}
+                onChange={e => { setRegistrantSearch(e.target.value); if (selectedRegistrant) setSelectedRegistrant(undefined); }}
+                placeholder="All firms"
+                className="w-full text-sm border border-gray-200 rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-indigo-200 focus:border-indigo-300"
+              />
+              {registrantSearch && !selectedRegistrant && (
+                <div className="absolute z-10 mt-1 w-full bg-white border border-gray-200 rounded-lg shadow-lg max-h-48 overflow-y-auto">
+                  {filteredRegistrants.map(r => (
+                    <button
+                      key={r.id}
+                      onClick={() => { setSelectedRegistrant(r.id); setRegistrantSearch(''); }}
+                      className="w-full text-left px-3 py-2 text-sm hover:bg-indigo-50 cursor-pointer flex justify-between"
+                    >
+                      <span className="truncate">{r.name}</span>
+                      <span className="text-gray-400 shrink-0 ml-2">{r.filing_count}</span>
+                    </button>
+                  ))}
+                  {filteredRegistrants.length === 0 && <p className="px-3 py-2 text-sm text-gray-400">No matches</p>}
+                </div>
+              )}
+            </div>
+          </div>
+          <div className="flex-1 min-w-0">
+            <label className="block text-xs font-medium text-gray-500 mb-1">Issue Area</label>
+            <select
+              value={selectedIssue || ''}
+              onChange={e => setSelectedIssue(e.target.value || undefined)}
+              className="w-full text-sm border border-gray-200 rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-indigo-200 focus:border-indigo-300 bg-white"
+            >
+              <option value="">All issues</option>
+              {issueList.map(i => (
+                <option key={i.code} value={i.code}>{i.display} ({i.count})</option>
+              ))}
+            </select>
+          </div>
+          {hasFilters && (
+            <button
+              onClick={() => { setSelectedRegistrant(undefined); setSelectedIssue(undefined); setRegistrantSearch(''); }}
+              className="text-sm text-red-500 hover:text-red-700 cursor-pointer px-3 py-2 border border-red-200 rounded-lg hover:bg-red-50 whitespace-nowrap"
+            >
+              Clear filters
+            </button>
+          )}
+        </div>
+        {hasFilters && (
+          <div className="mt-2 flex flex-wrap gap-2">
+            {selectedRegName && (
+              <span className="inline-flex items-center gap-1 text-xs bg-indigo-50 text-indigo-700 px-2 py-1 rounded-full">
+                Firm: {selectedRegName}
+                <button onClick={() => { setSelectedRegistrant(undefined); setRegistrantSearch(''); }} className="hover:text-indigo-900 cursor-pointer">&times;</button>
+              </span>
+            )}
+            {selectedIssueName && (
+              <span className="inline-flex items-center gap-1 text-xs bg-amber-50 text-amber-700 px-2 py-1 rounded-full">
+                Issue: {selectedIssueName}
+                <button onClick={() => setSelectedIssue(undefined)} className="hover:text-amber-900 cursor-pointer">&times;</button>
+              </span>
+            )}
+          </div>
+        )}
+      </div>
+
       {/* Date preset pills */}
       <div className="flex flex-wrap gap-2">
         {presets.map(p => (
@@ -2580,17 +2684,17 @@ function ReportsPage({ syncVersion, onNavigate }: { syncVersion?: number; onNavi
       </div>
 
       {/* Activity heatmap - full width */}
-      <ActivityHeatmap syncVersion={syncVersion} />
+      <ActivityHeatmap syncVersion={syncVersion} filters={filters} />
 
       {/* Row 1: Revenue + Registration trend */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         <RevenueChart data={revenueData} loading={revenueLoading} />
-        <RegistrationTrendChart granularity={granularity} syncVersion={syncVersion} />
+        <RegistrationTrendChart granularity={granularity} syncVersion={syncVersion} filters={filters} />
       </div>
 
       {/* Row 2: Filing type + time series charts */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        <FilingTypeDonut />
+        <FilingTypeDonut filters={filters} />
         <div className="lg:col-span-2">
           <ReportLineChart data={regData} title="New Lobbying Registrations by Firm" loading={regLoading} />
         </div>
