@@ -428,6 +428,9 @@ export const api = {
   getEntityLdaStats: (entityId: number) =>
     fetchJson<EntityLdaStats>(`${BASE}/influence/entities/${entityId}/lda-stats`),
 
+  getTopConsultantsByRevenue: (limit = 15) =>
+    fetchJson<Array<{ id: number; display_name: string; name: string; total_revenue: number; filing_count: number; unique_clients: number }>>(`${BASE}/reports/top-consultants-by-revenue?limit=${limit}`),
+
   getTopClientsBySpend: (limit = 15) =>
     fetchJson<Array<{ name: string; total_spend: number; filing_count: number; firm_count: number }>>(`${BASE}/reports/top-clients-by-spend?limit=${limit}`),
 

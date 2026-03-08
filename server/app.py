@@ -1076,6 +1076,38 @@ def entity_lda_stats(entity_id: int):
         session.close()
 
 
+@app.get("/api/reports/top-consultants-by-revenue")
+def top_consultants_by_revenue(limit: int = Query(15, ge=1, le=50)):
+    """Top consultants ranked by total revenue from their registrant's filings."""
+    session = _get_session()
+    try:
+        rows = (
+            session.query(
+                Entity.id,
+                Entity.display_name,
+                Entity.name,
+                func.sum(Filing.income).label("total_revenue"),
+                func.count(Filing.id).label("filing_count"),
+                func.count(func.distinct(Client.id)).label("unique_clients"),
+            )
+            .join(Filing, Filing.registrant_id == Entity.registrant_id)
+            .join(Client, Filing.client_id == Client.id)
+            .filter(Entity.is_consultant == True)
+            .filter(Filing.income.isnot(None))
+            .group_by(Entity.id, Entity.display_name, Entity.name)
+            .order_by(desc("total_revenue"))
+            .limit(limit)
+            .all()
+        )
+        return [
+            {"id": r[0], "display_name": r[1] or r[2], "name": r[2],
+             "total_revenue": float(r[3]) if r[3] else 0, "filing_count": r[4], "unique_clients": r[5]}
+            for r in rows
+        ]
+    finally:
+        session.close()
+
+
 @app.get("/api/reports/top-clients-by-spend")
 def top_clients_by_spend(limit: int = Query(15, ge=1, le=50)):
     """Top clients ranked by total lobbying spend."""

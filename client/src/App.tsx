@@ -135,6 +135,40 @@ function Pagination({ page, pageSize, total, onPage }: { page: number; pageSize:
   );
 }
 
+function LatestNewslettersFeed({ onNavigate }: { onNavigate: (page: Page, ctx?: unknown) => void }) {
+  const [newsletters, setNewsletters] = useState<Array<{ id: number; title: string; published_date: string | null; body_preview: string }>>([]);
+  const [loading, setLoading] = useState(true);
+  useEffect(() => {
+    api.getNewsletters(1, 5).then(d => setNewsletters(d.results)).catch(() => setNewsletters([])).finally(() => setLoading(false));
+  }, []);
+  if (loading) return <div className="flex justify-center py-4"><Loader2 className="animate-spin text-gray-300" size={20} /></div>;
+  if (!newsletters.length) return null;
+  return (
+    <div>
+      <div className="flex items-center justify-between mb-3">
+        <h2 className="text-lg font-semibold text-gray-900 flex items-center gap-2"><Newspaper size={18} /> Latest Influence Reports</h2>
+        <button onClick={() => onNavigate('influence')} className="text-sm text-indigo-600 hover:underline cursor-pointer">View all</button>
+      </div>
+      <div className="space-y-2">
+        {newsletters.map(n => (
+          <button key={n.id} onClick={() => onNavigate('newsletter', n.id)}
+            className="w-full text-left bg-white rounded-lg border border-gray-200 p-3 hover:border-indigo-300 hover:shadow-sm transition cursor-pointer">
+            <div className="flex items-start justify-between gap-2">
+              <div className="min-w-0">
+                <h4 className="text-sm font-medium text-gray-900 truncate">{n.title}</h4>
+                <p className="text-xs text-gray-500 mt-0.5 line-clamp-2">{n.body_preview}</p>
+              </div>
+              {n.published_date && (
+                <span className="text-xs text-gray-400 shrink-0">{formatDate(n.published_date)}</span>
+              )}
+            </div>
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 // ---------- Dashboard ----------
 function Dashboard({ onNavigate }: { onNavigate: (page: Page, ctx?: unknown) => void }) {
   const [stats, setStats] = useState<Stats | null>(null);
@@ -146,7 +180,7 @@ function Dashboard({ onNavigate }: { onNavigate: (page: Page, ctx?: unknown) => 
   const [loading, setLoading] = useState(true);
   const [regSort, setRegSort] = useState<'filings' | 'unique_clients'>('filings');
   const [clientSort, setClientSort] = useState<'filings' | 'unique_registrants'>('filings');
-  const [consultantSort, setConsultantSort] = useState<'mention_count' | 'filings'>('mention_count');
+  const [consultantSort, setConsultantSort] = useState<'mention_count' | 'filings'>('filings');
 
   const load = useCallback(async (retry = 0) => {
     setLoading(true);
@@ -169,7 +203,8 @@ function Dashboard({ onNavigate }: { onNavigate: (page: Page, ctx?: unknown) => 
       setLoading(false);
       if (retry < 3) setTimeout(() => load(retry + 1), 2000);
     }
-  }, [regSort, clientSort, consultantSort]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [regSort, clientSort]);
 
   useEffect(() => { load(); }, [load]);
 
@@ -291,8 +326,8 @@ function Dashboard({ onNavigate }: { onNavigate: (page: Page, ctx?: unknown) => 
               <div className="flex items-center justify-between mb-3">
                 <h3 className="font-semibold text-gray-900 flex items-center gap-2"><Briefcase size={16} /> Top Consultants</h3>
                 <div className="flex rounded border border-gray-200 overflow-hidden text-xs">
-                  <button onClick={() => setConsultantSort('mention_count')} className={`px-2 py-1 cursor-pointer ${consultantSort === 'mention_count' ? 'bg-indigo-600 text-white' : 'text-gray-600 hover:bg-gray-50'}`}>Appearances</button>
                   <button onClick={() => setConsultantSort('filings')} className={`px-2 py-1 cursor-pointer ${consultantSort === 'filings' ? 'bg-indigo-600 text-white' : 'text-gray-600 hover:bg-gray-50'}`}>Clients</button>
+                  <button onClick={() => setConsultantSort('mention_count')} className={`px-2 py-1 cursor-pointer ${consultantSort === 'mention_count' ? 'bg-indigo-600 text-white' : 'text-gray-600 hover:bg-gray-50'}`}>Appearances</button>
                 </div>
               </div>
               <div className="space-y-2">
@@ -328,6 +363,9 @@ function Dashboard({ onNavigate }: { onNavigate: (page: Page, ctx?: unknown) => 
           )}
         </div>
       )}
+
+      {/* Latest Politico Influence reports */}
+      <LatestNewslettersFeed onNavigate={onNavigate} />
 
       {/* Empty state */}
       {stats && stats.total_filings === 0 && (
@@ -2519,6 +2557,61 @@ function TopIssuesByRevenue() {
   );
 }
 
+function TopConsultantsByRevenue({ onNavigate }: { onNavigate?: (page: Page, ctx?: unknown) => void }) {
+  const [data, setData] = useState<Array<{ id: number; display_name: string; total_revenue: number; unique_clients: number }>>([]);
+  const [loading, setLoading] = useState(true);
+  useEffect(() => { api.getTopConsultantsByRevenue(15).then(setData).catch(() => setData([])).finally(() => setLoading(false)); }, []);
+  if (loading) return <div className="bg-white rounded-lg border border-gray-200 p-4 flex justify-center py-8"><Loader2 className="animate-spin text-gray-300" size={20} /></div>;
+  if (!data.length) return null;
+  return (
+    <div className="bg-white rounded-lg border border-gray-200 p-4">
+      <h3 className="font-semibold text-gray-900 mb-3">Top Consultants by Revenue</h3>
+      <div className="space-y-1.5">
+        {data.map((d, i) => (
+          <div key={d.id} className="flex items-center justify-between text-sm">
+            <button onClick={() => onNavigate?.('entity', d.id)} className="text-gray-700 truncate hover:text-indigo-600 cursor-pointer text-left">
+              <span className="text-gray-400 mr-2">{i + 1}.</span>{d.display_name}
+            </button>
+            <div className="flex items-center gap-3 shrink-0 ml-2">
+              <span className="text-gray-500 text-xs">{d.unique_clients} clients</span>
+              <span className="text-green-600 font-medium">{formatMoney(d.total_revenue)}</span>
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function TopLobbyistsChart({ onNavigate }: { onNavigate?: (page: Page, ctx?: unknown) => void }) {
+  const [data, setData] = useState<Array<{ id: number; name: string; display_name: string; mention_count: number }>>([]);
+  const [loading, setLoading] = useState(true);
+  useEffect(() => { api.getTopLobbyists(15).then(setData).catch(() => setData([])).finally(() => setLoading(false)); }, []);
+  if (loading) return <div className="bg-white rounded-lg border border-gray-200 p-4 flex justify-center py-8"><Loader2 className="animate-spin text-gray-300" size={20} /></div>;
+  if (!data.length) return null;
+  const maxCount = Math.max(...data.map(d => d.mention_count));
+  return (
+    <div className="bg-white rounded-lg border border-gray-200 p-4">
+      <h3 className="font-semibold text-gray-900 mb-3">Top Lobbyists</h3>
+      <div className="space-y-1.5">
+        {data.map((d, i) => (
+          <div key={d.id}>
+            <div className="flex items-center justify-between text-sm mb-0.5">
+              <button onClick={() => onNavigate?.('entity', d.id)} className="text-gray-700 truncate text-xs hover:text-indigo-600 cursor-pointer text-left">
+                <span className="text-gray-400 mr-1">{i + 1}.</span>{d.display_name}
+              </button>
+              <span className="text-indigo-600 font-medium text-xs shrink-0 ml-2">{d.mention_count} appearances</span>
+            </div>
+            <div className="w-full h-1.5 bg-gray-100 rounded-full overflow-hidden">
+              <div className="h-full bg-indigo-400 rounded-full" style={{ width: `${d.mention_count / maxCount * 100}%` }} />
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 function ReportsPage({ syncVersion, onNavigate }: { syncVersion?: number; onNavigate?: (page: Page, ctx?: unknown) => void }) {
   const [preset, setPreset] = useState<DatePreset>('past_365');
   const [granularity, setGranularity] = useState<'week' | 'month'>('month');
@@ -2703,7 +2796,13 @@ function ReportsPage({ syncVersion, onNavigate }: { syncVersion?: number; onNavi
       {/* Row 3: Issue activity chart full width */}
       <ReportLineChart data={issueData} title="Lobbying Activity by Issue Area" loading={issueLoading} />
 
-      {/* Row 4: Issue-firm heatmap full width */}
+      {/* Row 4: Top consultants by revenue + Top lobbyists */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        <TopConsultantsByRevenue onNavigate={onNavigate} />
+        <TopLobbyistsChart onNavigate={onNavigate} />
+      </div>
+
+      {/* Row 5: Issue-firm heatmap full width */}
       <IssueFirmHeatmapChart syncVersion={syncVersion} />
     </div>
   );
