@@ -2,11 +2,12 @@
 import json
 import logging
 import os
+import threading
 import time
 from datetime import datetime
 from typing import Optional
 
-from fastapi import FastAPI, Query, Body, BackgroundTasks, HTTPException
+from fastapi import FastAPI, Query, Body, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
@@ -94,10 +95,11 @@ class SyncRequest(BaseModel):
 # ---------- Sync endpoints ----------
 
 @app.post("/api/sync")
-def trigger_sync(req: SyncRequest, background_tasks: BackgroundTasks):
+def trigger_sync(req: SyncRequest):
     """Trigger a background sync from the Senate LDA API.
 
     mode: "incremental" grabs new filings, "backfill" grabs all historical data.
+    Runs in a separate thread so it doesn't block the server.
     """
     progress = get_sync_progress()
     if progress.get("status") == "running":
@@ -130,7 +132,8 @@ def trigger_sync(req: SyncRequest, background_tasks: BackgroundTasks):
         finally:
             _invalidate_cache("stats", "top_registrants_10", "top_registrants_20", "top_clients_10", "top_clients_20")
 
-    background_tasks.add_task(_run)
+    thread = threading.Thread(target=_run, daemon=True)
+    thread.start()
     return {"status": "started", "mode": req.mode}
 
 
@@ -664,8 +667,10 @@ _influence_status: dict = {"status": "idle"}
 
 
 @app.post("/api/influence/scrape")
-def trigger_influence_scrape(req: InfluenceScrapeRequest, background_tasks: BackgroundTasks):
-    """Trigger a background scrape of Politico Influence newsletters."""
+def trigger_influence_scrape(req: InfluenceScrapeRequest):
+    """Trigger a background scrape of Politico Influence newsletters.
+    Runs in a separate thread so it doesn't block the server.
+    """
     global _influence_status
     if _influence_status.get("status") == "running":
         return {"status": "already_running"}
@@ -685,7 +690,8 @@ def trigger_influence_scrape(req: InfluenceScrapeRequest, background_tasks: Back
         except Exception as e:
             _influence_status = {"status": "error", "error": str(e)}
 
-    background_tasks.add_task(_run_scrape)
+    thread = threading.Thread(target=_run_scrape, daemon=True)
+    thread.start()
     return {"status": "started"}
 
 
@@ -996,8 +1002,6 @@ def update_entity_type(entity_id: int, body: dict = Body(...)):
 @app.post("/api/influence/reprocess")
 def reprocess_entities_endpoint():
     """Clear and re-extract all entities from existing newsletters."""
-    import threading
-
     def _run():
         try:
             result = reprocess_all_entities(DB_URL)
