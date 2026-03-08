@@ -464,15 +464,15 @@ def sync_backfill(db_url: str = None) -> dict:
 
 def sync_backfill_chunk(db_url: str = None, chunk_size: int = 1000) -> dict:
     """
-    Backfill filings going backward in time from the earliest filing we have.
-    Uses ordering=dt_posted (ascending) within each year, paging through
-    results and only storing filings we don't already have (by filing_uuid).
-    Stops after chunk_size new filings are stored.
-    Moves to the prior year when a year is exhausted.
+    Backfill filings by resuming from where we left off within each year.
 
-    Smart page skipping: for each year, counts how many filings we already
-    have and jumps to the approximate page where new filings should start
-    (with a safety margin of 5 pages to avoid gaps).
+    Strategy: count filings we already have per year, compute the resume page
+    (filings_count / page_size), and start from there. Pages through ascending
+    dt_posted order so page 1 = oldest. Stays within the same year until either
+    chunk_size new filings are stored or the year is exhausted, then moves to
+    the prior year.
+
+    Example: 2000 filings in DB for 2025, PAGE_SIZE=25 → start at page 80.
     """
     engine = init_db(db_url)
     session = get_session(engine)
@@ -483,7 +483,7 @@ def sync_backfill_chunk(db_url: str = None, chunk_size: int = 1000) -> dict:
     existing_uuids = set(
         row[0] for row in session.query(Filing.filing_uuid).all()
     )
-    # Count filings per year so we can skip already-fetched pages
+    # Count filings per year so we can calculate resume page
     year_counts = dict(
         session.query(Filing.filing_year, func.count())
         .group_by(Filing.filing_year)
@@ -509,7 +509,6 @@ def sync_backfill_chunk(db_url: str = None, chunk_size: int = 1000) -> dict:
     total_duplicates = 0
     total_pages = 0
     years_completed = []
-    SAFETY_MARGIN_PAGES = 5
 
     try:
         for year in range(start_year, OLDEST_YEAR - 1, -1):
@@ -523,13 +522,13 @@ def sync_backfill_chunk(db_url: str = None, chunk_size: int = 1000) -> dict:
 
             _update_progress(current_year=year)
 
-            # Smart page skip: jump ahead based on filings already collected
+            # Resume page: start from where we approximately left off
             existing_for_year = year_counts.get(year, 0)
-            start_page = max(1, (existing_for_year // PAGE_SIZE) - SAFETY_MARGIN_PAGES)
+            start_page = max(1, existing_for_year // PAGE_SIZE)
             if start_page > 1:
-                logger.info(f"Backfill chunk: year {year} — {existing_for_year} filings in DB, skipping to page {start_page}")
+                logger.info(f"Backfill: year {year} — {existing_for_year} filings in DB, resuming from page {start_page}")
             else:
-                logger.info(f"Backfill chunk: year {year} (stored {total_stored}/{chunk_size})")
+                logger.info(f"Backfill: year {year}, starting from page 1 (stored {total_stored}/{chunk_size})")
 
             # Page through this year ordered by dt_posted ascending (oldest first)
             params = {
@@ -539,7 +538,6 @@ def sync_backfill_chunk(db_url: str = None, chunk_size: int = 1000) -> dict:
             }
             page = start_page
             year_had_new = False
-            consecutive_dup_pages = 0
 
             while True:
                 if _sync_progress.get("status") == "cancelling":
@@ -590,16 +588,6 @@ def sync_backfill_chunk(db_url: str = None, chunk_size: int = 1000) -> dict:
 
                 logger.info(f"Year {year}, page {page}: {page_new} new, {len(results) - page_new} skipped")
 
-                # If we started from a skip point and hit 3 consecutive
-                # all-duplicate pages past the safety margin, this year is done
-                if page_new == 0:
-                    consecutive_dup_pages += 1
-                    if start_page > 1 and consecutive_dup_pages >= 3:
-                        logger.info(f"Year {year}: 3 consecutive duplicate pages after skip, moving on")
-                        break
-                else:
-                    consecutive_dup_pages = 0
-
                 if not data.get("next"):
                     break
 
@@ -616,6 +604,120 @@ def sync_backfill_chunk(db_url: str = None, chunk_size: int = 1000) -> dict:
 
     except Exception as e:
         logger.error(f"Backfill chunk error: {e}")
+        _update_progress(status="error", error=str(e), finished_at=datetime.utcnow().isoformat())
+        raise
+
+    final_status = "cancelled" if _sync_progress.get("status") == "cancelling" else "completed"
+    _update_progress(
+        status=final_status, finished_at=datetime.utcnow().isoformat(),
+        stored=total_stored, duplicates=total_duplicates, pages=total_pages,
+        years_completed=list(years_completed),
+    )
+
+    return {"stored": total_stored, "duplicates": total_duplicates, "pages": total_pages, "years_completed": years_completed}
+
+
+def sync_complete_years(db_url: str = None, years: list[int] = None) -> dict:
+    """
+    Fallback: fetch ALL filings for specified years (default: 2025 + 2026).
+    Pages through every page from 1 to the end, skipping duplicates.
+    Guarantees complete coverage for the given years.
+    """
+    if years is None:
+        current_year = datetime.utcnow().year
+        years = [current_year, current_year - 1]
+
+    engine = init_db(db_url)
+    session = get_session(engine)
+    existing_uuids = set(
+        row[0] for row in session.query(Filing.filing_uuid).all()
+    )
+    session.close()
+
+    _update_progress(
+        status="running", mode="complete_years",
+        stored=0, skipped=0, duplicates=0, pages=0,
+        current_year=None, years_completed=[],
+        error=None,
+        started_at=datetime.utcnow().isoformat(),
+        finished_at=None,
+    )
+
+    total_stored = 0
+    total_duplicates = 0
+    total_pages = 0
+    years_completed = []
+
+    try:
+        for year in sorted(years, reverse=True):
+            if _sync_progress.get("status") == "cancelling":
+                logger.info("Complete years sync cancelled")
+                break
+
+            _update_progress(current_year=year)
+            logger.info(f"Complete years: fetching all filings for {year}")
+
+            params = {
+                "page_size": PAGE_SIZE,
+                "filing_year": year,
+                "ordering": "dt_posted",
+            }
+            page = 1
+
+            while True:
+                if _sync_progress.get("status") == "cancelling":
+                    break
+
+                params["page"] = page
+                data = _fetch_page("filings", params)
+                if not data:
+                    break
+
+                results = data.get("results", [])
+                if not results:
+                    break
+
+                total_pages += 1
+                page_new = 0
+
+                session = get_session(engine)
+                for filing_data in results:
+                    uuid = filing_data.get("filing_uuid")
+                    if not uuid:
+                        continue
+
+                    if uuid in existing_uuids:
+                        total_duplicates += 1
+                        continue
+
+                    filing, is_new = _store_filing(session, filing_data)
+                    if filing and is_new:
+                        existing_uuids.add(uuid)
+                        total_stored += 1
+                        page_new += 1
+
+                session.commit()
+                session.close()
+
+                _update_progress(
+                    stored=total_stored, duplicates=total_duplicates,
+                    pages=total_pages, current_year=year,
+                )
+
+                logger.info(f"Year {year}, page {page}: {page_new} new, {len(results) - page_new} dupes")
+
+                if not data.get("next"):
+                    break
+
+                page += 1
+                time.sleep(0.3)
+
+            years_completed.append(year)
+            _update_progress(years_completed=list(years_completed))
+            logger.info(f"Year {year} complete: {total_stored} stored so far")
+
+    except Exception as e:
+        logger.error(f"Complete years sync error: {e}")
         _update_progress(status="error", error=str(e), finished_at=datetime.utcnow().isoformat())
         raise
 

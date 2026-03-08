@@ -218,6 +218,9 @@ function Dashboard({ onNavigate }: { onNavigate: (page: Page, ctx?: unknown) => 
                 {syncStatus.status === 'running' && (syncStatus.mode === 'backfill' || syncStatus.mode === 'backfill_chunk') && (
                   <>Backfilling {syncStatus.current_year || '…'} — {syncStatus.stored?.toLocaleString() || 0} new, {syncStatus.duplicates?.toLocaleString() || 0} skipped, page {syncStatus.pages || 0}</>
                 )}
+                {syncStatus.status === 'running' && syncStatus.mode === 'complete_years' && (
+                  <>Completing {syncStatus.current_year || '…'} — {syncStatus.stored?.toLocaleString() || 0} new, {syncStatus.duplicates?.toLocaleString() || 0} dupes, page {syncStatus.pages || 0}</>
+                )}
                 {syncStatus.status === 'cancelling' && 'Cancelling…'}
                 {syncStatus.status === 'completed' && (
                   <>Completed: {syncStatus.stored?.toLocaleString() || 0} new filings{syncStatus.duplicates ? `, ${syncStatus.duplicates.toLocaleString()} already had` : ''}</>
@@ -253,6 +256,13 @@ function Dashboard({ onNavigate }: { onNavigate: (page: Page, ctx?: unknown) => 
                   className="flex items-center gap-2 bg-gray-700 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-gray-800 cursor-pointer"
                 >
                   <Download size={16} /> Backfill 1,000 More
+                </button>
+                <button
+                  onClick={() => handleSync('complete_years')}
+                  data-testid="button-sync-complete-years"
+                  className="flex items-center gap-2 bg-amber-600 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-amber-700 cursor-pointer"
+                >
+                  <Download size={16} /> Complete 2025+2026
                 </button>
               </>
             )}
@@ -338,7 +348,7 @@ function Dashboard({ onNavigate }: { onNavigate: (page: Page, ctx?: unknown) => 
         <div className="text-center py-16">
           <FileText size={48} className="mx-auto text-gray-300 mb-4" />
           <h2 className="text-xl font-semibold text-gray-700 mb-2">No filings yet</h2>
-          <p className="text-gray-500 mb-4">Click "Sync New" to grab the latest filings, or "Backfill 1,000 More" to fetch 1,000 more filings going backward in time from the earliest filing in the database.</p>
+          <p className="text-gray-500 mb-4">Click "Sync New" to grab the latest filings, "Backfill 1,000 More" to resume fetching from where you left off, or "Complete 2025+2026" to get every filing for those years.</p>
         </div>
       )}
     </div>
