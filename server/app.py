@@ -65,7 +65,10 @@ def _dedup_firms(rows: list[dict], name_key: str = "name") -> list[dict]:
     """
     groups: dict[str, dict] = {}
     for row in rows:
-        key = _normalize_org_aggressive(row[name_key])
+        raw_name = row.get(name_key) or ""
+        if not raw_name:
+            continue
+        key = _normalize_org_aggressive(raw_name)
         if key in groups:
             g = groups[key]
             for field in ("filing_count", "unique_clients", "total_income", "total_revenue"):
@@ -429,6 +432,9 @@ def top_registrants(limit: int = Query(20, ge=1, le=100), sort: str = Query("fil
             deduped = _dedup_firms(rows)
             deduped.sort(key=lambda x: x.get(order_col, 0) or 0, reverse=True)
             return deduped[:limit]
+        except Exception as e:
+            logger.exception("top_registrants(sort=%s) failed: %s", sort, e)
+            raise
         finally:
             session.close()
     return _cached(f"top_registrants_{limit}_{sort}", _fetch)
@@ -549,6 +555,9 @@ def revenue_per_lobbyist(limit: int = Query(15, ge=1, le=50), min_clients: int =
                 d["revenue_per_lobbyist"] = round(d["total_revenue"] / d["lobbyist_count"], 2) if d["lobbyist_count"] > 0 else None
             deduped.sort(key=lambda x: x.get("revenue_per_lobbyist") or 0, reverse=True)
             return deduped[:limit]
+        except Exception as e:
+            logger.exception("revenue_per_lobbyist(min_clients=%s) failed: %s", min_clients, e)
+            raise
         finally:
             session.close()
     return _cached(f"revenue_per_lobbyist_{limit}_{min_clients}", _fetch)

@@ -136,11 +136,12 @@ function Pagination({ page, pageSize, total, onPage }: { page: number; pageSize:
 }
 
 // Shared leaderboard table component for consistent formatting across all 4 dashboard tables
-function LeaderboardTable({ title, icon, rows, loading: isLoading, valueLabel, valueKey, secondaryLabel, secondaryKey, tooltip }: {
+function LeaderboardTable({ title, icon, rows, loading: isLoading, error: hasError, valueLabel, valueKey, secondaryLabel, secondaryKey, tooltip }: {
   title: string;
   icon: React.ReactNode;
   rows: Array<{ name: string; [k: string]: unknown }>;
   loading: boolean;
+  error?: boolean;
   valueLabel: string;
   valueKey: string;
   secondaryLabel?: string;
@@ -148,11 +149,19 @@ function LeaderboardTable({ title, icon, rows, loading: isLoading, valueLabel, v
   tooltip?: (row: { name: string; [k: string]: unknown }) => string;
 }) {
   if (isLoading) return (
-    <div className="bg-white rounded-lg border border-gray-200 p-4 flex justify-center py-12">
-      <Loader2 className="animate-spin text-gray-300" size={20} />
+    <div className="bg-white rounded-lg border border-gray-200 p-4">
+      <h3 className="font-semibold text-gray-900 mb-3 flex items-center gap-2">{icon} {title}</h3>
+      <div className="flex justify-center py-8">
+        <Loader2 className="animate-spin text-gray-300" size={20} />
+      </div>
     </div>
   );
-  if (!rows.length) return null;
+  if (hasError || !rows.length) return (
+    <div className="bg-white rounded-lg border border-gray-200 p-4">
+      <h3 className="font-semibold text-gray-900 mb-3 flex items-center gap-2">{icon} {title}</h3>
+      <p className="text-sm text-gray-400 py-8 text-center">{hasError ? 'Failed to load data' : 'No data available'}</p>
+    </div>
+  );
   return (
     <div className="bg-white rounded-lg border border-gray-200 p-4">
       <h3 className="font-semibold text-gray-900 mb-3 flex items-center gap-2">{icon} {title}</h3>
@@ -197,12 +206,16 @@ function Dashboard({ onNavigate }: { onNavigate: (page: Page, ctx?: unknown) => 
   // 4 chart datasets — each loads independently
   const [firmsByRevenue, setFirmsByRevenue] = useState<TopEntity[]>([]);
   const [firmsByRevenueLoading, setFirmsByRevenueLoading] = useState(true);
+  const [firmsByRevenueError, setFirmsByRevenueError] = useState(false);
   const [firmsByClients, setFirmsByClients] = useState<TopEntity[]>([]);
   const [firmsByClientsLoading, setFirmsByClientsLoading] = useState(true);
+  const [firmsByClientsError, setFirmsByClientsError] = useState(false);
   const [lobbyistsByClients, setLobbyistsByClients] = useState<Array<{ name: string; unique_clients: number; firms: string[] }>>([]);
   const [lobbyistsByClientsLoading, setLobbyistsByClientsLoading] = useState(true);
+  const [lobbyistsByClientsError, setLobbyistsByClientsError] = useState(false);
   const [revPerLobbyist, setRevPerLobbyist] = useState<Array<{ name: string; revenue_per_lobbyist: number | null; lobbyist_count: number; total_revenue: number; [k: string]: unknown }>>([]);
   const [revPerLobbyistLoading, setRevPerLobbyistLoading] = useState(true);
+  const [revPerLobbyistError, setRevPerLobbyistError] = useState(false);
 
 
   // Initial load
@@ -219,10 +232,10 @@ function Dashboard({ onNavigate }: { onNavigate: (page: Page, ctx?: unknown) => 
         setRecent(r.results);
         setLoading(false);
         // Load each chart independently so one slow endpoint doesn't block others
-        api.getTopRegistrants(15, 'revenue').then(d => { if (!cancelled) { setFirmsByRevenue(d); setFirmsByRevenueLoading(false); } }).catch(() => setFirmsByRevenueLoading(false));
-        api.getTopRegistrants(15, 'unique_clients').then(d => { if (!cancelled) { setFirmsByClients(d); setFirmsByClientsLoading(false); } }).catch(() => setFirmsByClientsLoading(false));
-        api.getTopLobbyistsByClients(15).then(d => { if (!cancelled) { setLobbyistsByClients(d); setLobbyistsByClientsLoading(false); } }).catch(() => setLobbyistsByClientsLoading(false));
-        api.getRevenuePerLobbyist(15, 11).then(d => { if (!cancelled) { setRevPerLobbyist(d); setRevPerLobbyistLoading(false); } }).catch(() => setRevPerLobbyistLoading(false));
+        api.getTopRegistrants(15, 'revenue').then(d => { if (!cancelled) { setFirmsByRevenue(d); setFirmsByRevenueLoading(false); } }).catch(e => { console.error('firmsByRevenue failed:', e); if (!cancelled) { setFirmsByRevenueError(true); setFirmsByRevenueLoading(false); } });
+        api.getTopRegistrants(15, 'unique_clients').then(d => { if (!cancelled) { setFirmsByClients(d); setFirmsByClientsLoading(false); } }).catch(e => { console.error('firmsByClients failed:', e); if (!cancelled) { setFirmsByClientsError(true); setFirmsByClientsLoading(false); } });
+        api.getTopLobbyistsByClients(15).then(d => { if (!cancelled) { setLobbyistsByClients(d); setLobbyistsByClientsLoading(false); } }).catch(e => { console.error('lobbyistsByClients failed:', e); if (!cancelled) { setLobbyistsByClientsError(true); setLobbyistsByClientsLoading(false); } });
+        api.getRevenuePerLobbyist(15, 11).then(d => { if (!cancelled) { setRevPerLobbyist(d); setRevPerLobbyistLoading(false); } }).catch(e => { console.error('revPerLobbyist failed:', e); if (!cancelled) { setRevPerLobbyistError(true); setRevPerLobbyistLoading(false); } });
       } catch (e) {
         console.error(e);
         if (!cancelled) setLoading(false);
@@ -278,6 +291,7 @@ function Dashboard({ onNavigate }: { onNavigate: (page: Page, ctx?: unknown) => 
           icon={<DollarSign size={16} />}
           rows={firmsByRevenue}
           loading={firmsByRevenueLoading}
+          error={firmsByRevenueError}
           valueLabel="Revenue"
           valueKey="total_income"
           secondaryLabel="Clients"
@@ -288,6 +302,7 @@ function Dashboard({ onNavigate }: { onNavigate: (page: Page, ctx?: unknown) => 
           icon={<Users size={16} />}
           rows={firmsByClients}
           loading={firmsByClientsLoading}
+          error={firmsByClientsError}
           valueLabel="Clients"
           valueKey="unique_clients"
           secondaryLabel="Revenue"
@@ -298,6 +313,7 @@ function Dashboard({ onNavigate }: { onNavigate: (page: Page, ctx?: unknown) => 
           icon={<User size={16} />}
           rows={lobbyistsByClients}
           loading={lobbyistsByClientsLoading}
+          error={lobbyistsByClientsError}
           valueLabel="Clients"
           valueKey="unique_clients"
           tooltip={(r) => `Firms: ${(r.firms as string[] || []).join(', ')}`}
@@ -307,6 +323,7 @@ function Dashboard({ onNavigate }: { onNavigate: (page: Page, ctx?: unknown) => 
           icon={<TrendingUp size={16} />}
           rows={revPerLobbyist}
           loading={revPerLobbyistLoading}
+          error={revPerLobbyistError}
           valueLabel="Rev / Lobbyist"
           valueKey="revenue_per_lobbyist"
           secondaryLabel="Lobbyists"
