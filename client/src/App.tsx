@@ -909,10 +909,10 @@ function FilingDetailPage({ filingUuid, onBack, onNavigate }: { filingUuid: stri
                         if (typeof l === 'string') return <p key={j} className="text-sm text-gray-700">{l}</p>;
                         const name = l.lobbyist ? `${l.lobbyist.first_name || ''} ${l.lobbyist.last_name || ''}`.trim() : '';
                         return (
-                          <p key={j} className="text-sm text-gray-700 flex items-center gap-1">
-                            <button onClick={() => onNavigate('search', { q: name })} className="hover:text-indigo-600 transition cursor-pointer">{name}</button>
-                            {l.covered_position ? <span className="text-gray-400">({l.covered_position})</span> : ''}
-                          </p>
+                          <div key={j} className="text-sm text-gray-700 flex items-center gap-1">
+                            <button onClick={() => onNavigate('search', { q: name })} className="hover:text-indigo-600 transition cursor-pointer text-left">{name}</button>
+                            {l.covered_position ? <span className="text-gray-400 shrink-0">({l.covered_position})</span> : null}
+                          </div>
                         );
                       })}
                     </div>
