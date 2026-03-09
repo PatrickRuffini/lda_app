@@ -32,7 +32,6 @@ function Nav({ page, setPage }: { page: Page; setPage: (p: Page) => void }) {
   const links: { id: Page; label: string; icon: React.ReactNode }[] = [
     { id: 'dashboard', label: 'Dashboard', icon: <BarChart3 size={18} /> },
     { id: 'search', label: 'Search', icon: <Search size={18} /> },
-    { id: 'issues', label: 'Issues', icon: <Tag size={18} /> },
     { id: 'influence', label: 'Influence', icon: <Newspaper size={18} /> },
     { id: 'network', label: 'Network', icon: <Network size={18} /> },
     { id: 'reports', label: 'Reports', icon: <TrendingUp size={18} /> },
@@ -353,6 +352,27 @@ function Dashboard({ onNavigate }: { onNavigate: (page: Page, ctx?: unknown) => 
   );
 }
 
+// Compact sidebar mini-bar row for issue insights
+function IssueSidebarItem({ rank, name, value, maxValue, formatValue, onClick, active }: {
+  rank: number; name: string; value: number; maxValue: number; formatValue: (v: number) => string; onClick: () => void; active?: boolean;
+}) {
+  const pct = maxValue > 0 ? Math.max(4, (value / maxValue) * 100) : 0;
+  return (
+    <button
+      onClick={onClick}
+      className={`w-full text-left px-2 py-1.5 rounded cursor-pointer transition group ${active ? 'bg-indigo-50 ring-1 ring-indigo-300' : 'hover:bg-gray-50'}`}
+    >
+      <div className="flex items-baseline justify-between gap-1 mb-0.5">
+        <span className="text-xs text-gray-700 truncate leading-tight"><span className="text-gray-400 mr-1">{rank}.</span>{name}</span>
+        <span className="text-[10px] text-gray-500 shrink-0 tabular-nums">{formatValue(value)}</span>
+      </div>
+      <div className="w-full bg-gray-100 rounded-full h-1">
+        <div className="bg-indigo-400 h-1 rounded-full transition-all" style={{ width: `${pct}%` }} />
+      </div>
+    </button>
+  );
+}
+
 // ---------- Search Page ----------
 function SearchPage({ onNavigate }: { onNavigate: (page: Page, ctx?: unknown) => void }) {
   const [params, setParams] = useState<SearchParams>({ sort: '-dt_posted', page: 1, page_size: 25 });
@@ -361,11 +381,23 @@ function SearchPage({ onNavigate }: { onNavigate: (page: Page, ctx?: unknown) =>
   const [loading, setLoading] = useState(false);
   const [issues, setIssues] = useState<IssueSummary[]>([]);
   const [searchText, setSearchText] = useState('');
+  const [issuesLoading, setIssuesLoading] = useState(true);
+
+  // Issue sidebar state
+  const [selectedIssue, setSelectedIssue] = useState<string | null>(null);
+  const [sidebar, setSidebar] = useState<{
+    firms: Array<{ id: number; name: string; filing_count: number; total_income: number }>;
+    clients: Array<{ id: number; name: string; filing_count: number; total_spending: number }>;
+    lobbyists: Array<{ name: string; filing_count: number }>;
+  } | null>(null);
+  const [sidebarLoading, setSidebarLoading] = useState(false);
+  const [activeFilter, setActiveFilter] = useState<{ type: 'firm' | 'client' | 'lobbyist'; id?: number; name: string } | null>(null);
 
   useEffect(() => {
-    api.getIssues().then(setIssues).catch(() => {});
+    api.getIssues().then(i => { setIssues(i); setIssuesLoading(false); }).catch(() => setIssuesLoading(false));
   }, []);
 
+  // Search filings
   const doSearch = useCallback(async (p: SearchParams) => {
     setLoading(true);
     try {
@@ -380,13 +412,51 @@ function SearchPage({ onNavigate }: { onNavigate: (page: Page, ctx?: unknown) =>
 
   useEffect(() => { doSearch(params); }, [params, doSearch]);
 
+  // When issue selection changes, update params
+  useEffect(() => {
+    setParams(p => ({ ...p, issue_code: selectedIssue || undefined, registrant: undefined, client: undefined, page: 1 }));
+    setActiveFilter(null);
+  }, [selectedIssue]);
+
+  // Fetch sidebar insights when issue changes
+  useEffect(() => {
+    if (!selectedIssue) { setSidebar(null); return; }
+    setSidebarLoading(true);
+    api.getIssueSidebar(selectedIssue, 10).then(d => { setSidebar(d); setSidebarLoading(false); }).catch(() => setSidebarLoading(false));
+  }, [selectedIssue]);
+
+  // When a sidebar insight filter is clicked, apply as registrant/client text filter
+  useEffect(() => {
+    if (!activeFilter) return;
+    if (activeFilter.type === 'firm') {
+      setParams(p => ({ ...p, registrant: activeFilter.name, client: undefined, page: 1 }));
+    } else if (activeFilter.type === 'client') {
+      setParams(p => ({ ...p, client: activeFilter.name, registrant: undefined, page: 1 }));
+    } else if (activeFilter.type === 'lobbyist') {
+      // Lobbyist search uses the general q param combined with issue_code
+      setParams(p => ({ ...p, q: activeFilter.name, registrant: undefined, client: undefined, page: 1 }));
+    }
+  }, [activeFilter]);
+
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     setParams(p => ({ ...p, q: searchText || undefined, page: 1 }));
   };
 
+  const clearFilter = () => {
+    setActiveFilter(null);
+    setParams(p => ({ ...p, registrant: undefined, client: undefined, q: searchText || undefined, page: 1 }));
+  };
+  const applyFilter = (f: typeof activeFilter) => {
+    if (!f) { clearFilter(); return; }
+    setActiveFilter(f);
+  };
+
+  const issueName = issues.find(i => i.code === selectedIssue)?.display;
+
   return (
     <div className="space-y-4">
+      {/* Search bar + filters */}
       <form onSubmit={handleSubmit} className="bg-white rounded-lg border border-gray-200 p-4 space-y-3">
         <div className="flex gap-2">
           <div className="relative flex-1">
@@ -425,249 +495,159 @@ function SearchPage({ onNavigate }: { onNavigate: (page: Page, ctx?: unknown) =>
             <option value="mid_year">Mid-Year</option>
             <option value="year_end">Year-End</option>
           </select>
-          <select
-            value={params.issue_code || ''}
-            onChange={e => setParams(p => ({ ...p, issue_code: e.target.value || undefined, page: 1 }))}
-            className="border border-gray-300 rounded-lg px-3 py-1.5 text-sm cursor-pointer"
-          >
-            <option value="">All Issues</option>
-            {issues.map(i => (
-              <option key={i.code} value={i.code}>{i.display} ({i.count})</option>
-            ))}
-          </select>
           <input
             type="text"
             placeholder="Registrant name"
             value={params.registrant || ''}
-            onChange={e => setParams(p => ({ ...p, registrant: e.target.value || undefined, page: 1 }))}
+            onChange={e => { setParams(p => ({ ...p, registrant: e.target.value || undefined, page: 1 })); if (activeFilter?.type === 'firm') setActiveFilter(null); }}
             className="border border-gray-300 rounded-lg px-3 py-1.5 text-sm w-40"
           />
           <input
             type="text"
             placeholder="Client name"
             value={params.client || ''}
-            onChange={e => setParams(p => ({ ...p, client: e.target.value || undefined, page: 1 }))}
+            onChange={e => { setParams(p => ({ ...p, client: e.target.value || undefined, page: 1 })); if (activeFilter?.type === 'client') setActiveFilter(null); }}
             className="border border-gray-300 rounded-lg px-3 py-1.5 text-sm w-40"
           />
         </div>
       </form>
 
-      {loading ? (
-        <div className="flex items-center justify-center h-32"><Loader2 className="animate-spin text-indigo-600" size={24} /></div>
-      ) : results.length > 0 ? (
-        <>
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-            {results.map(f => (
-              <FilingCard key={f.filing_uuid} filing={f} onClick={() => onNavigate('filing', f.filing_uuid)} />
-            ))}
-          </div>
-          <Pagination page={params.page || 1} pageSize={params.page_size || 25} total={total} onPage={p => setParams(prev => ({ ...prev, page: p }))} />
-        </>
-      ) : (
-        <div className="text-center py-12 text-gray-500">
-          <Search size={32} className="mx-auto mb-3 text-gray-300" />
-          <p>No filings found. Try adjusting your filters or sync some data first.</p>
-        </div>
-      )}
-    </div>
-  );
-}
-
-// ---------- Issues Page ----------
-// Compact sidebar mini-bar row for issue page
-function IssueSidebarItem({ rank, name, value, maxValue, formatValue, onClick, active }: {
-  rank: number; name: string; value: number; maxValue: number; formatValue: (v: number) => string; onClick: () => void; active?: boolean;
-}) {
-  const pct = maxValue > 0 ? Math.max(4, (value / maxValue) * 100) : 0;
-  return (
-    <button
-      onClick={onClick}
-      className={`w-full text-left px-2 py-1.5 rounded cursor-pointer transition group ${active ? 'bg-indigo-50 ring-1 ring-indigo-300' : 'hover:bg-gray-50'}`}
-    >
-      <div className="flex items-baseline justify-between gap-1 mb-0.5">
-        <span className="text-xs text-gray-700 truncate leading-tight"><span className="text-gray-400 mr-1">{rank}.</span>{name}</span>
-        <span className="text-[10px] text-gray-500 shrink-0 tabular-nums">{formatValue(value)}</span>
-      </div>
-      <div className="w-full bg-gray-100 rounded-full h-1">
-        <div className="bg-indigo-400 h-1 rounded-full transition-all" style={{ width: `${pct}%` }} />
-      </div>
-    </button>
-  );
-}
-
-function IssuesPage({ onNavigate }: { onNavigate: (page: Page, ctx?: unknown) => void }) {
-  const [issues, setIssues] = useState<IssueSummary[]>([]);
-  const [selected, setSelected] = useState<string | null>(null);
-  const [filings, setFilings] = useState<FilingSummary[]>([]);
-  const [total, setTotal] = useState(0);
-  const [issuePage, setIssuePage] = useState(1);
-  const [loading, setLoading] = useState(true);
-
-  // Sidebar data
-  const [sidebar, setSidebar] = useState<{
-    firms: Array<{ id: number; name: string; filing_count: number; total_income: number }>;
-    clients: Array<{ id: number; name: string; filing_count: number; total_spending: number }>;
-    lobbyists: Array<{ name: string; filing_count: number }>;
-  } | null>(null);
-  const [sidebarLoading, setSidebarLoading] = useState(false);
-
-  // Active filter
-  const [activeFilter, setActiveFilter] = useState<{ type: 'firm' | 'client' | 'lobbyist'; id?: number; name: string } | null>(null);
-
-  useEffect(() => {
-    api.getIssues().then(i => { setIssues(i); setLoading(false); }).catch(() => setLoading(false));
-  }, []);
-
-  // Fetch sidebar data when issue changes
-  useEffect(() => {
-    if (!selected) { setSidebar(null); return; }
-    setSidebarLoading(true);
-    api.getIssueSidebar(selected, 10).then(d => { setSidebar(d); setSidebarLoading(false); }).catch(() => setSidebarLoading(false));
-  }, [selected]);
-
-  // Fetch filings (respecting active filter)
-  useEffect(() => {
-    if (!selected) { setFilings([]); return; }
-    const filters: { registrant_id?: number; client_id?: number; lobbyist_name?: string } = {};
-    if (activeFilter?.type === 'firm' && activeFilter.id) filters.registrant_id = activeFilter.id;
-    if (activeFilter?.type === 'client' && activeFilter.id) filters.client_id = activeFilter.id;
-    if (activeFilter?.type === 'lobbyist') filters.lobbyist_name = activeFilter.name;
-    api.getFilingsByIssue(selected, issuePage, Object.keys(filters).length > 0 ? filters : undefined)
-      .then(r => { setFilings(r.results); setTotal(r.total); });
-  }, [selected, issuePage, activeFilter]);
-
-  const clearFilter = () => { setActiveFilter(null); setIssuePage(1); };
-  const applyFilter = (f: typeof activeFilter) => { setActiveFilter(f); setIssuePage(1); };
-
-  if (loading) return <div className="flex items-center justify-center h-64"><Loader2 className="animate-spin text-indigo-600" size={32} /></div>;
-
-  const issueName = issues.find(i => i.code === selected)?.display;
-
-  return (
-    <div className="grid grid-cols-1 md:grid-cols-[minmax(200px,1fr)_minmax(0,3fr)_minmax(200px,1.2fr)] gap-4">
-      {/* Left: Issue list */}
-      <div className="min-w-0">
-        <h2 className="text-lg font-semibold text-gray-900 mb-3">Issue Areas</h2>
-        <div className="bg-white rounded-lg border border-gray-200 divide-y divide-gray-100 max-h-[70vh] overflow-y-auto">
-          {issues.length === 0 && <p className="p-4 text-sm text-gray-400">No issues found. Sync filings first.</p>}
-          {issues.map(i => (
-            <button
-              key={i.code}
-              onClick={() => { setSelected(i.code); setIssuePage(1); clearFilter(); }}
-              className={`w-full text-left px-4 py-2.5 text-sm flex items-center justify-between cursor-pointer transition ${selected === i.code ? 'bg-indigo-50 text-indigo-700 font-medium' : 'text-gray-700 hover:bg-gray-50'}`}
-            >
-              <span className="truncate">{i.display}</span>
-              <span className="text-xs text-gray-400 ml-2 shrink-0">{i.count}</span>
-            </button>
-          ))}
-        </div>
-      </div>
-
-      {/* Center: Filings */}
-      <div className="min-w-0">
-        {selected ? (
-          <>
-            <div className="flex items-center justify-between mb-3">
-              <h2 className="text-lg font-semibold text-gray-900">
-                {issueName} <span className="text-sm font-normal text-gray-400">({total} filings)</span>
-              </h2>
-            </div>
-            {activeFilter && (
-              <div className="flex items-center gap-2 mb-3 bg-indigo-50 border border-indigo-200 rounded-lg px-3 py-2 text-sm">
-                <span className="text-indigo-700">
-                  Filtered by {activeFilter.type === 'firm' ? 'firm' : activeFilter.type === 'client' ? 'client' : 'lobbyist'}: <span className="font-medium">{activeFilter.name}</span>
-                </span>
-                <button onClick={clearFilter} className="ml-auto text-indigo-400 hover:text-indigo-600 cursor-pointer"><X size={14} /></button>
-              </div>
+      {/* 3-column layout: issues | filings | insights */}
+      <div className="grid grid-cols-1 md:grid-cols-[minmax(200px,1fr)_minmax(0,3fr)_minmax(200px,1.2fr)] gap-4">
+        {/* Left: Issue list */}
+        <div className="min-w-0">
+          <div className="flex items-center justify-between mb-3">
+            <h2 className="text-lg font-semibold text-gray-900">Issue Areas</h2>
+            {selectedIssue && (
+              <button onClick={() => setSelectedIssue(null)} className="text-xs text-indigo-600 hover:text-indigo-800 cursor-pointer">Clear</button>
             )}
-            <div className="space-y-3">
-              {filings.map(f => (
-                <FilingCard key={f.filing_uuid} filing={f} onClick={() => onNavigate('filing', f.filing_uuid)} />
+          </div>
+          {issuesLoading ? (
+            <div className="flex justify-center py-8"><Loader2 className="animate-spin text-gray-300" size={20} /></div>
+          ) : (
+            <div className="bg-white rounded-lg border border-gray-200 divide-y divide-gray-100 max-h-[70vh] overflow-y-auto">
+              {issues.length === 0 && <p className="p-4 text-sm text-gray-400">No issues found. Sync filings first.</p>}
+              {issues.map(i => (
+                <button
+                  key={i.code}
+                  onClick={() => setSelectedIssue(selectedIssue === i.code ? null : i.code)}
+                  className={`w-full text-left px-4 py-2.5 text-sm flex items-center justify-between cursor-pointer transition ${selectedIssue === i.code ? 'bg-indigo-50 text-indigo-700 font-medium' : 'text-gray-700 hover:bg-gray-50'}`}
+                >
+                  <span className="truncate">{i.display}</span>
+                  <span className="text-xs text-gray-400 ml-2 shrink-0">{i.count}</span>
+                </button>
               ))}
             </div>
-            <Pagination page={issuePage} pageSize={25} total={total} onPage={setIssuePage} />
-          </>
-        ) : (
-          <div className="flex items-center justify-center h-64 text-gray-400">
-            <p>Select an issue area to view filings</p>
+          )}
+        </div>
+
+        {/* Center: Filings */}
+        <div className="min-w-0">
+          <h2 className="text-lg font-semibold text-gray-900 mb-3">
+            {issueName || 'All Filings'} <span className="text-sm font-normal text-gray-400">({total} filings)</span>
+          </h2>
+          {activeFilter && (
+            <div className="flex items-center gap-2 mb-3 bg-indigo-50 border border-indigo-200 rounded-lg px-3 py-2 text-sm">
+              <span className="text-indigo-700">
+                Filtered by {activeFilter.type === 'firm' ? 'firm' : activeFilter.type === 'client' ? 'client' : 'lobbyist'}: <span className="font-medium">{activeFilter.name}</span>
+              </span>
+              <button onClick={clearFilter} className="ml-auto text-indigo-400 hover:text-indigo-600 cursor-pointer"><X size={14} /></button>
+            </div>
+          )}
+          {loading ? (
+            <div className="flex items-center justify-center h-32"><Loader2 className="animate-spin text-indigo-600" size={24} /></div>
+          ) : results.length > 0 ? (
+            <>
+              <div className="space-y-3">
+                {results.map(f => (
+                  <FilingCard key={f.filing_uuid} filing={f} onClick={() => onNavigate('filing', f.filing_uuid)} />
+                ))}
+              </div>
+              <Pagination page={params.page || 1} pageSize={params.page_size || 25} total={total} onPage={p => setParams(prev => ({ ...prev, page: p }))} />
+            </>
+          ) : (
+            <div className="text-center py-12 text-gray-500">
+              <Search size={32} className="mx-auto mb-3 text-gray-300" />
+              <p>No filings found. Try adjusting your filters.</p>
+            </div>
+          )}
+        </div>
+
+        {/* Right: Insights sidebar */}
+        <div className="min-w-0">
+          <h2 className="text-lg font-semibold text-gray-900 mb-3">{selectedIssue ? 'Insights' : '\u00A0'}</h2>
+          <div className="space-y-4">
+          {selectedIssue && (
+            <>
+              {sidebarLoading && (
+                <div className="flex justify-center py-8"><Loader2 className="animate-spin text-gray-300" size={20} /></div>
+              )}
+              {!sidebarLoading && sidebar && (
+                <>
+                  {/* Top Firms */}
+                  <div className="bg-white rounded-lg border border-gray-200 p-3">
+                    <h3 className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2 flex items-center gap-1.5"><Building2 size={12} /> Top Firms</h3>
+                    <div className="space-y-1">
+                      {sidebar.firms.map((f, i) => (
+                        <IssueSidebarItem
+                          key={f.id}
+                          rank={i + 1}
+                          name={f.name}
+                          value={f.filing_count}
+                          maxValue={sidebar.firms[0]?.filing_count || 1}
+                          formatValue={v => `${v} filings`}
+                          active={activeFilter?.type === 'firm' && activeFilter.id === f.id}
+                          onClick={() => applyFilter(activeFilter?.type === 'firm' && activeFilter.id === f.id ? null : { type: 'firm', id: f.id, name: f.name })}
+                        />
+                      ))}
+                      {sidebar.firms.length === 0 && <p className="text-xs text-gray-400 py-1">No data</p>}
+                    </div>
+                  </div>
+
+                  {/* Top Clients by Spending */}
+                  <div className="bg-white rounded-lg border border-gray-200 p-3">
+                    <h3 className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2 flex items-center gap-1.5"><DollarSign size={12} /> Top Clients by Spending</h3>
+                    <div className="space-y-1">
+                      {sidebar.clients.map((c, i) => (
+                        <IssueSidebarItem
+                          key={c.id}
+                          rank={i + 1}
+                          name={c.name}
+                          value={c.total_spending}
+                          maxValue={sidebar.clients[0]?.total_spending || 1}
+                          formatValue={formatMoney}
+                          active={activeFilter?.type === 'client' && activeFilter.id === c.id}
+                          onClick={() => applyFilter(activeFilter?.type === 'client' && activeFilter.id === c.id ? null : { type: 'client', id: c.id, name: c.name })}
+                        />
+                      ))}
+                      {sidebar.clients.length === 0 && <p className="text-xs text-gray-400 py-1">No data</p>}
+                    </div>
+                  </div>
+
+                  {/* Top Lobbyists */}
+                  <div className="bg-white rounded-lg border border-gray-200 p-3">
+                    <h3 className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2 flex items-center gap-1.5"><User size={12} /> Top Lobbyists</h3>
+                    <div className="space-y-1">
+                      {sidebar.lobbyists.map((l, i) => (
+                        <IssueSidebarItem
+                          key={l.name}
+                          rank={i + 1}
+                          name={l.name}
+                          value={l.filing_count}
+                          maxValue={sidebar.lobbyists[0]?.filing_count || 1}
+                          formatValue={v => `${v} filings`}
+                          active={activeFilter?.type === 'lobbyist' && activeFilter.name === l.name}
+                          onClick={() => applyFilter(activeFilter?.type === 'lobbyist' && activeFilter.name === l.name ? null : { type: 'lobbyist', name: l.name })}
+                        />
+                      ))}
+                      {sidebar.lobbyists.length === 0 && <p className="text-xs text-gray-400 py-1">No data</p>}
+                    </div>
+                  </div>
+                </>
+              )}
+            </>
+          )}
           </div>
-        )}
-      </div>
-
-      {/* Right: Sidebar charts */}
-      <div className="min-w-0">
-        <h2 className="text-lg font-semibold text-gray-900 mb-3">{selected ? 'Insights' : '\u00A0'}</h2>
-        <div className="space-y-4">
-        {selected && (
-          <>
-            {sidebarLoading && (
-              <div className="flex justify-center py-8"><Loader2 className="animate-spin text-gray-300" size={20} /></div>
-            )}
-            {!sidebarLoading && sidebar && (
-              <>
-                {/* Top Firms */}
-                <div className="bg-white rounded-lg border border-gray-200 p-3">
-                  <h3 className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2 flex items-center gap-1.5"><Building2 size={12} /> Top Firms</h3>
-                  <div className="space-y-1">
-                    {sidebar.firms.map((f, i) => (
-                      <IssueSidebarItem
-                        key={f.id}
-                        rank={i + 1}
-                        name={f.name}
-                        value={f.filing_count}
-                        maxValue={sidebar.firms[0]?.filing_count || 1}
-                        formatValue={v => `${v} filings`}
-                        active={activeFilter?.type === 'firm' && activeFilter.id === f.id}
-                        onClick={() => applyFilter(activeFilter?.type === 'firm' && activeFilter.id === f.id ? null : { type: 'firm', id: f.id, name: f.name })}
-                      />
-                    ))}
-                    {sidebar.firms.length === 0 && <p className="text-xs text-gray-400 py-1">No data</p>}
-                  </div>
-                </div>
-
-                {/* Top Clients by Spending */}
-                <div className="bg-white rounded-lg border border-gray-200 p-3">
-                  <h3 className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2 flex items-center gap-1.5"><DollarSign size={12} /> Top Clients by Spending</h3>
-                  <div className="space-y-1">
-                    {sidebar.clients.map((c, i) => (
-                      <IssueSidebarItem
-                        key={c.id}
-                        rank={i + 1}
-                        name={c.name}
-                        value={c.total_spending}
-                        maxValue={sidebar.clients[0]?.total_spending || 1}
-                        formatValue={formatMoney}
-                        active={activeFilter?.type === 'client' && activeFilter.id === c.id}
-                        onClick={() => applyFilter(activeFilter?.type === 'client' && activeFilter.id === c.id ? null : { type: 'client', id: c.id, name: c.name })}
-                      />
-                    ))}
-                    {sidebar.clients.length === 0 && <p className="text-xs text-gray-400 py-1">No data</p>}
-                  </div>
-                </div>
-
-                {/* Top Lobbyists */}
-                <div className="bg-white rounded-lg border border-gray-200 p-3">
-                  <h3 className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2 flex items-center gap-1.5"><User size={12} /> Top Lobbyists</h3>
-                  <div className="space-y-1">
-                    {sidebar.lobbyists.map((l, i) => (
-                      <IssueSidebarItem
-                        key={l.name}
-                        rank={i + 1}
-                        name={l.name}
-                        value={l.filing_count}
-                        maxValue={sidebar.lobbyists[0]?.filing_count || 1}
-                        formatValue={v => `${v} filings`}
-                        active={activeFilter?.type === 'lobbyist' && activeFilter.name === l.name}
-                        onClick={() => applyFilter(activeFilter?.type === 'lobbyist' && activeFilter.name === l.name ? null : { type: 'lobbyist', name: l.name })}
-                      />
-                    ))}
-                    {sidebar.lobbyists.length === 0 && <p className="text-xs text-gray-400 py-1">No data</p>}
-                  </div>
-                </div>
-              </>
-            )}
-          </>
-        )}
         </div>
       </div>
     </div>
@@ -3244,7 +3224,7 @@ export default function App() {
       <main className="max-w-7xl mx-auto px-4 sm:px-6 py-6">
         {page === 'dashboard' && <Dashboard onNavigate={handleNavigate} />}
         {page === 'search' && <SearchPage onNavigate={handleNavigate} />}
-        {page === 'issues' && <IssuesPage onNavigate={handleNavigate} />}
+
         {page === 'filing' && filingUuid && (
           <FilingDetailPage filingUuid={filingUuid} onBack={handleBack} />
         )}
