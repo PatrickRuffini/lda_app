@@ -3406,7 +3406,7 @@ export default function App() {
       <Nav page={navPage} setPage={p => { setNavState({ page: p }); }} />
       <main className="max-w-7xl mx-auto px-4 sm:px-6 py-6">
         {page === 'dashboard' && <Dashboard onNavigate={handleNavigate} />}
-        {page === 'search' && <SearchPage onNavigate={handleNavigate} initialFilter={navState.searchFilter} />}
+        {page === 'search' && <SearchPage key={JSON.stringify(navState.searchFilter ?? {})} onNavigate={handleNavigate} initialFilter={navState.searchFilter} />}
 
         {page === 'filing' && filingUuid && (
           <FilingDetailPage filingUuid={filingUuid} onBack={handleBack} onNavigate={handleNavigate} />
