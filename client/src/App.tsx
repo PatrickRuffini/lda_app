@@ -440,7 +440,7 @@ function SearchPage({ onNavigate, initialFilter }: { onNavigate: (page: Page, ct
 
   // When issue selection changes, update params and clear any sidebar filter
   useEffect(() => {
-    setParams(p => ({ ...p, issue_code: selectedIssue || undefined, registrant: undefined, client: undefined, q: searchText || undefined, page: 1 }));
+    setParams(p => ({ ...p, issue_code: selectedIssue || undefined, registrant: undefined, client: undefined, lobbyist: undefined, q: searchText || undefined, page: 1 }));
     setActiveFilter(null);
   }, [selectedIssue]);
 
@@ -459,8 +459,7 @@ function SearchPage({ onNavigate, initialFilter }: { onNavigate: (page: Page, ct
     } else if (activeFilter.type === 'client') {
       setParams(p => ({ ...p, client: activeFilter.name, registrant: undefined, page: 1 }));
     } else if (activeFilter.type === 'lobbyist') {
-      // Lobbyist search uses the general q param combined with issue_code
-      setParams(p => ({ ...p, q: activeFilter.name, registrant: undefined, client: undefined, page: 1 }));
+      setParams(p => ({ ...p, lobbyist: activeFilter.name, registrant: undefined, client: undefined, page: 1 }));
     }
   }, [activeFilter]);
 
@@ -471,7 +470,7 @@ function SearchPage({ onNavigate, initialFilter }: { onNavigate: (page: Page, ct
 
   const clearFilter = () => {
     setActiveFilter(null);
-    setParams(p => ({ ...p, registrant: undefined, client: undefined, q: searchText || undefined, page: 1 }));
+    setParams(p => ({ ...p, registrant: undefined, client: undefined, lobbyist: undefined, q: searchText || undefined, page: 1 }));
   };
   const applyFilter = (f: typeof activeFilter) => {
     if (!f) { clearFilter(); return; }

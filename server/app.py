@@ -221,6 +221,7 @@ def search_filings(
     issue_code: Optional[str] = Query(None),
     registrant: Optional[str] = Query(None),
     client: Optional[str] = Query(None),
+    lobbyist: Optional[str] = Query(None, description="Filter by lobbyist name (searches JSON lobbyists field)"),
     min_income: Optional[float] = Query(None),
     min_expenses: Optional[float] = Query(None),
     sort: str = Query("-dt_posted", description="Sort field"),
@@ -294,9 +295,18 @@ def search_filings(
             query = query.filter(Filing.income >= min_income)
         if min_expenses:
             query = query.filter(Filing.expenses >= min_expenses)
-        if issue_code:
+        if issue_code and lobbyist:
+            query = query.join(LobbyingActivity).filter(
+                LobbyingActivity.general_issue_code == issue_code,
+                LobbyingActivity.lobbyists.ilike(f"%{lobbyist}%"),
+            )
+        elif issue_code:
             query = query.join(LobbyingActivity).filter(
                 LobbyingActivity.general_issue_code == issue_code
+            )
+        elif lobbyist:
+            query = query.join(LobbyingActivity).filter(
+                LobbyingActivity.lobbyists.ilike(f"%{lobbyist}%")
             )
 
         if total is None:
@@ -875,7 +885,29 @@ def get_stats():
             total_clients = session.query(func.count(Client.id)).scalar() or 0
             latest_filing = session.query(func.max(Filing.dt_posted)).scalar()
             total_revenue = session.query(func.sum(Filing.income)).filter(Filing.income.isnot(None)).scalar() or 0
-            total_lobbyists = session.query(func.count(Entity.id)).filter(Entity.is_lobbyist == True).scalar() or 0
+            # Count unique lobbyists from filing data (JSON lobbyists field)
+            import json as _json
+            lob_rows = (
+                session.query(LobbyingActivity.lobbyists)
+                .filter(LobbyingActivity.lobbyists.isnot(None))
+                .all()
+            )
+            unique_lobbyists: set[str] = set()
+            for (lob_json,) in lob_rows:
+                try:
+                    lob_list = _json.loads(lob_json)
+                except (ValueError, TypeError):
+                    continue
+                if not isinstance(lob_list, list):
+                    continue
+                for entry in lob_list:
+                    lob = entry.get("lobbyist", {}) if isinstance(entry, dict) else {}
+                    first = (lob.get("first_name") or "").strip()
+                    last = (lob.get("last_name") or "").strip()
+                    full = f"{first} {last}".strip().lower()
+                    if full:
+                        unique_lobbyists.add(full)
+            total_lobbyists = len(unique_lobbyists)
             year_counts = (
                 session.query(Filing.filing_year, func.count(Filing.id))
                 .group_by(Filing.filing_year)

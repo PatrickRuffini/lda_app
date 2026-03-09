@@ -162,6 +162,7 @@ export interface SearchParams {
   issue_code?: string;
   registrant?: string;
   client?: string;
+  lobbyist?: string;
   min_income?: number;
   min_expenses?: number;
   sort?: string;
