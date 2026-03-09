@@ -438,9 +438,9 @@ function SearchPage({ onNavigate, initialFilter }: { onNavigate: (page: Page, ct
 
   useEffect(() => { doSearch(params); }, [params, doSearch]);
 
-  // When issue selection changes, update params
+  // When issue selection changes, update params and clear any sidebar filter
   useEffect(() => {
-    setParams(p => ({ ...p, issue_code: selectedIssue || undefined, registrant: undefined, client: undefined, page: 1 }));
+    setParams(p => ({ ...p, issue_code: selectedIssue || undefined, registrant: undefined, client: undefined, q: searchText || undefined, page: 1 }));
     setActiveFilter(null);
   }, [selectedIssue]);
 
