@@ -572,6 +572,14 @@ function SearchPage({ onNavigate, initialFilter }: { onNavigate: (page: Page, ct
           <h2 className="text-lg font-semibold text-gray-900 mb-3">
             {issueName || 'All Filings'} <span className="text-sm font-normal text-gray-400">({total} filings)</span>
           </h2>
+          {initialFilter && (initialFilter.registrant || initialFilter.client || initialFilter.q) && (
+            <div className="flex items-center gap-2 mb-3 bg-indigo-50 border border-indigo-200 rounded-lg px-3 py-2 text-sm">
+              <span className="text-indigo-700">
+                Filtered by {initialFilter.registrant ? 'firm' : initialFilter.client ? 'client' : 'keyword'}: <span className="font-medium">{initialFilter.registrant || initialFilter.client || initialFilter.q}</span>
+              </span>
+              <button onClick={() => onNavigate('search')} className="ml-auto text-indigo-400 hover:text-indigo-600 cursor-pointer"><X size={14} /></button>
+            </div>
+          )}
           {activeFilter && (
             <div className="flex items-center gap-2 mb-3 bg-indigo-50 border border-indigo-200 rounded-lg px-3 py-2 text-sm">
               <span className="text-indigo-700">
