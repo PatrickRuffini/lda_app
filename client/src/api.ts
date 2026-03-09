@@ -310,8 +310,20 @@ export const api = {
   getIssues: () =>
     fetchJson<IssueSummary[]>(`${BASE}/issues`),
 
-  getFilingsByIssue: (code: string, page = 1) =>
-    fetchJson<PaginatedResponse<FilingSummary>>(`${BASE}/issues/${code}/filings?page=${page}`),
+  getFilingsByIssue: (code: string, page = 1, filters?: { registrant_id?: number; client_id?: number; lobbyist_name?: string }) => {
+    const params = new URLSearchParams({ page: String(page) });
+    if (filters?.registrant_id) params.set('registrant_id', String(filters.registrant_id));
+    if (filters?.client_id) params.set('client_id', String(filters.client_id));
+    if (filters?.lobbyist_name) params.set('lobbyist_name', filters.lobbyist_name);
+    return fetchJson<PaginatedResponse<FilingSummary>>(`${BASE}/issues/${code}/filings?${params}`);
+  },
+
+  getIssueSidebar: (code: string, limit = 10) =>
+    fetchJson<{
+      firms: Array<{ id: number; name: string; filing_count: number; total_income: number }>;
+      clients: Array<{ id: number; name: string; filing_count: number; total_spending: number }>;
+      lobbyists: Array<{ name: string; filing_count: number }>;
+    }>(`${BASE}/issues/${code}/sidebar?limit=${limit}`),
 
   getTopRegistrants: (limit = 20, sort = 'filings') =>
     fetchJson<TopEntity[]>(`${BASE}/top-registrants?limit=${limit}&sort=${sort}`),

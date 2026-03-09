@@ -368,16 +368,26 @@ def filings_by_issue(
     issue_code: str,
     page: int = Query(1, ge=1),
     page_size: int = Query(25, ge=1, le=100),
+    registrant_id: int | None = Query(None),
+    client_id: int | None = Query(None),
+    lobbyist_name: str | None = Query(None),
 ):
-    """Get filings for a specific issue code."""
+    """Get filings for a specific issue code, optionally filtered by registrant, client, or lobbyist."""
     session = _get_session()
     try:
         query = (
             session.query(Filing)
             .join(LobbyingActivity)
             .filter(LobbyingActivity.general_issue_code == issue_code)
-            .order_by(desc(Filing.dt_posted))
         )
+        if registrant_id is not None:
+            query = query.filter(Filing.registrant_id == registrant_id)
+        if client_id is not None:
+            query = query.filter(Filing.client_id == client_id)
+        if lobbyist_name:
+            # Filter activities where the lobbyist JSON contains this name
+            query = query.filter(LobbyingActivity.lobbyists.ilike(f"%{lobbyist_name}%"))
+        query = query.order_by(desc(Filing.dt_posted))
         total = query.count()
         filings = query.offset((page - 1) * page_size).limit(page_size).all()
         return {
@@ -389,6 +399,90 @@ def filings_by_issue(
         }
     finally:
         session.close()
+
+
+@app.get("/api/issues/{issue_code}/sidebar")
+def issue_sidebar(issue_code: str, limit: int = Query(10, ge=1, le=25)):
+    """Top firms, clients, and lobbyists for a specific issue area."""
+    def _fetch():
+        import json as _json
+        session = _get_session()
+        try:
+            # Top firms by filing count in this issue area
+            top_firms = (
+                session.query(
+                    Registrant.id,
+                    Registrant.name,
+                    func.count(func.distinct(Filing.id)).label("filing_count"),
+                    func.sum(Filing.income).label("total_income"),
+                )
+                .join(Filing, Filing.registrant_id == Registrant.id)
+                .join(LobbyingActivity, LobbyingActivity.filing_id == Filing.id)
+                .filter(LobbyingActivity.general_issue_code == issue_code)
+                .group_by(Registrant.id, Registrant.name)
+                .order_by(desc("filing_count"))
+                .limit(limit)
+                .all()
+            )
+            firms = [{"id": r[0], "name": r[1], "filing_count": r[2], "total_income": float(r[3]) if r[3] else 0} for r in top_firms]
+
+            # Top clients by spending in this issue area
+            top_clients = (
+                session.query(
+                    Client.id,
+                    Client.name,
+                    func.count(func.distinct(Filing.id)).label("filing_count"),
+                    func.sum(Filing.income).label("total_spending"),
+                )
+                .join(Filing, Filing.client_id == Client.id)
+                .join(LobbyingActivity, LobbyingActivity.filing_id == Filing.id)
+                .filter(LobbyingActivity.general_issue_code == issue_code)
+                .group_by(Client.id, Client.name)
+                .order_by(desc("total_spending"))
+                .limit(limit)
+                .all()
+            )
+            clients = [{"id": r[0], "name": r[1], "filing_count": r[2], "total_spending": float(r[3]) if r[3] else 0} for r in top_clients]
+
+            # Top lobbyists by filing appearances in this issue area
+            activities = (
+                session.query(LobbyingActivity.lobbyists, Filing.id)
+                .select_from(LobbyingActivity)
+                .join(Filing)
+                .filter(LobbyingActivity.general_issue_code == issue_code)
+                .filter(LobbyingActivity.lobbyists.isnot(None))
+                .all()
+            )
+            lobbyist_filings: dict[str, set[int]] = {}
+            for lob_json, filing_id in activities:
+                try:
+                    lob_list = _json.loads(lob_json)
+                except (ValueError, TypeError):
+                    continue
+                if not isinstance(lob_list, list):
+                    continue
+                for entry in lob_list:
+                    lob = entry.get("lobbyist", {}) if isinstance(entry, dict) else {}
+                    first = (lob.get("first_name") or "").strip()
+                    last = (lob.get("last_name") or "").strip()
+                    full = f"{first} {last}".strip()
+                    if not full:
+                        continue
+                    key = full.lower()
+                    lobbyist_filings.setdefault(key, set()).add(filing_id)
+
+            lobbyists_list = sorted(
+                [{"name": key.title(), "filing_count": len(fids)} for key, fids in lobbyist_filings.items()],
+                key=lambda x: x["filing_count"], reverse=True,
+            )[:limit]
+
+            return {"firms": firms, "clients": clients, "lobbyists": lobbyists_list}
+        except Exception as e:
+            logger.exception("issue_sidebar(%s) failed: %s", issue_code, e)
+            raise
+        finally:
+            session.close()
+    return _cached(f"issue_sidebar_{issue_code}_{limit}", _fetch)
 
 
 @app.get("/api/registrants")

@@ -480,6 +480,27 @@ function SearchPage({ onNavigate }: { onNavigate: (page: Page, ctx?: unknown) =>
 }
 
 // ---------- Issues Page ----------
+// Compact sidebar mini-bar row for issue page
+function IssueSidebarItem({ rank, name, value, maxValue, formatValue, onClick, active }: {
+  rank: number; name: string; value: number; maxValue: number; formatValue: (v: number) => string; onClick: () => void; active?: boolean;
+}) {
+  const pct = maxValue > 0 ? Math.max(4, (value / maxValue) * 100) : 0;
+  return (
+    <button
+      onClick={onClick}
+      className={`w-full text-left px-2 py-1.5 rounded cursor-pointer transition group ${active ? 'bg-indigo-50 ring-1 ring-indigo-300' : 'hover:bg-gray-50'}`}
+    >
+      <div className="flex items-baseline justify-between gap-1 mb-0.5">
+        <span className="text-xs text-gray-700 truncate leading-tight"><span className="text-gray-400 mr-1">{rank}.</span>{name}</span>
+        <span className="text-[10px] text-gray-500 shrink-0 tabular-nums">{formatValue(value)}</span>
+      </div>
+      <div className="w-full bg-gray-100 rounded-full h-1">
+        <div className="bg-indigo-400 h-1 rounded-full transition-all" style={{ width: `${pct}%` }} />
+      </div>
+    </button>
+  );
+}
+
 function IssuesPage({ onNavigate }: { onNavigate: (page: Page, ctx?: unknown) => void }) {
   const [issues, setIssues] = useState<IssueSummary[]>([]);
   const [selected, setSelected] = useState<string | null>(null);
@@ -488,27 +509,57 @@ function IssuesPage({ onNavigate }: { onNavigate: (page: Page, ctx?: unknown) =>
   const [issuePage, setIssuePage] = useState(1);
   const [loading, setLoading] = useState(true);
 
+  // Sidebar data
+  const [sidebar, setSidebar] = useState<{
+    firms: Array<{ id: number; name: string; filing_count: number; total_income: number }>;
+    clients: Array<{ id: number; name: string; filing_count: number; total_spending: number }>;
+    lobbyists: Array<{ name: string; filing_count: number }>;
+  } | null>(null);
+  const [sidebarLoading, setSidebarLoading] = useState(false);
+
+  // Active filter
+  const [activeFilter, setActiveFilter] = useState<{ type: 'firm' | 'client' | 'lobbyist'; id?: number; name: string } | null>(null);
+
   useEffect(() => {
     api.getIssues().then(i => { setIssues(i); setLoading(false); }).catch(() => setLoading(false));
   }, []);
 
+  // Fetch sidebar data when issue changes
+  useEffect(() => {
+    if (!selected) { setSidebar(null); return; }
+    setSidebarLoading(true);
+    api.getIssueSidebar(selected, 10).then(d => { setSidebar(d); setSidebarLoading(false); }).catch(() => setSidebarLoading(false));
+  }, [selected]);
+
+  // Fetch filings (respecting active filter)
   useEffect(() => {
     if (!selected) { setFilings([]); return; }
-    api.getFilingsByIssue(selected, issuePage).then(r => { setFilings(r.results); setTotal(r.total); });
-  }, [selected, issuePage]);
+    const filters: { registrant_id?: number; client_id?: number; lobbyist_name?: string } = {};
+    if (activeFilter?.type === 'firm' && activeFilter.id) filters.registrant_id = activeFilter.id;
+    if (activeFilter?.type === 'client' && activeFilter.id) filters.client_id = activeFilter.id;
+    if (activeFilter?.type === 'lobbyist') filters.lobbyist_name = activeFilter.name;
+    api.getFilingsByIssue(selected, issuePage, Object.keys(filters).length > 0 ? filters : undefined)
+      .then(r => { setFilings(r.results); setTotal(r.total); });
+  }, [selected, issuePage, activeFilter]);
+
+  const clearFilter = () => { setActiveFilter(null); setIssuePage(1); };
+  const applyFilter = (f: typeof activeFilter) => { setActiveFilter(f); setIssuePage(1); };
 
   if (loading) return <div className="flex items-center justify-center h-64"><Loader2 className="animate-spin text-indigo-600" size={32} /></div>;
 
+  const issueName = issues.find(i => i.code === selected)?.display;
+
   return (
-    <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-      <div className="md:col-span-1">
+    <div className="grid grid-cols-1 md:grid-cols-[240px_1fr_260px] gap-4">
+      {/* Left: Issue list */}
+      <div>
         <h2 className="text-lg font-semibold text-gray-900 mb-3">Issue Areas</h2>
         <div className="bg-white rounded-lg border border-gray-200 divide-y divide-gray-100 max-h-[70vh] overflow-y-auto">
           {issues.length === 0 && <p className="p-4 text-sm text-gray-400">No issues found. Sync filings first.</p>}
           {issues.map(i => (
             <button
               key={i.code}
-              onClick={() => { setSelected(i.code); setIssuePage(1); }}
+              onClick={() => { setSelected(i.code); setIssuePage(1); clearFilter(); }}
               className={`w-full text-left px-4 py-2.5 text-sm flex items-center justify-between cursor-pointer transition ${selected === i.code ? 'bg-indigo-50 text-indigo-700 font-medium' : 'text-gray-700 hover:bg-gray-50'}`}
             >
               <span className="truncate">{i.display}</span>
@@ -517,12 +568,24 @@ function IssuesPage({ onNavigate }: { onNavigate: (page: Page, ctx?: unknown) =>
           ))}
         </div>
       </div>
-      <div className="md:col-span-2">
+
+      {/* Center: Filings */}
+      <div>
         {selected ? (
           <>
-            <h2 className="text-lg font-semibold text-gray-900 mb-3">
-              {issues.find(i => i.code === selected)?.display} <span className="text-sm font-normal text-gray-400">({total} filings)</span>
-            </h2>
+            <div className="flex items-center justify-between mb-3">
+              <h2 className="text-lg font-semibold text-gray-900">
+                {issueName} <span className="text-sm font-normal text-gray-400">({total} filings)</span>
+              </h2>
+            </div>
+            {activeFilter && (
+              <div className="flex items-center gap-2 mb-3 bg-indigo-50 border border-indigo-200 rounded-lg px-3 py-2 text-sm">
+                <span className="text-indigo-700">
+                  Filtered by {activeFilter.type === 'firm' ? 'firm' : activeFilter.type === 'client' ? 'client' : 'lobbyist'}: <span className="font-medium">{activeFilter.name}</span>
+                </span>
+                <button onClick={clearFilter} className="ml-auto text-indigo-400 hover:text-indigo-600 cursor-pointer"><X size={14} /></button>
+              </div>
+            )}
             <div className="space-y-3">
               {filings.map(f => (
                 <FilingCard key={f.filing_uuid} filing={f} onClick={() => onNavigate('filing', f.filing_uuid)} />
@@ -534,6 +597,80 @@ function IssuesPage({ onNavigate }: { onNavigate: (page: Page, ctx?: unknown) =>
           <div className="flex items-center justify-center h-64 text-gray-400">
             <p>Select an issue area to view filings</p>
           </div>
+        )}
+      </div>
+
+      {/* Right: Sidebar charts */}
+      <div className="space-y-4">
+        {selected && (
+          <>
+            {sidebarLoading && (
+              <div className="flex justify-center py-8"><Loader2 className="animate-spin text-gray-300" size={20} /></div>
+            )}
+            {!sidebarLoading && sidebar && (
+              <>
+                {/* Top Firms */}
+                <div className="bg-white rounded-lg border border-gray-200 p-3">
+                  <h3 className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2 flex items-center gap-1.5"><Building2 size={12} /> Top Firms</h3>
+                  <div className="space-y-1">
+                    {sidebar.firms.map((f, i) => (
+                      <IssueSidebarItem
+                        key={f.id}
+                        rank={i + 1}
+                        name={f.name}
+                        value={f.filing_count}
+                        maxValue={sidebar.firms[0]?.filing_count || 1}
+                        formatValue={v => `${v} filings`}
+                        active={activeFilter?.type === 'firm' && activeFilter.id === f.id}
+                        onClick={() => applyFilter(activeFilter?.type === 'firm' && activeFilter.id === f.id ? null : { type: 'firm', id: f.id, name: f.name })}
+                      />
+                    ))}
+                    {sidebar.firms.length === 0 && <p className="text-xs text-gray-400 py-1">No data</p>}
+                  </div>
+                </div>
+
+                {/* Top Clients by Spending */}
+                <div className="bg-white rounded-lg border border-gray-200 p-3">
+                  <h3 className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2 flex items-center gap-1.5"><DollarSign size={12} /> Top Clients by Spending</h3>
+                  <div className="space-y-1">
+                    {sidebar.clients.map((c, i) => (
+                      <IssueSidebarItem
+                        key={c.id}
+                        rank={i + 1}
+                        name={c.name}
+                        value={c.total_spending}
+                        maxValue={sidebar.clients[0]?.total_spending || 1}
+                        formatValue={formatMoney}
+                        active={activeFilter?.type === 'client' && activeFilter.id === c.id}
+                        onClick={() => applyFilter(activeFilter?.type === 'client' && activeFilter.id === c.id ? null : { type: 'client', id: c.id, name: c.name })}
+                      />
+                    ))}
+                    {sidebar.clients.length === 0 && <p className="text-xs text-gray-400 py-1">No data</p>}
+                  </div>
+                </div>
+
+                {/* Top Lobbyists */}
+                <div className="bg-white rounded-lg border border-gray-200 p-3">
+                  <h3 className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2 flex items-center gap-1.5"><User size={12} /> Top Lobbyists</h3>
+                  <div className="space-y-1">
+                    {sidebar.lobbyists.map((l, i) => (
+                      <IssueSidebarItem
+                        key={l.name}
+                        rank={i + 1}
+                        name={l.name}
+                        value={l.filing_count}
+                        maxValue={sidebar.lobbyists[0]?.filing_count || 1}
+                        formatValue={v => `${v} filings`}
+                        active={activeFilter?.type === 'lobbyist' && activeFilter.name === l.name}
+                        onClick={() => applyFilter(activeFilter?.type === 'lobbyist' && activeFilter.name === l.name ? null : { type: 'lobbyist', name: l.name })}
+                      />
+                    ))}
+                    {sidebar.lobbyists.length === 0 && <p className="text-xs text-gray-400 py-1">No data</p>}
+                  </div>
+                </div>
+              </>
+            )}
+          </>
         )}
       </div>
     </div>
