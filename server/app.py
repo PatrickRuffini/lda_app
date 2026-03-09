@@ -429,24 +429,28 @@ def issue_sidebar(issue_code: str, limit: int = Query(10, ge=1, le=25)):
             firms = [{"id": r[0], "name": r[1], "filing_count": r[2], "total_income": float(r[3]) if r[3] else 0} for r in top_firms]
 
             # Top clients by spending in this issue area
-            # Use subquery to get distinct filing IDs to avoid double-counting income
-            # when a filing has multiple lobbying activities in the same issue area
-            from sqlalchemy import distinct as sa_distinct
-            issue_filing_ids = (
-                session.query(func.distinct(Filing.id))
+            # A filing may have multiple lobbying activities for the same issue,
+            # so we use a subquery to get distinct (client_id, filing_id, income)
+            # first, then aggregate.
+            filing_sub = (
+                session.query(
+                    Filing.client_id,
+                    Filing.id.label("filing_id"),
+                    func.coalesce(Filing.income, Filing.expenses, 0).label("amount"),
+                )
                 .join(LobbyingActivity, LobbyingActivity.filing_id == Filing.id)
                 .filter(LobbyingActivity.general_issue_code == issue_code)
+                .distinct()
                 .subquery()
             )
             top_clients = (
                 session.query(
                     Client.id,
                     Client.name,
-                    func.count(Filing.id).label("filing_count"),
-                    func.sum(Filing.income).label("total_spending"),
+                    func.count(filing_sub.c.filing_id).label("filing_count"),
+                    func.coalesce(func.sum(filing_sub.c.amount), 0).label("total_spending"),
                 )
-                .join(Filing, Filing.client_id == Client.id)
-                .filter(Filing.id.in_(issue_filing_ids))
+                .join(filing_sub, filing_sub.c.client_id == Client.id)
                 .group_by(Client.id, Client.name)
                 .order_by(desc("total_spending"))
                 .limit(limit)
