@@ -523,14 +523,14 @@ def top_registrants(limit: int = Query(20, ge=1, le=100), sort: str = Query("fil
         session = _get_session()
         try:
             order_col = {"unique_clients": "unique_clients", "revenue": "total_income"}.get(sort, "filing_count")
-            # Fetch extra rows to account for dedup merging
             fetch_limit = limit * 3
+            total_income_expr = func.coalesce(func.sum(Filing.income), 0).label("total_income")
             results = (
                 session.query(
                     Registrant.name, Registrant.senate_id,
                     func.count(Filing.id).label("filing_count"),
                     func.count(func.distinct(Client.id)).label("unique_clients"),
-                    func.sum(Filing.income).label("total_income"),
+                    total_income_expr,
                 )
                 .select_from(Registrant)
                 .join(Filing, Filing.registrant_id == Registrant.id)
