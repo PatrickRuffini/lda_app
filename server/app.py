@@ -528,7 +528,9 @@ def top_registrants(limit: int = Query(20, ge=1, le=100), sort: str = Query("fil
                     func.count(func.distinct(Client.id)).label("unique_clients"),
                     func.sum(Filing.income).label("total_income"),
                 )
-                .join(Filing).join(Client)
+                .select_from(Registrant)
+                .join(Filing, Filing.registrant_id == Registrant.id)
+                .join(Client, Filing.client_id == Client.id)
                 .group_by(Registrant.id)
                 .order_by(desc(order_col)).limit(fetch_limit).all()
             )
@@ -558,7 +560,9 @@ def top_clients(limit: int = Query(20, ge=1, le=100), sort: str = Query("filings
                         func.count(Filing.id).label("filing_count"),
                         func.sum(Filing.income).label("total_income"),
                     )
-                    .join(Filing).join(Registrant)
+                    .select_from(Client)
+                    .join(Filing, Filing.client_id == Client.id)
+                    .join(Registrant, Filing.registrant_id == Registrant.id)
                     .group_by(Client.id)
                     .order_by(desc("unique_registrants")).limit(limit).all()
                 )
@@ -571,7 +575,9 @@ def top_clients(limit: int = Query(20, ge=1, le=100), sort: str = Query("filings
                         func.count(func.distinct(Registrant.id)).label("unique_registrants"),
                         func.sum(Filing.income).label("total_income"),
                     )
-                    .join(Filing).join(Registrant)
+                    .select_from(Client)
+                    .join(Filing, Filing.client_id == Client.id)
+                    .join(Registrant, Filing.registrant_id == Registrant.id)
                     .group_by(Client.id)
                     .order_by(desc("filing_count")).limit(limit).all()
                 )
@@ -598,7 +604,9 @@ def revenue_per_lobbyist(limit: int = Query(15, ge=1, le=50), min_clients: int =
                     func.sum(Filing.income).label("total_revenue"),
                     func.count(func.distinct(Client.id)).label("unique_clients"),
                 )
-                .join(Filing).join(Client)
+                .select_from(Registrant)
+                .join(Filing, Filing.registrant_id == Registrant.id)
+                .join(Client, Filing.client_id == Client.id)
                 .filter(Filing.income.isnot(None))
                 .group_by(Registrant.id, Registrant.name)
                 .having(func.count(func.distinct(Client.id)) >= min_clients)
@@ -1416,7 +1424,8 @@ def top_clients_by_spend(limit: int = Query(15, ge=1, le=50)):
                 func.count(func.distinct(Registrant.id)).label("firm_count"),
             )
             .select_from(Filing)
-            .join(Client).join(Registrant)
+            .join(Client, Filing.client_id == Client.id)
+            .join(Registrant, Filing.registrant_id == Registrant.id)
             .filter(Filing.income.isnot(None))
             .group_by(Client.id, Client.name)
             .order_by(desc("total_spend"))
