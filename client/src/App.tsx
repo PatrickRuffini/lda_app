@@ -3293,9 +3293,79 @@ function ChatPage({ onNavigate, initialConversationId }: { onNavigate: (page: Pa
 // ---------- App ----------
 export default function App() {
   type NavState = { page: Page; filingUuid?: string; entityId?: number; newsletterId?: number; centerEntityId?: number; leaderboardType?: string; conversationId?: number; searchFilter?: { registrant?: string; client?: string; q?: string } };
-  const [navState, setNavState] = useState<NavState>({ page: 'dashboard' });
-  const [navHistory, setNavHistory] = useState<NavState[]>([]);
+
+  // Build a NavState from the current browser URL hash
+  const parseHash = useCallback((): NavState => {
+    const hash = window.location.hash.replace(/^#\/?/, '');
+    if (!hash) return { page: 'dashboard' };
+    const [segment, ...rest] = hash.split('/');
+    const param = rest.join('/');
+    switch (segment) {
+      case 'filing': return param ? { page: 'filing', filingUuid: param } : { page: 'search' };
+      case 'entity': return param ? { page: 'entity', entityId: Number(param) } : { page: 'influence' };
+      case 'newsletter': return param ? { page: 'newsletter', newsletterId: Number(param) } : { page: 'influence' };
+      case 'network': return param ? { page: 'network', centerEntityId: Number(param) } : { page: 'network' };
+      case 'leaderboard': return param ? { page: 'leaderboard', leaderboardType: param } : { page: 'influence' };
+      case 'chat': return param ? { page: 'chat', conversationId: Number(param) } : { page: 'chat' };
+      case 'search': {
+        if (param) {
+          try { return { page: 'search', searchFilter: JSON.parse(decodeURIComponent(param)) }; } catch { /* ignore */ }
+        }
+        return { page: 'search' };
+      }
+      default: {
+        const pages: Page[] = ['dashboard', 'search', 'influence', 'network', 'utilities', 'chat'];
+        if (pages.includes(segment as Page)) return { page: segment as Page };
+        return { page: 'dashboard' };
+      }
+    }
+  }, []);
+
+  const navStateToHash = (s: NavState): string => {
+    switch (s.page) {
+      case 'filing': return s.filingUuid ? `#/filing/${s.filingUuid}` : '#/search';
+      case 'entity': return s.entityId ? `#/entity/${s.entityId}` : '#/influence';
+      case 'newsletter': return s.newsletterId ? `#/newsletter/${s.newsletterId}` : '#/influence';
+      case 'network': return s.centerEntityId ? `#/network/${s.centerEntityId}` : '#/network';
+      case 'leaderboard': return s.leaderboardType ? `#/leaderboard/${s.leaderboardType}` : '#/influence';
+      case 'chat': return s.conversationId ? `#/chat/${s.conversationId}` : '#/chat';
+      case 'search': return s.searchFilter ? `#/search/${encodeURIComponent(JSON.stringify(s.searchFilter))}` : '#/search';
+      case 'dashboard': return '#/';
+      default: return `#/${s.page}`;
+    }
+  };
+
+  const [navState, setNavState] = useState<NavState>(parseHash);
   const [syncVersion, setSyncVersion] = useState(0);
+  const isPopState = useRef(false);
+
+  // Sync browser history when navState changes (skip for popstate-driven changes)
+  useEffect(() => {
+    if (isPopState.current) {
+      isPopState.current = false;
+      return;
+    }
+    const hash = navStateToHash(navState);
+    if (window.location.hash !== hash) {
+      window.history.pushState(navState, '', hash);
+    }
+  }, [navState]);
+
+  // Listen for browser back/forward
+  useEffect(() => {
+    const onPop = (e: PopStateEvent) => {
+      isPopState.current = true;
+      if (e.state && typeof e.state === 'object' && 'page' in e.state) {
+        setNavState(e.state as NavState);
+      } else {
+        setNavState(parseHash());
+      }
+    };
+    window.addEventListener('popstate', onPop);
+    // Replace the initial history entry with state so first back works
+    window.history.replaceState(navState, '', navStateToHash(navState));
+    return () => window.removeEventListener('popstate', onPop);
+  }, []);
 
   const page = navState.page;
   const filingUuid = navState.filingUuid ?? null;
@@ -3320,30 +3390,20 @@ export default function App() {
     } else if (target === 'search' && ctx && typeof ctx === 'object') {
       next.searchFilter = ctx as NavState['searchFilter'];
     }
-    setNavHistory(h => [...h, navState]);
     setNavState(next);
   };
 
   const handleBack = () => {
-    setNavHistory(h => {
-      const copy = [...h];
-      const prev = copy.pop();
-      if (prev) {
-        setNavState(prev);
-        return copy;
-      }
-      setNavState({ page: 'dashboard' });
-      return [];
-    });
+    window.history.back();
   };
 
-  const navPage = (page === 'filing' || page === 'entity' || page === 'newsletter' || page === 'leaderboard')
-    ? (navHistory.length > 0 ? navHistory[navHistory.length - 1].page : 'dashboard')
+  const navPage = page === 'filing' ? 'search'
+    : (page === 'entity' || page === 'newsletter' || page === 'leaderboard') ? 'influence'
     : page;
 
   return (
     <div className="min-h-screen">
-      <Nav page={navPage} setPage={p => { setNavHistory([]); setNavState({ page: p }); }} />
+      <Nav page={navPage} setPage={p => { setNavState({ page: p }); }} />
       <main className="max-w-7xl mx-auto px-4 sm:px-6 py-6">
         {page === 'dashboard' && <Dashboard onNavigate={handleNavigate} />}
         {page === 'search' && <SearchPage onNavigate={handleNavigate} initialFilter={navState.searchFilter} />}
