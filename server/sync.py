@@ -388,6 +388,72 @@ def sync_year(year: int, db_url: str = None, max_pages: int = 5000) -> dict:
     return {"year": year, "stored": total_stored, "duplicates": total_duplicates, "pages": page_num}
 
 
+def sync_date_range(start_date: str, end_date: str, db_url: str = None, max_pages: int = 5000) -> dict:
+    """Sync filings posted between start_date and end_date (YYYY-MM-DD).
+    Uses the Senate LDA API's filing_dt_posted_after/before filters."""
+    engine = init_db(db_url)
+    session = get_session(engine)
+
+    total_stored = 0
+    total_duplicates = 0
+    page_num = 0
+
+    try:
+        params = {
+            "page_size": PAGE_SIZE,
+            "filing_dt_posted_after": start_date,
+            "filing_dt_posted_before": end_date,
+            "ordering": "dt_posted",
+        }
+        page = 1
+
+        while page <= max_pages:
+            if _sync_progress.get("status") == "cancelling":
+                logger.info("Date-range sync cancelled")
+                break
+
+            params["page"] = page
+            data = _fetch_page("filings", params)
+            if not data:
+                break
+
+            results = data.get("results", [])
+            if not results:
+                break
+
+            page_num = page
+            for filing_data in results:
+                filing, is_new = _store_filing(session, filing_data)
+                if filing and is_new:
+                    total_stored += 1
+                elif filing:
+                    total_duplicates += 1
+
+            session.commit()
+            _update_progress(
+                stored=total_stored,
+                duplicates=total_duplicates,
+                pages=page_num,
+            )
+
+            logger.info(f"Date range {start_date}–{end_date}, page {page}: stored {total_stored} so far")
+
+            if not data.get("next"):
+                break
+
+            page += 1
+            time.sleep(0.3)
+
+    except Exception as e:
+        session.rollback()
+        logger.error(f"Date-range sync error: {e}")
+        raise
+    finally:
+        session.close()
+
+    return {"start_date": start_date, "end_date": end_date, "stored": total_stored, "duplicates": total_duplicates, "pages": page_num}
+
+
 def sync_backfill(db_url: str = None) -> dict:
     """
     Systematically backfill historical filings year by year.

@@ -20,7 +20,7 @@ from .models import (
     ChatConversation, ChatMessage,
     get_engine, get_session, init_db, run_migrations,
 )
-from .sync import sync_filings, sync_incremental, sync_backfill, sync_backfill_chunk, sync_complete_years, sync_year, get_sync_progress, _update_progress
+from .sync import sync_filings, sync_incremental, sync_backfill, sync_backfill_chunk, sync_complete_years, sync_year, sync_date_range, get_sync_progress, _update_progress
 from .influence import scrape_and_store, reprocess_all_entities, get_scrape_progress, get_reprocess_progress, link_entities_to_lda, link_lobbyists_to_entities, merge_duplicate_entities, _normalize_org_aggressive
 from .ai import generate_entity_summary, chat as ai_chat
 
@@ -126,6 +126,8 @@ def _run_startup_migrations():
 class SyncRequest(BaseModel):
     mode: str = "incremental"
     filing_year: Optional[int] = None
+    start_date: Optional[str] = None
+    end_date: Optional[str] = None
     max_pages: int = 200
 
 
@@ -144,7 +146,21 @@ def trigger_sync(req: SyncRequest):
 
     def _run():
         try:
-            if req.mode == "backfill":
+            if req.mode == "date_range" and req.start_date and req.end_date:
+                from datetime import datetime as dt
+                _update_progress(
+                    status="running", mode="date_range",
+                    stored=0, skipped=0, duplicates=0, pages=0,
+                    current_year=None, years_completed=[], error=None,
+                    started_at=dt.utcnow().isoformat(), finished_at=None,
+                )
+                result = sync_date_range(req.start_date, req.end_date, db_url=DB_URL, max_pages=req.max_pages)
+                _update_progress(
+                    status="completed", finished_at=dt.utcnow().isoformat(),
+                    stored=result["stored"], duplicates=result["duplicates"],
+                    pages=result["pages"],
+                )
+            elif req.mode == "backfill":
                 sync_backfill_chunk(db_url=DB_URL, chunk_size=1000)
             elif req.mode == "complete_years":
                 sync_complete_years(db_url=DB_URL)
