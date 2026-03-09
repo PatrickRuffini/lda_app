@@ -550,9 +550,9 @@ function IssuesPage({ onNavigate }: { onNavigate: (page: Page, ctx?: unknown) =>
   const issueName = issues.find(i => i.code === selected)?.display;
 
   return (
-    <div className="grid grid-cols-1 md:grid-cols-[240px_1fr_260px] gap-4">
+    <div className="grid grid-cols-1 md:grid-cols-[minmax(200px,1fr)_minmax(0,3fr)_minmax(200px,1.2fr)] gap-4">
       {/* Left: Issue list */}
-      <div>
+      <div className="min-w-0">
         <h2 className="text-lg font-semibold text-gray-900 mb-3">Issue Areas</h2>
         <div className="bg-white rounded-lg border border-gray-200 divide-y divide-gray-100 max-h-[70vh] overflow-y-auto">
           {issues.length === 0 && <p className="p-4 text-sm text-gray-400">No issues found. Sync filings first.</p>}
@@ -570,7 +570,7 @@ function IssuesPage({ onNavigate }: { onNavigate: (page: Page, ctx?: unknown) =>
       </div>
 
       {/* Center: Filings */}
-      <div>
+      <div className="min-w-0">
         {selected ? (
           <>
             <div className="flex items-center justify-between mb-3">
@@ -601,7 +601,9 @@ function IssuesPage({ onNavigate }: { onNavigate: (page: Page, ctx?: unknown) =>
       </div>
 
       {/* Right: Sidebar charts */}
-      <div className="space-y-4">
+      <div className="min-w-0">
+        <h2 className="text-lg font-semibold text-gray-900 mb-3">{selected ? 'Insights' : '\u00A0'}</h2>
+        <div className="space-y-4">
         {selected && (
           <>
             {sidebarLoading && (
@@ -672,6 +674,7 @@ function IssuesPage({ onNavigate }: { onNavigate: (page: Page, ctx?: unknown) =>
             )}
           </>
         )}
+        </div>
       </div>
     </div>
   );

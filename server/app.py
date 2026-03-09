@@ -385,8 +385,10 @@ def filings_by_issue(
         if client_id is not None:
             query = query.filter(Filing.client_id == client_id)
         if lobbyist_name:
-            # Filter activities where the lobbyist JSON contains this name
-            query = query.filter(LobbyingActivity.lobbyists.ilike(f"%{lobbyist_name}%"))
+            # Lobbyist names are stored as JSON with separate first_name/last_name fields,
+            # so we need to match each name part individually
+            for part in lobbyist_name.strip().split():
+                query = query.filter(LobbyingActivity.lobbyists.ilike(f"%{part}%"))
         query = query.order_by(desc(Filing.dt_posted))
         total = query.count()
         filings = query.offset((page - 1) * page_size).limit(page_size).all()
@@ -427,16 +429,24 @@ def issue_sidebar(issue_code: str, limit: int = Query(10, ge=1, le=25)):
             firms = [{"id": r[0], "name": r[1], "filing_count": r[2], "total_income": float(r[3]) if r[3] else 0} for r in top_firms]
 
             # Top clients by spending in this issue area
+            # Use subquery to get distinct filing IDs to avoid double-counting income
+            # when a filing has multiple lobbying activities in the same issue area
+            from sqlalchemy import distinct as sa_distinct
+            issue_filing_ids = (
+                session.query(func.distinct(Filing.id))
+                .join(LobbyingActivity, LobbyingActivity.filing_id == Filing.id)
+                .filter(LobbyingActivity.general_issue_code == issue_code)
+                .subquery()
+            )
             top_clients = (
                 session.query(
                     Client.id,
                     Client.name,
-                    func.count(func.distinct(Filing.id)).label("filing_count"),
+                    func.count(Filing.id).label("filing_count"),
                     func.sum(Filing.income).label("total_spending"),
                 )
                 .join(Filing, Filing.client_id == Client.id)
-                .join(LobbyingActivity, LobbyingActivity.filing_id == Filing.id)
-                .filter(LobbyingActivity.general_issue_code == issue_code)
+                .filter(Filing.id.in_(issue_filing_ids))
                 .group_by(Client.id, Client.name)
                 .order_by(desc("total_spending"))
                 .limit(limit)
