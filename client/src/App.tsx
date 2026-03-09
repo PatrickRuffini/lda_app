@@ -183,7 +183,7 @@ function LeaderboardTable({ title, icon, rows, loading: isLoading, error: hasErr
                 {secondaryKey && <td className="py-1.5 pr-3 text-right text-gray-500">{typeof r[secondaryKey] === 'number' ? (r[secondaryKey] as number).toLocaleString() : r[secondaryKey] as string}</td>}
                 <td className="py-1.5 text-right font-medium text-indigo-600">
                   {typeof r[valueKey] === 'number'
-                    ? (valueKey.includes('revenue') || valueKey.includes('income') || valueKey.includes('per_lobbyist')
+                    ? (valueKey.includes('revenue') || valueKey.includes('income') || valueKey.includes('spend')
                         ? formatMoney(r[valueKey] as number)
                         : (r[valueKey] as number).toLocaleString())
                     : (r[valueKey] as string) ?? '—'}
@@ -213,9 +213,9 @@ function Dashboard({ onNavigate }: { onNavigate: (page: Page, ctx?: unknown) => 
   const [lobbyistsByClients, setLobbyistsByClients] = useState<Array<{ name: string; unique_clients: number; firms: string[] }>>([]);
   const [lobbyistsByClientsLoading, setLobbyistsByClientsLoading] = useState(true);
   const [lobbyistsByClientsError, setLobbyistsByClientsError] = useState(false);
-  const [revPerLobbyist, setRevPerLobbyist] = useState<Array<{ name: string; revenue_per_lobbyist: number | null; lobbyist_count: number; total_revenue: number; [k: string]: unknown }>>([]);
-  const [revPerLobbyistLoading, setRevPerLobbyistLoading] = useState(true);
-  const [revPerLobbyistError, setRevPerLobbyistError] = useState(false);
+  const [topClientsBySpend, setTopClientsBySpend] = useState<Array<{ name: string; total_spend: number; filing_count: number; firm_count: number; [k: string]: unknown }>>([]);
+  const [topClientsBySpendLoading, setTopClientsBySpendLoading] = useState(true);
+  const [topClientsBySpendError, setTopClientsBySpendError] = useState(false);
 
 
   // Initial load
@@ -235,7 +235,7 @@ function Dashboard({ onNavigate }: { onNavigate: (page: Page, ctx?: unknown) => 
         api.getTopRegistrants(15, 'revenue').then(d => { if (!cancelled) { setFirmsByRevenue(d); setFirmsByRevenueLoading(false); } }).catch(e => { console.error('firmsByRevenue failed:', e); if (!cancelled) { setFirmsByRevenueError(true); setFirmsByRevenueLoading(false); } });
         api.getTopRegistrants(15, 'unique_clients').then(d => { if (!cancelled) { setFirmsByClients(d); setFirmsByClientsLoading(false); } }).catch(e => { console.error('firmsByClients failed:', e); if (!cancelled) { setFirmsByClientsError(true); setFirmsByClientsLoading(false); } });
         api.getTopLobbyistsByClients(15).then(d => { if (!cancelled) { setLobbyistsByClients(d); setLobbyistsByClientsLoading(false); } }).catch(e => { console.error('lobbyistsByClients failed:', e); if (!cancelled) { setLobbyistsByClientsError(true); setLobbyistsByClientsLoading(false); } });
-        api.getRevenuePerLobbyist(15, 11).then(d => { if (!cancelled) { setRevPerLobbyist(d); setRevPerLobbyistLoading(false); } }).catch(e => { console.error('revPerLobbyist failed:', e); if (!cancelled) { setRevPerLobbyistError(true); setRevPerLobbyistLoading(false); } });
+        api.getTopClientsBySpend(15).then(d => { if (!cancelled) { setTopClientsBySpend(d); setTopClientsBySpendLoading(false); } }).catch(e => { console.error('topClientsBySpend failed:', e); if (!cancelled) { setTopClientsBySpendError(true); setTopClientsBySpendLoading(false); } });
       } catch (e) {
         console.error(e);
         if (!cancelled) setLoading(false);
@@ -294,19 +294,15 @@ function Dashboard({ onNavigate }: { onNavigate: (page: Page, ctx?: unknown) => 
           error={firmsByRevenueError}
           valueLabel="Revenue"
           valueKey="total_income"
-          secondaryLabel="Clients"
-          secondaryKey="unique_clients"
         />
         <LeaderboardTable
-          title="Lobbying Firms by Unique Clients"
+          title="Lobbying Firms by # of Clients"
           icon={<Users size={16} />}
           rows={firmsByClients}
           loading={firmsByClientsLoading}
           error={firmsByClientsError}
           valueLabel="Clients"
           valueKey="unique_clients"
-          secondaryLabel="Revenue"
-          secondaryKey="total_income"
         />
         <LeaderboardTable
           title="Top Lobbyists by Unique Clients"
@@ -319,15 +315,13 @@ function Dashboard({ onNavigate }: { onNavigate: (page: Page, ctx?: unknown) => 
           tooltip={(r) => `Firms: ${(r.firms as string[] || []).join(', ')}`}
         />
         <LeaderboardTable
-          title="Revenue per Lobbyist (>10 Clients)"
+          title="Top Clients by Lobbying Spend"
           icon={<TrendingUp size={16} />}
-          rows={revPerLobbyist}
-          loading={revPerLobbyistLoading}
-          error={revPerLobbyistError}
-          valueLabel="Rev / Lobbyist"
-          valueKey="revenue_per_lobbyist"
-          secondaryLabel="Lobbyists"
-          secondaryKey="lobbyist_count"
+          rows={topClientsBySpend}
+          loading={topClientsBySpendLoading}
+          error={topClientsBySpendError}
+          valueLabel="Total Spend"
+          valueKey="total_spend"
         />
       </div>
 
