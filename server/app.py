@@ -1417,20 +1417,20 @@ def top_consultants_by_revenue(limit: int = Query(15, ge=1, le=50)):
 
 @app.get("/api/reports/top-clients-by-spend")
 def top_clients_by_spend(limit: int = Query(15, ge=1, le=50)):
-    """Top clients ranked by total lobbying spend."""
+    """Top clients ranked by total lobbying spend (income or expenses)."""
     session = _get_session()
     try:
+        amount_expr = func.coalesce(Filing.income, Filing.expenses, 0)
         rows = (
             session.query(
                 Client.name,
-                func.sum(Filing.income).label("total_spend"),
+                func.sum(amount_expr).label("total_spend"),
                 func.count(Filing.id).label("filing_count"),
                 func.count(func.distinct(Registrant.id)).label("firm_count"),
             )
             .select_from(Filing)
             .join(Client, Filing.client_id == Client.id)
             .join(Registrant, Filing.registrant_id == Registrant.id)
-            .filter(Filing.income.isnot(None))
             .group_by(Client.id, Client.name)
             .order_by(desc("total_spend"))
             .limit(limit)
