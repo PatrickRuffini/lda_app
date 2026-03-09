@@ -262,7 +262,7 @@ def _gather_chat_context(session: Session, query: str) -> str:
             context_parts.append(f"### {nl.title} ({nl.published_date})")
             context_parts.append(excerpt)
 
-    # Search filings
+    # Search filings by registrant/client name
     filing_matches = (
         session.query(Filing, Registrant, Client)
         .outerjoin(Registrant, Filing.registrant_id == Registrant.id)
@@ -275,9 +275,46 @@ def _gather_chat_context(session: Session, query: str) -> str:
         .limit(10)
         .all()
     )
+
+    # Search lobbying activities by description, specific issues, and lobbyist names
+    query_words = [w for w in query.split() if len(w) >= 3]
+    activity_matches = (
+        session.query(LobbyingActivity, Filing, Registrant, Client)
+        .join(Filing, LobbyingActivity.filing_id == Filing.id)
+        .outerjoin(Registrant, Filing.registrant_id == Registrant.id)
+        .outerjoin(Client, Filing.client_id == Client.id)
+        .filter(
+            (LobbyingActivity.description.ilike(f"%{query}%")) |
+            (LobbyingActivity.specific_issues.ilike(f"%{query}%")) |
+            (LobbyingActivity.government_entities.ilike(f"%{query}%")) |
+            (LobbyingActivity.lobbyists.ilike(f"%{query}%"))
+        )
+        .order_by(desc(Filing.dt_posted))
+        .limit(15)
+        .all()
+    )
+
+    # If no exact matches on activities, try matching each word for lobbyist names
+    if not activity_matches and len(query_words) > 1:
+        word_filters = [LobbyingActivity.lobbyists.ilike(f"%{w}%") for w in query_words]
+        activity_matches = (
+            session.query(LobbyingActivity, Filing, Registrant, Client)
+            .join(Filing, LobbyingActivity.filing_id == Filing.id)
+            .outerjoin(Registrant, Filing.registrant_id == Registrant.id)
+            .outerjoin(Client, Filing.client_id == Client.id)
+            .filter(*word_filters)
+            .order_by(desc(Filing.dt_posted))
+            .limit(15)
+            .all()
+        )
+
+    # Collect filing IDs already shown from the registrant/client search
+    seen_filing_ids = set()
+
     if filing_matches:
-        context_parts.append("\n## Relevant LDA Filings")
+        context_parts.append("\n## Relevant LDA Filings (by registrant/client)")
         for f, reg, cli in filing_matches:
+            seen_filing_ids.add(f.id)
             activities = session.query(LobbyingActivity).filter(LobbyingActivity.filing_id == f.id).all()
             issues = [a.general_issue_code_display or a.general_issue_code for a in activities]
             context_parts.append(
@@ -285,6 +322,57 @@ def _gather_chat_context(session: Session, query: str) -> str:
                 f"Registrant={reg.name if reg else 'N/A'}, Client={cli.name if cli else 'N/A'}, "
                 f"Income={f.income}, Expenses={f.expenses}, Issues={', '.join(issues)}"
             )
+
+    if activity_matches:
+        context_parts.append("\n## Relevant Lobbying Activities (by issue/lobbyist/description)")
+        shown = 0
+        for act, f, reg, cli in activity_matches:
+            if f.id in seen_filing_ids:
+                continue
+            seen_filing_ids.add(f.id)
+            # Parse lobbyist names from JSON
+            lob_names = []
+            if act.lobbyists:
+                try:
+                    lob_list = json.loads(act.lobbyists)
+                    for entry in (lob_list if isinstance(lob_list, list) else []):
+                        lob = entry.get("lobbyist", {}) if isinstance(entry, dict) else {}
+                        first = (lob.get("first_name") or "").strip()
+                        last = (lob.get("last_name") or "").strip()
+                        full = f"{first} {last}".strip()
+                        if full:
+                            lob_names.append(full)
+                except (json.JSONDecodeError, TypeError):
+                    pass
+            # Parse government entities
+            gov_entities = []
+            if act.government_entities:
+                try:
+                    ge_list = json.loads(act.government_entities)
+                    for ge in (ge_list if isinstance(ge_list, list) else []):
+                        name = ge.get("name", ge) if isinstance(ge, dict) else str(ge)
+                        if name:
+                            gov_entities.append(name)
+                except (json.JSONDecodeError, TypeError):
+                    pass
+            parts = [
+                f"- {f.filing_type_display or f.filing_type} ({f.filing_year} {f.filing_period_display}): "
+                f"Registrant={reg.name if reg else 'N/A'}, Client={cli.name if cli else 'N/A'}, "
+                f"Income={f.income}, Expenses={f.expenses}",
+                f"  Issue: {act.general_issue_code_display or act.general_issue_code}",
+            ]
+            if act.description:
+                parts.append(f"  Description: {act.description[:300]}")
+            if act.specific_issues:
+                parts.append(f"  Specific Issues: {act.specific_issues[:300]}")
+            if lob_names:
+                parts.append(f"  Lobbyists: {', '.join(lob_names)}")
+            if gov_entities:
+                parts.append(f"  Gov Entities: {', '.join(gov_entities)}")
+            context_parts.append("\n".join(parts))
+            shown += 1
+            if shown >= 10:
+                break
 
     # Get overall stats for context
     total_entities = session.query(func.count(Entity.id)).scalar() or 0
