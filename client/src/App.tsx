@@ -684,7 +684,8 @@ function SearchPage({ onNavigate, initialFilter }: { onNavigate: (page: Page, ct
                           value={f.total_income}
                           maxValue={globalFirms[0]?.total_income || 1}
                           formatValue={formatMoney}
-                          onClick={() => onNavigate('search', { registrant: f.name })}
+                          active={activeFilter?.type === 'firm' && activeFilter.name === f.name}
+                          onClick={() => applyFilter(activeFilter?.type === 'firm' && activeFilter.name === f.name ? null : { type: 'firm', name: f.name })}
                         />
                       ))}
                     </div>
@@ -700,7 +701,8 @@ function SearchPage({ onNavigate, initialFilter }: { onNavigate: (page: Page, ct
                           value={c.total_spend}
                           maxValue={globalClients[0]?.total_spend || 1}
                           formatValue={formatMoney}
-                          onClick={() => onNavigate('search', { client: c.name })}
+                          active={activeFilter?.type === 'client' && activeFilter.name === c.name}
+                          onClick={() => applyFilter(activeFilter?.type === 'client' && activeFilter.name === c.name ? null : { type: 'client', name: c.name })}
                         />
                       ))}
                     </div>
@@ -716,7 +718,8 @@ function SearchPage({ onNavigate, initialFilter }: { onNavigate: (page: Page, ct
                           value={l.unique_clients}
                           maxValue={globalLobbyists[0]?.unique_clients || 1}
                           formatValue={v => `${v} clients`}
-                          onClick={() => onNavigate('search', { q: l.name })}
+                          active={activeFilter?.type === 'lobbyist' && activeFilter.name === l.name}
+                          onClick={() => applyFilter(activeFilter?.type === 'lobbyist' && activeFilter.name === l.name ? null : { type: 'lobbyist', name: l.name })}
                         />
                       ))}
                     </div>
