@@ -135,7 +135,7 @@ function Pagination({ page, pageSize, total, onPage }: { page: number; pageSize:
 }
 
 // Shared leaderboard table component for consistent formatting across all 4 dashboard tables
-function LeaderboardTable({ title, icon, rows, loading: isLoading, error: hasError, valueLabel, valueKey, secondaryLabel, secondaryKey, tooltip }: {
+function LeaderboardTable({ title, icon, rows, loading: isLoading, error: hasError, valueLabel, valueKey, secondaryLabel, secondaryKey, tooltip, onRowClick }: {
   title: string;
   icon: React.ReactNode;
   rows: Array<{ name: string; [k: string]: unknown }>;
@@ -146,6 +146,7 @@ function LeaderboardTable({ title, icon, rows, loading: isLoading, error: hasErr
   secondaryLabel?: string;
   secondaryKey?: string;
   tooltip?: (row: { name: string; [k: string]: unknown }) => string;
+  onRowClick?: (row: { name: string; [k: string]: unknown }) => void;
 }) {
   if (isLoading) return (
     <div className="bg-white rounded-lg border border-gray-200 p-4">
@@ -178,7 +179,7 @@ function LeaderboardTable({ title, icon, rows, loading: isLoading, error: hasErr
             {rows.map((r, i) => (
               <tr key={r.name + i} className="border-b border-gray-50 last:border-0" title={tooltip ? tooltip(r) : undefined}>
                 <td className="py-1.5 pr-3 text-gray-400">{i + 1}</td>
-                <td className="py-1.5 pr-3 text-gray-700 truncate max-w-[220px]">{r.name}</td>
+                <td className="py-1.5 pr-3 text-gray-700 truncate max-w-[220px]">{onRowClick ? <button onClick={() => onRowClick(r)} className="hover:text-indigo-600 transition cursor-pointer text-left">{r.name}</button> : r.name}</td>
                 {secondaryKey && <td className="py-1.5 pr-3 text-right text-gray-500">{typeof r[secondaryKey] === 'number' ? (r[secondaryKey] as number).toLocaleString() : r[secondaryKey] as string}</td>}
                 <td className="py-1.5 text-right font-medium text-indigo-600">
                   {typeof r[valueKey] === 'number'
@@ -293,6 +294,7 @@ function Dashboard({ onNavigate }: { onNavigate: (page: Page, ctx?: unknown) => 
           error={firmsByRevenueError}
           valueLabel="Revenue"
           valueKey="total_income"
+          onRowClick={(r) => onNavigate('search', { registrant: r.name })}
         />
         <LeaderboardTable
           title="Lobbying Firms by # of Clients"
@@ -302,6 +304,7 @@ function Dashboard({ onNavigate }: { onNavigate: (page: Page, ctx?: unknown) => 
           error={firmsByClientsError}
           valueLabel="Clients"
           valueKey="unique_clients"
+          onRowClick={(r) => onNavigate('search', { registrant: r.name })}
         />
         <LeaderboardTable
           title="Top Lobbyists by Unique Clients"
@@ -312,6 +315,7 @@ function Dashboard({ onNavigate }: { onNavigate: (page: Page, ctx?: unknown) => 
           valueLabel="Clients"
           valueKey="unique_clients"
           tooltip={(r) => `Firms: ${(r.firms as string[] || []).join(', ')}`}
+          onRowClick={(r) => onNavigate('search', { q: r.name })}
         />
         <LeaderboardTable
           title="Top Clients by Lobbying Spend"
@@ -321,6 +325,7 @@ function Dashboard({ onNavigate }: { onNavigate: (page: Page, ctx?: unknown) => 
           error={topClientsBySpendError}
           valueLabel="Total Spend"
           valueKey="total_spend"
+          onRowClick={(r) => onNavigate('search', { client: r.name })}
         />
       </div>
 
@@ -374,13 +379,18 @@ function IssueSidebarItem({ rank, name, value, maxValue, formatValue, onClick, a
 }
 
 // ---------- Search Page ----------
-function SearchPage({ onNavigate }: { onNavigate: (page: Page, ctx?: unknown) => void }) {
-  const [params, setParams] = useState<SearchParams>({ sort: '-dt_posted', page: 1, page_size: 25 });
+function SearchPage({ onNavigate, initialFilter }: { onNavigate: (page: Page, ctx?: unknown) => void; initialFilter?: { registrant?: string; client?: string; q?: string } }) {
+  const [params, setParams] = useState<SearchParams>(() => ({
+    sort: '-dt_posted', page: 1, page_size: 25,
+    ...(initialFilter?.registrant ? { registrant: initialFilter.registrant } : {}),
+    ...(initialFilter?.client ? { client: initialFilter.client } : {}),
+    ...(initialFilter?.q ? { q: initialFilter.q } : {}),
+  }));
   const [results, setResults] = useState<FilingSummary[]>([]);
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(false);
   const [issues, setIssues] = useState<IssueSummary[]>([]);
-  const [searchText, setSearchText] = useState('');
+  const [searchText, setSearchText] = useState(initialFilter?.q || '');
   const [issuesLoading, setIssuesLoading] = useState(true);
 
   // Issue sidebar state
@@ -393,8 +403,24 @@ function SearchPage({ onNavigate }: { onNavigate: (page: Page, ctx?: unknown) =>
   const [sidebarLoading, setSidebarLoading] = useState(false);
   const [activeFilter, setActiveFilter] = useState<{ type: 'firm' | 'client' | 'lobbyist'; id?: number; name: string } | null>(null);
 
+  // Global sidebar for unfiltered view
+  const [globalFirms, setGlobalFirms] = useState<Array<{ name: string; total_income: number; filing_count: number; [k: string]: unknown }>>([]);
+  const [globalClients, setGlobalClients] = useState<Array<{ name: string; total_spend: number; filing_count: number; [k: string]: unknown }>>([]);
+  const [globalLobbyists, setGlobalLobbyists] = useState<Array<{ name: string; unique_clients: number; firms: string[] }>>([]);
+  const [globalLoading, setGlobalLoading] = useState(true);
+
   useEffect(() => {
     api.getIssues().then(i => { setIssues(i); setIssuesLoading(false); }).catch(() => setIssuesLoading(false));
+    Promise.all([
+      api.getTopRegistrants(10, 'revenue'),
+      api.getTopClientsBySpend(10),
+      api.getTopLobbyistsByClients(10),
+    ]).then(([firms, clients, lobbyists]) => {
+      setGlobalFirms(firms);
+      setGlobalClients(clients);
+      setGlobalLobbyists(lobbyists);
+      setGlobalLoading(false);
+    }).catch(() => setGlobalLoading(false));
   }, []);
 
   // Search filings
@@ -575,16 +601,15 @@ function SearchPage({ onNavigate }: { onNavigate: (page: Page, ctx?: unknown) =>
 
         {/* Right: Insights sidebar */}
         <div className="min-w-0">
-          <h2 className="text-lg font-semibold text-gray-900 mb-3">{selectedIssue ? 'Insights' : '\u00A0'}</h2>
+          <h2 className="text-lg font-semibold text-gray-900 mb-3">Insights</h2>
           <div className="space-y-4">
-          {selectedIssue && (
+          {selectedIssue ? (
             <>
               {sidebarLoading && (
                 <div className="flex justify-center py-8"><Loader2 className="animate-spin text-gray-300" size={20} /></div>
               )}
               {!sidebarLoading && sidebar && (
                 <>
-                  {/* Top Firms */}
                   <div className="bg-white rounded-lg border border-gray-200 p-3">
                     <h3 className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2 flex items-center gap-1.5"><Building2 size={12} /> Top Firms</h3>
                     <div className="space-y-1">
@@ -603,8 +628,6 @@ function SearchPage({ onNavigate }: { onNavigate: (page: Page, ctx?: unknown) =>
                       {sidebar.firms.length === 0 && <p className="text-xs text-gray-400 py-1">No data</p>}
                     </div>
                   </div>
-
-                  {/* Top Clients by Spending */}
                   <div className="bg-white rounded-lg border border-gray-200 p-3">
                     <h3 className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2 flex items-center gap-1.5"><DollarSign size={12} /> Top Clients by Spending</h3>
                     <div className="space-y-1">
@@ -623,8 +646,6 @@ function SearchPage({ onNavigate }: { onNavigate: (page: Page, ctx?: unknown) =>
                       {sidebar.clients.length === 0 && <p className="text-xs text-gray-400 py-1">No data</p>}
                     </div>
                   </div>
-
-                  {/* Top Lobbyists */}
                   <div className="bg-white rounded-lg border border-gray-200 p-3">
                     <h3 className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2 flex items-center gap-1.5"><User size={12} /> Top Lobbyists</h3>
                     <div className="space-y-1">
@@ -646,6 +667,63 @@ function SearchPage({ onNavigate }: { onNavigate: (page: Page, ctx?: unknown) =>
                 </>
               )}
             </>
+          ) : (
+            <>
+              {globalLoading ? (
+                <div className="flex justify-center py-8"><Loader2 className="animate-spin text-gray-300" size={20} /></div>
+              ) : (
+                <>
+                  <div className="bg-white rounded-lg border border-gray-200 p-3">
+                    <h3 className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2 flex items-center gap-1.5"><Building2 size={12} /> Top Firms by Revenue</h3>
+                    <div className="space-y-1">
+                      {globalFirms.map((f, i) => (
+                        <IssueSidebarItem
+                          key={f.name}
+                          rank={i + 1}
+                          name={f.name}
+                          value={f.total_income}
+                          maxValue={globalFirms[0]?.total_income || 1}
+                          formatValue={formatMoney}
+                          onClick={() => onNavigate('search', { registrant: f.name })}
+                        />
+                      ))}
+                    </div>
+                  </div>
+                  <div className="bg-white rounded-lg border border-gray-200 p-3">
+                    <h3 className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2 flex items-center gap-1.5"><DollarSign size={12} /> Top Clients by Spending</h3>
+                    <div className="space-y-1">
+                      {globalClients.map((c, i) => (
+                        <IssueSidebarItem
+                          key={c.name}
+                          rank={i + 1}
+                          name={c.name}
+                          value={c.total_spend}
+                          maxValue={globalClients[0]?.total_spend || 1}
+                          formatValue={formatMoney}
+                          onClick={() => onNavigate('search', { client: c.name })}
+                        />
+                      ))}
+                    </div>
+                  </div>
+                  <div className="bg-white rounded-lg border border-gray-200 p-3">
+                    <h3 className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2 flex items-center gap-1.5"><User size={12} /> Top Lobbyists by Clients</h3>
+                    <div className="space-y-1">
+                      {globalLobbyists.map((l, i) => (
+                        <IssueSidebarItem
+                          key={l.name}
+                          rank={i + 1}
+                          name={l.name}
+                          value={l.unique_clients}
+                          maxValue={globalLobbyists[0]?.unique_clients || 1}
+                          formatValue={v => `${v} clients`}
+                          onClick={() => onNavigate('search', { q: l.name })}
+                        />
+                      ))}
+                    </div>
+                  </div>
+                </>
+              )}
+            </>
           )}
           </div>
         </div>
@@ -655,13 +733,29 @@ function SearchPage({ onNavigate }: { onNavigate: (page: Page, ctx?: unknown) =>
 }
 
 // ---------- Filing Detail ----------
-function FilingDetailPage({ filingUuid, onBack }: { filingUuid: string; onBack: () => void }) {
+function FilingDetailPage({ filingUuid, onBack, onNavigate }: { filingUuid: string; onBack: () => void; onNavigate: (page: Page, ctx?: unknown) => void }) {
   const [filing, setFiling] = useState<FilingDetail | null>(null);
   const [loading, setLoading] = useState(true);
+  const [entityMatches, setEntityMatches] = useState<Record<string, number>>({});
 
   useEffect(() => {
     api.getFiling(filingUuid).then(f => { setFiling(f); setLoading(false); }).catch(() => setLoading(false));
   }, [filingUuid]);
+
+  // Look up entity matches for registrant and client names
+  useEffect(() => {
+    if (!filing) return;
+    const names: string[] = [];
+    if (filing.registrant?.name) names.push(filing.registrant.name);
+    if (filing.client?.name) names.push(filing.client.name);
+    names.forEach(name => {
+      api.getEntities({ q: name, page_size: 1 }).then(res => {
+        if (res.results.length > 0 && res.results[0].name.toLowerCase() === name.toLowerCase()) {
+          setEntityMatches(prev => ({ ...prev, [name.toLowerCase()]: res.results[0].id }));
+        }
+      }).catch(() => {});
+    });
+  }, [filing]);
 
   if (loading) return <div className="flex items-center justify-center h-64"><Loader2 className="animate-spin text-indigo-600" size={32} /></div>;
   if (!filing) return <div className="text-center py-12 text-gray-500">Filing not found.</div>;
@@ -675,8 +769,21 @@ function FilingDetailPage({ filingUuid, onBack }: { filingUuid: string; onBack: 
       <div className="bg-white rounded-lg border border-gray-200 p-6">
         <div className="flex items-start justify-between gap-4 mb-4">
           <div>
-            <h1 className="text-xl font-bold text-gray-900">{filing.client?.name || 'Unknown Client'}</h1>
-            <p className="text-gray-500">Filed by {filing.registrant?.name || 'Unknown Registrant'}</p>
+            <h1 className="text-xl font-bold text-gray-900 flex items-center gap-2">
+              {filing.client?.name ? (
+                <button onClick={() => onNavigate('search', { client: filing.client!.name })} className="hover:text-indigo-600 transition cursor-pointer">{filing.client.name}</button>
+              ) : 'Unknown Client'}
+              {filing.client?.name && entityMatches[filing.client.name.toLowerCase()] && (
+                <button onClick={() => onNavigate('entity', entityMatches[filing.client!.name.toLowerCase()])} className="text-gray-400 hover:text-indigo-600 cursor-pointer" title="View Influence profile"><Newspaper size={14} /></button>
+              )}
+            </h1>
+            <p className="text-gray-500 flex items-center gap-1">Filed by {filing.registrant?.name ? (
+              <button onClick={() => onNavigate('search', { registrant: filing.registrant!.name })} className="hover:text-indigo-600 transition cursor-pointer">{filing.registrant.name}</button>
+            ) : 'Unknown Registrant'}
+              {filing.registrant?.name && entityMatches[filing.registrant.name.toLowerCase()] && (
+                <button onClick={() => onNavigate('entity', entityMatches[filing.registrant!.name.toLowerCase()])} className="text-gray-400 hover:text-indigo-600 cursor-pointer" title="View Influence profile"><Newspaper size={14} /></button>
+              )}
+            </p>
           </div>
           <div className="text-right shrink-0">
             <span className="bg-indigo-50 text-indigo-700 px-3 py-1 rounded-full text-sm font-medium">
@@ -719,7 +826,12 @@ function FilingDetailPage({ filingUuid, onBack }: { filingUuid: string; onBack: 
         {filing.registrant_detail && (
           <div className="bg-white rounded-lg border border-gray-200 p-4">
             <h3 className="font-semibold text-gray-900 mb-2 flex items-center gap-2"><Building2 size={16} /> Registrant</h3>
-            <p className="text-sm font-medium">{filing.registrant_detail.name}</p>
+            <p className="text-sm font-medium flex items-center gap-1">
+              <button onClick={() => onNavigate('search', { registrant: filing.registrant_detail!.name })} className="hover:text-indigo-600 transition cursor-pointer">{filing.registrant_detail.name}</button>
+              {entityMatches[filing.registrant_detail.name.toLowerCase()] && (
+                <button onClick={() => onNavigate('entity', entityMatches[filing.registrant_detail!.name.toLowerCase()])} className="text-gray-400 hover:text-indigo-600 cursor-pointer" title="View Influence profile"><Newspaper size={14} /></button>
+              )}
+            </p>
             {filing.registrant_detail.description && <p className="text-sm text-gray-500 mt-1">{filing.registrant_detail.description}</p>}
             {filing.registrant_detail.address && <p className="text-xs text-gray-400 mt-1">{filing.registrant_detail.address}</p>}
             {(filing.registrant_detail.state || filing.registrant_detail.country) && (
@@ -730,7 +842,12 @@ function FilingDetailPage({ filingUuid, onBack }: { filingUuid: string; onBack: 
         {filing.client_detail && (
           <div className="bg-white rounded-lg border border-gray-200 p-4">
             <h3 className="font-semibold text-gray-900 mb-2 flex items-center gap-2"><Users size={16} /> Client</h3>
-            <p className="text-sm font-medium">{filing.client_detail.name}</p>
+            <p className="text-sm font-medium flex items-center gap-1">
+              <button onClick={() => onNavigate('search', { client: filing.client_detail!.name })} className="hover:text-indigo-600 transition cursor-pointer">{filing.client_detail.name}</button>
+              {entityMatches[filing.client_detail.name.toLowerCase()] && (
+                <button onClick={() => onNavigate('entity', entityMatches[filing.client_detail!.name.toLowerCase()])} className="text-gray-400 hover:text-indigo-600 cursor-pointer" title="View Influence profile"><Newspaper size={14} /></button>
+              )}
+            </p>
             {filing.client_detail.description && <p className="text-sm text-gray-500 mt-1">{filing.client_detail.description}</p>}
             {(filing.client_detail.state || filing.client_detail.country) && (
               <p className="text-xs text-gray-400">{[filing.client_detail.state, filing.client_detail.country].filter(Boolean).join(', ')}</p>
@@ -781,8 +898,9 @@ function FilingDetailPage({ filingUuid, onBack }: { filingUuid: string; onBack: 
                         if (typeof l === 'string') return <p key={j} className="text-sm text-gray-700">{l}</p>;
                         const name = l.lobbyist ? `${l.lobbyist.first_name || ''} ${l.lobbyist.last_name || ''}`.trim() : '';
                         return (
-                          <p key={j} className="text-sm text-gray-700">
-                            {name}{l.covered_position ? <span className="text-gray-400 ml-1">({l.covered_position})</span> : ''}
+                          <p key={j} className="text-sm text-gray-700 flex items-center gap-1">
+                            <button onClick={() => onNavigate('search', { q: name })} className="hover:text-indigo-600 transition cursor-pointer">{name}</button>
+                            {l.covered_position ? <span className="text-gray-400">({l.covered_position})</span> : ''}
                           </p>
                         );
                       })}
@@ -3171,7 +3289,7 @@ function ChatPage({ onNavigate, initialConversationId }: { onNavigate: (page: Pa
 
 // ---------- App ----------
 export default function App() {
-  type NavState = { page: Page; filingUuid?: string; entityId?: number; newsletterId?: number; centerEntityId?: number; leaderboardType?: string; conversationId?: number };
+  type NavState = { page: Page; filingUuid?: string; entityId?: number; newsletterId?: number; centerEntityId?: number; leaderboardType?: string; conversationId?: number; searchFilter?: { registrant?: string; client?: string; q?: string } };
   const [navState, setNavState] = useState<NavState>({ page: 'dashboard' });
   const [navHistory, setNavHistory] = useState<NavState[]>([]);
   const [syncVersion, setSyncVersion] = useState(0);
@@ -3196,6 +3314,8 @@ export default function App() {
       next.leaderboardType = ctx;
     } else if (target === 'chat' && typeof ctx === 'number') {
       next.conversationId = ctx;
+    } else if (target === 'search' && ctx && typeof ctx === 'object') {
+      next.searchFilter = ctx as NavState['searchFilter'];
     }
     setNavHistory(h => [...h, navState]);
     setNavState(next);
@@ -3223,10 +3343,10 @@ export default function App() {
       <Nav page={navPage} setPage={p => { setNavHistory([]); setNavState({ page: p }); }} />
       <main className="max-w-7xl mx-auto px-4 sm:px-6 py-6">
         {page === 'dashboard' && <Dashboard onNavigate={handleNavigate} />}
-        {page === 'search' && <SearchPage onNavigate={handleNavigate} />}
+        {page === 'search' && <SearchPage onNavigate={handleNavigate} initialFilter={navState.searchFilter} />}
 
         {page === 'filing' && filingUuid && (
-          <FilingDetailPage filingUuid={filingUuid} onBack={handleBack} />
+          <FilingDetailPage filingUuid={filingUuid} onBack={handleBack} onNavigate={handleNavigate} />
         )}
         {page === 'influence' && <InfluencePage onNavigate={handleNavigate} />}
         {page === 'newsletter' && newsletterId && (
