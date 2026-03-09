@@ -311,19 +311,20 @@ def search_filings(
             query = query.filter(Filing.income >= min_income)
         if min_expenses:
             query = query.filter(Filing.expenses >= min_expenses)
-        if issue_code and lobbyist:
-            query = query.join(LobbyingActivity).filter(
-                LobbyingActivity.general_issue_code == issue_code,
-                LobbyingActivity.lobbyists.ilike(f"%{lobbyist}%"),
-            )
-        elif issue_code:
+        _joined_activity = False
+        if issue_code:
             query = query.join(LobbyingActivity).filter(
                 LobbyingActivity.general_issue_code == issue_code
             )
-        elif lobbyist:
-            query = query.join(LobbyingActivity).filter(
-                LobbyingActivity.lobbyists.ilike(f"%{lobbyist}%")
-            )
+            _joined_activity = True
+        if lobbyist:
+            lob_parts = [p.strip() for p in lobbyist.split() if p.strip()]
+            lob_filters = [LobbyingActivity.lobbyists.ilike(f"%{part}%") for part in lob_parts]
+            if not _joined_activity:
+                query = query.join(LobbyingActivity)
+            query = query.filter(*lob_filters)
+        if lobbyist or _joined_activity:
+            query = query.distinct()
 
         if total is None:
             total = query.count()
