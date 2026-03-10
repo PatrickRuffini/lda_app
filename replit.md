@@ -13,7 +13,7 @@ A full-stack application for searching and browsing U.S. Senate Lobbying Disclos
 - **Workflow command**: `bash start.sh` (NOT `npm run dev`)
 
 ### Tech Stack
-- **Backend**: Python 3.11, FastAPI, SQLAlchemy, Playwright (headless Chromium), BeautifulSoup, lxml
+- **Backend**: Python 3.11, FastAPI, SQLAlchemy, curl_cffi (with Playwright fallback), BeautifulSoup, lxml
 - **Frontend**: React 19, TypeScript, Vite 7, Tailwind CSS v4, Lucide icons, date-fns
 - **Database**: PostgreSQL (via `DATABASE_URL` environment variable)
 - **CSS**: Tailwind v4 — uses `@import "tailwindcss"` syntax (NOT `@tailwind base/components/utilities`)
@@ -142,13 +142,15 @@ A full-stack application for searching and browsing U.S. Senate Lobbying Disclos
 - Cache invalidated after sync and reprocess operations
 
 ### Newsletter Scraping
-- Uses Playwright headless Chromium to bypass Cloudflare
+- Tries Playwright headless Chromium first; falls back to curl_cffi (impersonating Chrome) if browser unavailable
+- curl_cffi requires no system libraries and works reliably in Replit's nix environment
 - Discovers newsletter URLs from archive pages (`/newsletters/politico-influence/archive`)
-- Processes up to 100 newsletters per scrape run
+- Supports `cutoff_date` parameter to stop at a specific date
 - Entity extraction runs immediately after each newsletter is stored
+- After scraping, runs duplicate entity merge, LDA record linking, and lobbyist linking
 
 ## Git Notes
 
 - Good reference commit: `a245dd4` ("Prevent duplicate newsletter appearances in entity details") — last stable commit with all features
 - Restore commit: `32f141fb` — contains the full restored codebase
-- Current data: 100 newsletters, 11,206 entities, 30,603 relationships in PostgreSQL
+- Current data: 267 newsletters (Jan 20, 2025 – Mar 6, 2026), 25,936 entities, 51,947 mentions, 90,258 relationships in PostgreSQL

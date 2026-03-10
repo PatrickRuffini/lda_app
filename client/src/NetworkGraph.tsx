@@ -1,11 +1,72 @@
 import { useRef, useEffect, useCallback } from 'react';
 import type { NetworkData } from './api';
 
+export type SizeMode = 'mentions' | 'centrality';
+
 interface Props {
   data: NetworkData;
   width: number;
   height: number;
   onNodeClick?: (nodeId: number) => void;
+  sizeBy?: SizeMode;
+  centralityScores?: Map<number, number>;
+}
+
+/**
+ * Compute eigenvector centrality via power iteration.
+ * Returns a Map of node id -> centrality score (0-1 normalized).
+ */
+export function computeEigenvectorCentrality(
+  nodes: { id: number }[],
+  edges: { source: number; target: number; weight: number }[],
+  iterations = 50,
+): Map<number, number> {
+  const n = nodes.length;
+  if (n === 0) return new Map();
+
+  const idToIdx = new Map<number, number>();
+  nodes.forEach((node, i) => idToIdx.set(node.id, i));
+
+  // Build adjacency list with weights
+  const adj: number[][] = Array.from({ length: n }, () => []);
+  const weights: number[][] = Array.from({ length: n }, () => []);
+  for (const e of edges) {
+    const ai = idToIdx.get(e.source);
+    const bi = idToIdx.get(e.target);
+    if (ai === undefined || bi === undefined) continue;
+    adj[ai].push(bi);
+    weights[ai].push(e.weight);
+    adj[bi].push(ai);
+    weights[bi].push(e.weight);
+  }
+
+  // Power iteration
+  let vec = new Float64Array(n).fill(1 / n);
+  for (let iter = 0; iter < iterations; iter++) {
+    const next = new Float64Array(n);
+    for (let i = 0; i < n; i++) {
+      let sum = 0;
+      for (let j = 0; j < adj[i].length; j++) {
+        sum += vec[adj[i][j]] * weights[i][j];
+      }
+      next[i] = sum;
+    }
+    // Normalize
+    let norm = 0;
+    for (let i = 0; i < n; i++) norm += next[i] * next[i];
+    norm = Math.sqrt(norm) || 1;
+    for (let i = 0; i < n; i++) next[i] /= norm;
+    vec = next;
+  }
+
+  // Normalize to 0-1 range
+  let max = 0;
+  for (let i = 0; i < n; i++) if (vec[i] > max) max = vec[i];
+  const result = new Map<number, number>();
+  for (let i = 0; i < n; i++) {
+    result.set(nodes[i].id, max > 0 ? vec[i] / max : 0);
+  }
+  return result;
 }
 
 interface SimNode {
@@ -34,7 +95,7 @@ const TYPE_COLORS: Record<string, string> = {
   unknown: '#94a3b8',
 };
 
-export default function NetworkGraph({ data, width, height, onNodeClick }: Props) {
+export default function NetworkGraph({ data, width, height, onNodeClick, sizeBy = 'mentions', centralityScores }: Props) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const nodesRef = useRef<SimNode[]>([]);
   const edgesRef = useRef<SimEdge[]>([]);
@@ -122,6 +183,15 @@ export default function NetworkGraph({ data, width, height, onNodeClick }: Props
     }
   }, [width, height]);
 
+  // Node radius helper based on sizing mode
+  const getRadius = useCallback((node: SimNode, maxMentions: number) => {
+    if (sizeBy === 'centrality' && centralityScores) {
+      const score = centralityScores.get(node.id) ?? 0;
+      return Math.max(5, Math.sqrt(score) * 22);
+    }
+    return Math.max(5, Math.sqrt(node.mention_count / maxMentions) * 20);
+  }, [sizeBy, centralityScores]);
+
   // Render loop
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -162,7 +232,7 @@ export default function NetworkGraph({ data, width, height, onNodeClick }: Props
       const maxMentions = Math.max(...nodes.map(n => n.mention_count), 1);
 
       for (const n of nodes) {
-        const r = Math.max(5, Math.sqrt(n.mention_count / maxMentions) * 20);
+        const r = getRadius(n, maxMentions);
         const color = TYPE_COLORS[n.entity_type] || TYPE_COLORS.unknown;
 
         ctx.beginPath();
@@ -181,7 +251,7 @@ export default function NetworkGraph({ data, width, height, onNodeClick }: Props
       ctx.fillStyle = '#1f2937';
       ctx.textAlign = 'center';
       for (const n of nodes) {
-        const r = Math.max(5, Math.sqrt(n.mention_count / maxMentions) * 20);
+        const r = getRadius(n, maxMentions);
         if (r > 8 || hovered?.id === n.id) {
           const fontSize = Math.max(9, Math.min(13, r * 0.9));
           ctx.font = `${hovered?.id === n.id ? 'bold ' : ''}${fontSize}px system-ui, sans-serif`;
@@ -195,7 +265,7 @@ export default function NetworkGraph({ data, width, height, onNodeClick }: Props
 
     animRef.current = requestAnimationFrame(draw);
     return () => cancelAnimationFrame(animRef.current);
-  }, [data, width, height, simulate]);
+  }, [data, width, height, simulate, getRadius]);
 
   // Mouse interaction handlers
   const screenToWorld = useCallback((sx: number, sy: number) => {
@@ -208,13 +278,13 @@ export default function NetworkGraph({ data, width, height, onNodeClick }: Props
     const maxMentions = Math.max(...nodes.map(n => n.mention_count), 1);
     for (let i = nodes.length - 1; i >= 0; i--) {
       const n = nodes[i];
-      const r = Math.max(5, Math.sqrt(n.mention_count / maxMentions) * 20) + 4;
+      const r = getRadius(n, maxMentions) + 4;
       const dx = wx - n.x;
       const dy = wy - n.y;
       if (dx * dx + dy * dy <= r * r) return n;
     }
     return null;
-  }, []);
+  }, [getRadius]);
 
   const handleMouseDown = useCallback((e: React.MouseEvent) => {
     const rect = (e.target as HTMLCanvasElement).getBoundingClientRect();
@@ -282,7 +352,8 @@ export default function NetworkGraph({ data, width, height, onNodeClick }: Props
       onMouseLeave={handleMouseUp}
       onClick={handleClick}
       onWheel={handleWheel}
-      className="rounded-lg border border-gray-200 bg-white"
+      className="rounded-lg border border-gray-200 bg-white max-w-full"
+      style={{ width: '100%', height }}
     />
   );
 }

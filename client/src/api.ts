@@ -82,13 +82,55 @@ export interface TopEntity {
   name: string;
   senate_id: number;
   filing_count: number;
+  unique_clients?: number;
+  unique_registrants?: number;
   total_income: number;
+}
+
+export interface EntityAppearance {
+  id: number;
+  name: string;
+  entity_type: string;
+  display_name: string;
+  mention_count: number;
+  newsletter_count: number;
+}
+
+export interface RevenueByQuarter {
+  overall: Array<{ year: number; period: string; revenue: number; filing_count: number }>;
+  series: Array<{ name: string; data: Array<{ period: string; revenue: number }> }>;
+  periods: string[];
+}
+
+export interface IssueFirmHeatmap {
+  firms: string[];
+  issues: string[];
+  cells: number[][];
+}
+
+export interface EntityLdaStats {
+  has_lda_data: boolean;
+  registrant_name?: string;
+  filing_count?: number;
+  total_revenue?: number;
+  unique_clients?: number;
+  rank?: number;
+  total_registrants?: number;
+  issues?: Array<{
+    issue: string;
+    count: number;
+    pct: number;
+    avg_pct: number;
+    overindex: number;
+  }>;
 }
 
 export interface Stats {
   total_filings: number;
   total_registrants: number;
   total_clients: number;
+  total_lobbyists: number;
+  total_revenue: number;
   latest_filing: string | null;
   filings_by_year: Array<{ year: number; count: number }>;
 }
@@ -120,6 +162,7 @@ export interface SearchParams {
   issue_code?: string;
   registrant?: string;
   client?: string;
+  lobbyist?: string;
   min_income?: number;
   min_expenses?: number;
   sort?: string;
@@ -158,6 +201,8 @@ export interface NewsletterDetail {
     id: number;
     name: string;
     entity_type: string;
+    is_consultant: boolean;
+    is_client: boolean;
     display_name: string;
     paragraph_index: number;
     context: string;
@@ -169,13 +214,33 @@ export interface EntitySummary {
   id: number;
   name: string;
   entity_type: string;
+  is_consultant?: boolean;
+  is_client?: boolean;
+  is_lobbyist?: boolean;
   display_name: string;
   mention_count: number;
   first_seen: string | null;
   last_seen: string | null;
 }
 
+export interface LdaFilingSummary {
+  filing_uuid: string;
+  filing_type: string;
+  filing_type_display: string;
+  filing_year: number;
+  filing_period_display: string;
+  dt_posted: string | null;
+  income: number | null;
+  expenses: number | null;
+  url: string | null;
+  registrant_name: string | null;
+  client_name: string | null;
+}
+
 export interface EntityDetail extends EntitySummary {
+  registrant_id: number | null;
+  client_id: number | null;
+  lda_match_method: string | null;
   connections: Array<{
     entity: EntitySummary;
     relationship_type: string;
@@ -183,6 +248,12 @@ export interface EntityDetail extends EntitySummary {
     first_seen: string | null;
     last_seen: string | null;
     context_snippets: string[];
+    match_confidence: string | null;
+    filing_id: number | null;
+    filing_uuid: string | null;
+    filing_type: string | null;
+    filing_url: string | null;
+    filing_date: string | null;
   }>;
   newsletter_mentions: Array<{
     newsletter_id: number;
@@ -190,6 +261,7 @@ export interface EntityDetail extends EntitySummary {
     published_date: string | null;
     context: string;
   }>;
+  lda_filings: LdaFilingSummary[];
 }
 
 export interface NetworkData {
@@ -220,6 +292,15 @@ export interface InfluenceStats {
   latest_newsletter: string | null;
 }
 
+export interface ReportSeries {
+  series: Array<{
+    name: string;
+    data: Array<{ period: string; count: number }>;
+  }>;
+  granularity: string;
+  periods?: string[];
+}
+
 export const api = {
   searchFilings: (params: SearchParams) =>
     fetchJson<PaginatedResponse<FilingSummary>>(`${BASE}/filings?${toQuery(params)}`),
@@ -230,14 +311,38 @@ export const api = {
   getIssues: () =>
     fetchJson<IssueSummary[]>(`${BASE}/issues`),
 
-  getFilingsByIssue: (code: string, page = 1) =>
-    fetchJson<PaginatedResponse<FilingSummary>>(`${BASE}/issues/${code}/filings?page=${page}`),
+  getFilingsByIssue: (code: string, page = 1, filters?: { registrant_id?: number; client_id?: number; lobbyist_name?: string }) => {
+    const params = new URLSearchParams({ page: String(page) });
+    if (filters?.registrant_id) params.set('registrant_id', String(filters.registrant_id));
+    if (filters?.client_id) params.set('client_id', String(filters.client_id));
+    if (filters?.lobbyist_name) params.set('lobbyist_name', filters.lobbyist_name);
+    return fetchJson<PaginatedResponse<FilingSummary>>(`${BASE}/issues/${code}/filings?${params}`);
+  },
 
-  getTopRegistrants: (limit = 20) =>
-    fetchJson<TopEntity[]>(`${BASE}/top-registrants?limit=${limit}`),
+  getIssueSidebar: (code: string, limit = 10) =>
+    fetchJson<{
+      firms: Array<{ id: number; name: string; filing_count: number; total_income: number }>;
+      clients: Array<{ id: number; name: string; filing_count: number; total_spending: number }>;
+      lobbyists: Array<{ name: string; filing_count: number }>;
+    }>(`${BASE}/issues/${code}/sidebar?limit=${limit}`),
 
-  getTopClients: (limit = 20) =>
-    fetchJson<TopEntity[]>(`${BASE}/top-clients?limit=${limit}`),
+  getTopRegistrants: (limit = 20, sort = 'filings') =>
+    fetchJson<TopEntity[]>(`${BASE}/top-registrants?limit=${limit}&sort=${sort}`),
+
+  getTopClients: (limit = 20, sort = 'filings') =>
+    fetchJson<TopEntity[]>(`${BASE}/top-clients?limit=${limit}&sort=${sort}`),
+
+  getRevenuePerLobbyist: (limit = 15, minClients = 0) =>
+    fetchJson<Array<{ id: number; name: string; filing_count: number; total_revenue: number; unique_clients: number; lobbyist_count: number; revenue_per_lobbyist: number | null }>>(`${BASE}/revenue-per-lobbyist?limit=${limit}&min_clients=${minClients}`),
+
+  getTopLobbyistsByClients: (limit = 15) =>
+    fetchJson<Array<{ name: string; unique_clients: number; firms: string[] }>>(`${BASE}/top-lobbyists-by-clients?limit=${limit}`),
+
+  getTopConsultants: (limit = 10, sort = 'mention_count') =>
+    fetchJson<Array<{ id: number; name: string; display_name: string; mention_count: number; filing_count: number; unique_clients: number }>>(`${BASE}/top-consultants?limit=${limit}&sort=${sort}`),
+
+  getTopLobbyists: (limit = 10, sort = 'mention_count') =>
+    fetchJson<Array<{ id: number; name: string; display_name: string; mention_count: number }>>(`${BASE}/top-lobbyists?limit=${limit}&sort=${sort}`),
 
   getStats: () =>
     fetchJson<Stats>(`${BASE}/stats`),
@@ -273,7 +378,7 @@ export const api = {
   getEntity: (id: number) =>
     fetchJson<EntityDetail>(`${BASE}/influence/entities/${id}`),
 
-  getNetwork: (params: { min_weight?: number; max_nodes?: number; entity_type?: string; center_entity_id?: number }) =>
+  getNetwork: (params: { min_weight?: number; max_nodes?: number; entity_type?: string; center_entity_id?: number; depth?: number }) =>
     fetchJson<NetworkData>(`${BASE}/influence/network?${toQuery(params)}`),
 
   getInfluenceStats: () =>
@@ -288,4 +393,72 @@ export const api = {
 
   reprocessEntities: () =>
     fetch(`${BASE}/influence/reprocess`, { method: 'POST' }).then(r => r.json()),
+
+  getReprocessStatus: () =>
+    fetchJson<{ status?: string; processed?: number; total?: number }>(`${BASE}/influence/reprocess/status`),
+
+  linkLda: () =>
+    fetch(`${BASE}/influence/link-lda`, { method: 'POST' }).then(r => r.json()),
+
+  // AI
+  getAiStatus: () =>
+    fetchJson<{ available: boolean }>(`${BASE}/ai/status`),
+
+  getEntitySummary: (id: number) =>
+    postJson<{ summary: string }>(`${BASE}/ai/entity-summary/${id}`, {}),
+
+  aiChat: (message: string, conversationId?: number, entityId?: number) =>
+    postJson<{ response: string; conversation_id: number; message_id: number }>(
+      `${BASE}/ai/chat`,
+      { message, conversation_id: conversationId, entity_id: entityId },
+    ),
+
+  getConversations: (page = 1) =>
+    fetchJson<{ results: Array<{ id: number; title: string; entity_id: number | null; message_count: number; created_at: string | null; updated_at: string | null }>; total: number; page: number; page_size: number }>(`${BASE}/ai/conversations?page=${page}`),
+
+  getConversation: (id: number) =>
+    fetchJson<{ id: number; title: string; entity_id: number | null; created_at: string | null; updated_at: string | null; messages: Array<{ id: number; role: string; content: string; created_at: string | null }> }>(`${BASE}/ai/conversations/${id}`),
+
+  deleteConversation: (id: number) =>
+    fetch(`${BASE}/ai/conversations/${id}`, { method: 'DELETE' }).then(r => r.json()),
+
+  // Reports
+  getRegistrants: () =>
+    fetchJson<Array<{ id: number; name: string; filing_count: number }>>(`${BASE}/registrants`),
+
+  getRegistrationsByPeriod: (params: { granularity?: string; start_date?: string; end_date?: string; limit?: number; registrant_id?: number; issue_code?: string }) =>
+    fetchJson<ReportSeries>(`${BASE}/reports/registrations-by-period?${toQuery(params)}`),
+
+  getIssuesByPeriod: (params: { granularity?: string; start_date?: string; end_date?: string; limit?: number; registrant_id?: number; issue_code?: string }) =>
+    fetchJson<ReportSeries>(`${BASE}/reports/issues-by-period?${toQuery(params)}`),
+
+  getActivityHeatmap: (params?: { registrant_id?: number; issue_code?: string }) =>
+    fetchJson<{ days: Array<{ date: string; count: number }> }>(`${BASE}/reports/activity-heatmap${params ? '?' + toQuery(params) : ''}`),
+
+  getRevenueByQuarter: (limit = 10, params?: { registrant_id?: number; issue_code?: string }) =>
+    fetchJson<RevenueByQuarter>(`${BASE}/reports/revenue-by-quarter?limit=${limit}${params ? '&' + toQuery(params) : ''}`),
+
+  getEntityAppearances: (limit = 25, entityType?: string) =>
+    fetchJson<EntityAppearance[]>(`${BASE}/reports/entity-appearances?limit=${limit}${entityType ? `&entity_type=${entityType}` : ''}`),
+
+  getIssueFirmHeatmap: (limit = 15) =>
+    fetchJson<IssueFirmHeatmap>(`${BASE}/reports/issue-firm-heatmap?limit=${limit}`),
+
+  getEntityLdaStats: (entityId: number) =>
+    fetchJson<EntityLdaStats>(`${BASE}/influence/entities/${entityId}/lda-stats`),
+
+  getTopConsultantsByRevenue: (limit = 15) =>
+    fetchJson<Array<{ id: number; display_name: string; name: string; total_revenue: number; filing_count: number; unique_clients: number }>>(`${BASE}/reports/top-consultants-by-revenue?limit=${limit}`),
+
+  getTopClientsBySpend: (limit = 15) =>
+    fetchJson<Array<{ name: string; total_spend: number; filing_count: number; firm_count: number }>>(`${BASE}/reports/top-clients-by-spend?limit=${limit}`),
+
+  getFilingTypeBreakdown: (params?: { registrant_id?: number; issue_code?: string }) =>
+    fetchJson<Array<{ type: string; display: string; count: number }>>(`${BASE}/reports/filing-type-breakdown${params ? '?' + toQuery(params) : ''}`),
+
+  getRegistrationTrend: (granularity = 'month', params?: { registrant_id?: number; issue_code?: string }) =>
+    fetchJson<{ periods: string[]; registrations: number[]; terminations: number[]; granularity: string }>(`${BASE}/reports/registration-trend?granularity=${granularity}${params ? '&' + toQuery(params) : ''}`),
+
+  getTopIssuesByRevenue: (limit = 15) =>
+    fetchJson<Array<{ issue: string; total_revenue: number; filing_count: number; firm_count: number }>>(`${BASE}/reports/top-issues-by-revenue?limit=${limit}`),
 };
