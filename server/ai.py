@@ -192,9 +192,196 @@ Provide a concise intelligence brief on this entity's lobbying activity, policy 
         session.close()
 
 
+def _extract_date_range(query: str):
+    """Extract date references from a query to enable time-based filtering.
+
+    Returns (start_date, end_date) as date objects, or (None, None) if no dates detected.
+    """
+    import re
+    from datetime import date, timedelta
+
+    query_lower = query.lower()
+
+    month_map = {
+        "january": 1, "february": 2, "march": 3, "april": 4,
+        "may": 5, "june": 6, "july": 7, "august": 8,
+        "september": 9, "october": 10, "november": 11, "december": 12,
+        "jan": 1, "feb": 2, "mar": 3, "apr": 4,
+        "jun": 6, "jul": 7, "aug": 8, "sep": 9, "oct": 10, "nov": 11, "dec": 12,
+    }
+
+    # Find all month+year references like "February 2026" or "Feb 2026"
+    found_months = []
+    for name, num in month_map.items():
+        pattern = rf'\b{name}\b\s*(\d{{4}})?'
+        match = re.search(pattern, query_lower)
+        if match:
+            year = int(match.group(1)) if match.group(1) else date.today().year
+            found_months.append((year, num))
+
+    # Also check for Q1/Q2/etc patterns
+    q_match = re.search(r'\bq([1-4])\b\s*(\d{4})?', query_lower)
+    if q_match:
+        quarter = int(q_match.group(1))
+        year = int(q_match.group(2)) if q_match.group(2) else date.today().year
+        start_month = (quarter - 1) * 3 + 1
+        end_month = start_month + 2
+        import calendar
+        end_day = calendar.monthrange(year, end_month)[1]
+        return date(year, start_month, 1), date(year, end_month, end_day)
+
+    if not found_months:
+        # Check for "recent", "latest", "current" — return last 60 days
+        if any(w in query_lower for w in ["recent", "latest", "current", "new", "this month", "this quarter"]):
+            end = date.today()
+            start = end - timedelta(days=60)
+            return start, end
+        return None, None
+
+    found_months.sort()
+    import calendar
+    start = date(found_months[0][0], found_months[0][1], 1)
+    last = found_months[-1]
+    end_day = calendar.monthrange(last[0], last[1])[1]
+    end = date(last[0], last[1], end_day)
+    return start, end
+
+
+def _gather_temporal_context(session: Session, start_date, end_date) -> list[str]:
+    """Gather aggregate data for a specific time period."""
+    from datetime import date as date_type
+    context_parts = []
+
+    # Recent newsletters in the date range
+    newsletters = (
+        session.query(Newsletter)
+        .filter(
+            Newsletter.published_date >= start_date,
+            Newsletter.published_date <= end_date,
+        )
+        .order_by(desc(Newsletter.published_date))
+        .all()
+    )
+
+    if newsletters:
+        context_parts.append(f"\n## Newsletters from {start_date} to {end_date} ({len(newsletters)} total)")
+        for nl in newsletters:
+            # Extract first ~300 chars of body for summary
+            summary = (nl.body_text or "")[:400].strip()
+            context_parts.append(
+                f"### {nl.title} ({nl.published_date.strftime('%Y-%m-%d') if nl.published_date else 'N/A'})\n{summary}\n"
+            )
+
+    # New registrations in the period
+    from sqlalchemy import and_
+    new_registrations = (
+        session.query(Filing, Registrant, Client)
+        .outerjoin(Registrant, Filing.registrant_id == Registrant.id)
+        .outerjoin(Client, Filing.client_id == Client.id)
+        .filter(
+            Filing.dt_posted >= start_date,
+            Filing.dt_posted <= end_date,
+            Filing.filing_type.in_(["RR", "RA"]),
+        )
+        .order_by(desc(Filing.dt_posted))
+        .limit(50)
+        .all()
+    )
+
+    if new_registrations:
+        context_parts.append(f"\n## New Lobbying Registrations ({len(new_registrations)} shown)")
+        for f, reg, cli in new_registrations:
+            # Get activities for this filing
+            activities = session.query(LobbyingActivity).filter(LobbyingActivity.filing_id == f.id).all()
+            issues = [a.general_issue_code_display or a.general_issue_code for a in activities]
+            desc_text = "; ".join(a.description[:150] for a in activities if a.description)
+            parts = [
+                f"- **{reg.name if reg else 'N/A'}** for **{cli.name if cli else 'N/A'}** "
+                f"(posted {f.dt_posted})"
+            ]
+            if issues:
+                parts[0] += f" — Issues: {', '.join(issues)}"
+            if desc_text:
+                parts.append(f"  Description: {desc_text[:300]}")
+            context_parts.append("\n".join(parts))
+
+    # Aggregate issue areas from all filings in the period
+    issue_counts = (
+        session.query(
+            LobbyingActivity.general_issue_code_display,
+            func.count(LobbyingActivity.id).label("cnt"),
+        )
+        .join(Filing, LobbyingActivity.filing_id == Filing.id)
+        .filter(
+            Filing.dt_posted >= start_date,
+            Filing.dt_posted <= end_date,
+        )
+        .group_by(LobbyingActivity.general_issue_code_display)
+        .order_by(desc("cnt"))
+        .limit(20)
+        .all()
+    )
+
+    if issue_counts:
+        context_parts.append("\n## Top Lobbying Issue Areas in Period")
+        for issue, cnt in issue_counts:
+            context_parts.append(f"- {issue}: {cnt} filings")
+
+    # Filing type breakdown
+    type_counts = (
+        session.query(
+            Filing.filing_type_display,
+            func.count(Filing.id).label("cnt"),
+        )
+        .filter(
+            Filing.dt_posted >= start_date,
+            Filing.dt_posted <= end_date,
+        )
+        .group_by(Filing.filing_type_display)
+        .order_by(desc("cnt"))
+        .all()
+    )
+
+    if type_counts:
+        context_parts.append(f"\n## Filing Activity Summary ({start_date} to {end_date})")
+        total = sum(c for _, c in type_counts)
+        context_parts.append(f"Total filings posted: {total}")
+        for ft, cnt in type_counts:
+            context_parts.append(f"- {ft}: {cnt}")
+
+    # Entity mentions in this period's newsletters
+    if newsletters:
+        nl_ids = [nl.id for nl in newsletters]
+        top_entities = (
+            session.query(
+                Entity.display_name, Entity.name, Entity.entity_type,
+                func.count(EntityMention.id).label("cnt"),
+            )
+            .join(EntityMention, Entity.id == EntityMention.entity_id)
+            .filter(EntityMention.newsletter_id.in_(nl_ids))
+            .group_by(Entity.id, Entity.display_name, Entity.name, Entity.entity_type)
+            .order_by(desc("cnt"))
+            .limit(20)
+            .all()
+        )
+
+        if top_entities:
+            context_parts.append("\n## Most Mentioned Entities in Period's Newsletters")
+            for display_name, name, etype, cnt in top_entities:
+                context_parts.append(f"- {display_name or name} ({etype}): {cnt} mentions")
+
+    return context_parts
+
+
 def _gather_chat_context(session: Session, query: str) -> str:
     """Search the database for context relevant to a chat query."""
     context_parts = []
+
+    # Check for date-range / temporal queries and gather aggregate context
+    start_date, end_date = _extract_date_range(query)
+    if start_date and end_date:
+        temporal_ctx = _gather_temporal_context(session, start_date, end_date)
+        context_parts.extend(temporal_ctx)
 
     # Search entities by name
     entity_matches = (
