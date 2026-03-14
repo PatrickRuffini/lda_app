@@ -415,24 +415,42 @@ def _capture_ads_httpx(page_url: str, site: str, _log=None) -> list[dict]:
     seen_destinations = set()
 
     try:
-        r = httpx.get(
-            page_url,
-            follow_redirects=True,
-            timeout=20,
-            headers={
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
-                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-            },
-        )
-        if r.status_code != 200:
+        # Prefer curl_cffi if available — it impersonates Chrome's TLS fingerprint
+        # to bypass Cloudflare, which blocks plain httpx/requests
+        try:
+            from curl_cffi import requests as cffi_requests
+            r = cffi_requests.get(page_url, impersonate="chrome", timeout=20)
+            status_code = r.status_code
+            html_text = r.text
+        except ImportError:
+            r = httpx.get(
+                page_url,
+                follow_redirects=True,
+                timeout=20,
+                headers={
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+                    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                },
+            )
+            status_code = r.status_code
+            html_text = r.text
+
+        if status_code == 403:
             if _log:
-                _log(f"  HTTP {r.status_code} from {page_url}")
+                _log(f"  Blocked (HTTP 403) from {page_url} — likely proxy or Cloudflare. Deploy to production for full access.")
+            raise RuntimeError(f"HTTP 403 from {page_url} — network proxy is blocking access to this site")
+        if status_code != 200:
+            if _log:
+                _log(f"  HTTP {status_code} from {page_url}")
             return captures
-    except httpx.ProxyError as e:
-        if _log:
-            _log(f"  Network blocked (proxy): cannot reach {page_url}. Deploy to production for full access.")
-        raise RuntimeError(f"Network access blocked by proxy: {e}")
-    except Exception as e:
+    except RuntimeError:
+        raise
+    except (httpx.ProxyError, Exception) as e:
+        err_str = str(e).lower()
+        if "proxy" in err_str or "403" in err_str or "tunnel" in err_str:
+            if _log:
+                _log(f"  Network blocked: cannot reach {page_url}. Deploy to production for full access.")
+            raise RuntimeError(f"Network access blocked: {e}")
         if _log:
             _log(f"  HTTP error: {e}")
         return captures
@@ -643,7 +661,15 @@ def _detect_backend(_log=None) -> str:
         if _log:
             _log("Playwright not installed")
 
-    # Fall back to httpx
+    # Fall back to curl_cffi (better Cloudflare bypass) or plain httpx
+    try:
+        from curl_cffi import requests as _cffi
+        if _log:
+            _log("Using curl_cffi + httpx backend (HTML-only, Chrome TLS fingerprint)")
+        return "httpx"
+    except ImportError:
+        pass
+
     try:
         import httpx
         if _log:
