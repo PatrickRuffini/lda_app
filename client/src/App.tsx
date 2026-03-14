@@ -3312,7 +3312,7 @@ function AdsPage({ onNavigate }: { onNavigate: (p: Page, ctx?: unknown) => void 
   const [domainFilter, setDomainFilter] = useState('');
   const [loading, setLoading] = useState(true);
   const [selectedCapture, setSelectedCapture] = useState<AdCaptureDetail | null>(null);
-  const [scrapeStatus, setScrapeStatus] = useState<{ status: string; captured?: number; errors?: number; sites_completed?: string[] } | null>(null);
+  const [scrapeStatus, setScrapeStatus] = useState<{ status: string; captured?: number; errors?: number; sites_completed?: string[]; log?: string[] } | null>(null);
 
   // Load stats on mount
   useEffect(() => {
@@ -3386,10 +3386,43 @@ function AdsPage({ onNavigate }: { onNavigate: (p: Page, ctx?: unknown) => void 
 
       {/* Scrape progress banner */}
       {scrapeStatus && (scrapeStatus.status === 'started' || scrapeStatus.status === 'running') && (
-        <div className="bg-indigo-50 border border-indigo-200 rounded-lg p-3 text-sm text-indigo-700">
-          Scraping in progress... {scrapeStatus.captured ?? 0} ads captured
-          {scrapeStatus.sites_completed && scrapeStatus.sites_completed.length > 0 && (
-            <span> — completed: {scrapeStatus.sites_completed.join(', ')}</span>
+        <div className="bg-indigo-50 border border-indigo-200 rounded-lg p-3 space-y-2">
+          <div className="text-sm text-indigo-700 font-medium">
+            Scraping in progress... {scrapeStatus.captured ?? 0} ads captured
+            {scrapeStatus.sites_completed && scrapeStatus.sites_completed.length > 0 && (
+              <span> — completed: {scrapeStatus.sites_completed.join(', ')}</span>
+            )}
+          </div>
+          {scrapeStatus.log && scrapeStatus.log.length > 0 && (
+            <div className="bg-indigo-100/50 rounded p-2 max-h-40 overflow-y-auto font-mono text-xs text-indigo-600 space-y-0.5">
+              {scrapeStatus.log.map((line, i) => <div key={i}>{line}</div>)}
+            </div>
+          )}
+        </div>
+      )}
+      {scrapeStatus && scrapeStatus.status === 'done' && (
+        <div className="bg-green-50 border border-green-200 rounded-lg p-3 space-y-2">
+          <div className="text-sm text-green-700 font-medium">
+            Scrape complete — {scrapeStatus.captured ?? 0} ads captured
+            {(scrapeStatus.errors ?? 0) > 0 && <span className="text-amber-600"> ({scrapeStatus.errors} errors)</span>}
+          </div>
+          {scrapeStatus.log && scrapeStatus.log.length > 0 && (
+            <details className="text-xs">
+              <summary className="text-green-600 cursor-pointer">Show log</summary>
+              <div className="bg-green-100/50 rounded p-2 mt-1 max-h-40 overflow-y-auto font-mono text-green-600 space-y-0.5">
+                {scrapeStatus.log.map((line, i) => <div key={i}>{line}</div>)}
+              </div>
+            </details>
+          )}
+        </div>
+      )}
+      {scrapeStatus && scrapeStatus.status === 'error' && (
+        <div className="bg-red-50 border border-red-200 rounded-lg p-3 space-y-2">
+          <div className="text-sm text-red-700 font-medium">Scrape failed</div>
+          {scrapeStatus.log && scrapeStatus.log.length > 0 && (
+            <div className="bg-red-100/50 rounded p-2 max-h-40 overflow-y-auto font-mono text-xs text-red-600 space-y-0.5">
+              {scrapeStatus.log.map((line, i) => <div key={i}>{line}</div>)}
+            </div>
           )}
         </div>
       )}

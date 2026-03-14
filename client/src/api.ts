@@ -508,7 +508,7 @@ export const api = {
     postJson<{ status: string }>(`${BASE}/ads/scrape`, params ?? {}),
 
   getAdScrapeStatus: () =>
-    fetchJson<{ status: string; captured?: number; errors?: number; sites_completed?: string[] }>(`${BASE}/ads/scrape/status`),
+    fetchJson<{ status: string; captured?: number; errors?: number; sites_completed?: string[]; log?: string[] }>(`${BASE}/ads/scrape/status`),
 
   getAdCaptures: (params?: { site?: string; domain?: string; page?: number; page_size?: number }) =>
     fetchJson<PaginatedResponse<AdCaptureSummary>>(`${BASE}/ads/captures?${toQuery(params ?? {})}`),
