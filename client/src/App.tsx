@@ -1,11 +1,11 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
-import { Search, FileText, Tag, BarChart3, RefreshCw, Building2, Users, ChevronLeft, ChevronRight, ExternalLink, DollarSign, Calendar, Loader2, Network, Newspaper, User, Briefcase, Menu, X, Download, Square, ChevronDown, Target, Sparkles, Send, MessageCircle, Bot, PanelLeftOpen, PanelLeftClose, TrendingUp, Settings } from 'lucide-react';
-import { api, type FilingSummary, type FilingDetail, type IssueSummary, type Stats, type SyncStatus, type SyncCoverage, type SearchParams, type TopEntity, type NewsletterSummary, type NewsletterDetail, type EntitySummary, type EntityDetail, type NetworkData, type InfluenceStats, type ReportSeries, type EntityAppearance, type RevenueByQuarter, type IssueFirmHeatmap, type EntityLdaStats } from './api';
+import { Search, FileText, Tag, BarChart3, RefreshCw, Building2, Users, ChevronLeft, ChevronRight, ExternalLink, DollarSign, Calendar, Loader2, Network, Newspaper, User, Briefcase, Menu, X, Download, Square, ChevronDown, Target, Sparkles, Send, MessageCircle, Bot, PanelLeftOpen, PanelLeftClose, TrendingUp, Settings, Eye } from 'lucide-react';
+import { api, type FilingSummary, type FilingDetail, type IssueSummary, type Stats, type SyncStatus, type SyncCoverage, type SearchParams, type TopEntity, type NewsletterSummary, type NewsletterDetail, type EntitySummary, type EntityDetail, type NetworkData, type InfluenceStats, type ReportSeries, type EntityAppearance, type RevenueByQuarter, type IssueFirmHeatmap, type EntityLdaStats, type AdCaptureSummary, type AdCaptureDetail, type AdCampaignSummary, type AdStats } from './api';
 import { formatDistanceToNow, format } from 'date-fns';
 import NetworkGraph, { computeEigenvectorCentrality, type SizeMode } from './NetworkGraph';
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from 'recharts';
 
-type Page = 'dashboard' | 'search' | 'issues' | 'filing' | 'influence' | 'network' | 'entity' | 'newsletter' | 'leaderboard' | 'chat' | 'reports' | 'utilities';
+type Page = 'dashboard' | 'search' | 'issues' | 'filing' | 'influence' | 'network' | 'entity' | 'newsletter' | 'leaderboard' | 'chat' | 'reports' | 'utilities' | 'ads';
 
 function formatMoney(val: number | null | undefined): string {
   if (val === null || val === undefined) return '-';
@@ -35,6 +35,7 @@ function Nav({ page, setPage }: { page: Page; setPage: (p: Page) => void }) {
     { id: 'influence', label: 'Influence', icon: <Newspaper size={18} /> },
     { id: 'network', label: 'Network', icon: <Network size={18} /> },
     { id: 'reports', label: 'Reports', icon: <TrendingUp size={18} /> },
+    { id: 'ads', label: 'Ad Tracker', icon: <Eye size={18} /> },
     { id: 'chat', label: 'AI Chat', icon: <Bot size={18} /> },
   ];
   const allLinks = [...links, { id: 'utilities' as Page, label: 'Utilities', icon: <Settings size={18} /> }];
@@ -3297,6 +3298,349 @@ function ChatPage({ onNavigate, initialConversationId }: { onNavigate: (page: Pa
 }
 
 
+// ---------- Ads Page ----------
+function AdsPage({ onNavigate }: { onNavigate: (p: Page, ctx?: unknown) => void }) {
+  const [tab, setTab] = useState<'gallery' | 'campaigns'>('gallery');
+  const [stats, setStats] = useState<AdStats | null>(null);
+  const [captures, setCaptures] = useState<AdCaptureSummary[]>([]);
+  const [campaigns, setCampaigns] = useState<AdCampaignSummary[]>([]);
+  const [captureTotal, setCaptureTotal] = useState(0);
+  const [campaignTotal, setCampaignTotal] = useState(0);
+  const [capturePage, setCapturePage] = useState(1);
+  const [campaignPage, setCampaignPage] = useState(1);
+  const [siteFilter, setSiteFilter] = useState('');
+  const [domainFilter, setDomainFilter] = useState('');
+  const [loading, setLoading] = useState(true);
+  const [selectedCapture, setSelectedCapture] = useState<AdCaptureDetail | null>(null);
+  const [scrapeStatus, setScrapeStatus] = useState<{ status: string; captured?: number; errors?: number; sites_completed?: string[] } | null>(null);
+
+  // Load stats on mount
+  useEffect(() => {
+    api.getAdStats().then(setStats).catch(() => {});
+  }, []);
+
+  // Load captures when filters/page change
+  useEffect(() => {
+    setLoading(true);
+    api.getAdCaptures({ site: siteFilter || undefined, domain: domainFilter || undefined, page: capturePage, page_size: 24 })
+      .then(d => { setCaptures(d.results); setCaptureTotal(d.total); })
+      .catch(() => {})
+      .finally(() => setLoading(false));
+  }, [capturePage, siteFilter, domainFilter]);
+
+  // Load campaigns
+  useEffect(() => {
+    api.getAdCampaigns({ sort: 'captures', page: campaignPage })
+      .then(d => { setCampaigns(d.results); setCampaignTotal(d.total); })
+      .catch(() => {});
+  }, [campaignPage]);
+
+  const handleScrape = () => {
+    api.triggerAdScrape().then(setScrapeStatus).catch(() => {});
+  };
+
+  // Poll scrape status while running
+  useEffect(() => {
+    if (!scrapeStatus || scrapeStatus.status !== 'started') return;
+    const iv = setInterval(() => {
+      api.getAdScrapeStatus().then(s => {
+        setScrapeStatus(s);
+        if (s.status === 'done' || s.status === 'error' || s.status === 'idle') {
+          clearInterval(iv);
+          // Refresh data
+          api.getAdStats().then(setStats).catch(() => {});
+          api.getAdCaptures({ site: siteFilter || undefined, domain: domainFilter || undefined, page: 1, page_size: 24 })
+            .then(d => { setCaptures(d.results); setCaptureTotal(d.total); setCapturePage(1); })
+            .catch(() => {});
+        }
+      });
+    }, 3000);
+    return () => clearInterval(iv);
+  }, [scrapeStatus?.status]);
+
+  const loadCaptureDetail = (id: number) => {
+    api.getAdCapture(id).then(setSelectedCapture).catch(() => {});
+  };
+
+  const sites = ['politico', 'axios', 'punchbowl'];
+
+  return (
+    <div className="space-y-6">
+      <div className="flex items-center justify-between">
+        <div>
+          <h1 className="text-2xl font-bold text-gray-900">Ad Tracker</h1>
+          <p className="text-sm text-gray-500 mt-1">Monitor advocacy ads on DC political news sites</p>
+        </div>
+        <button
+          onClick={handleScrape}
+          disabled={scrapeStatus?.status === 'started' || scrapeStatus?.status === 'running'}
+          className="flex items-center gap-2 px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 disabled:opacity-50 cursor-pointer"
+        >
+          {(scrapeStatus?.status === 'started' || scrapeStatus?.status === 'running') ? (
+            <><Loader2 size={16} className="animate-spin" /> Scraping...</>
+          ) : (
+            <><RefreshCw size={16} /> Scrape Ads</>
+          )}
+        </button>
+      </div>
+
+      {/* Scrape progress banner */}
+      {scrapeStatus && (scrapeStatus.status === 'started' || scrapeStatus.status === 'running') && (
+        <div className="bg-indigo-50 border border-indigo-200 rounded-lg p-3 text-sm text-indigo-700">
+          Scraping in progress... {scrapeStatus.captured ?? 0} ads captured
+          {scrapeStatus.sites_completed && scrapeStatus.sites_completed.length > 0 && (
+            <span> — completed: {scrapeStatus.sites_completed.join(', ')}</span>
+          )}
+        </div>
+      )}
+
+      {/* Stats row */}
+      {stats && (
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+          <div className="bg-white rounded-lg border border-gray-200 p-4">
+            <div className="text-2xl font-bold text-gray-900">{stats.total_captures.toLocaleString()}</div>
+            <div className="text-sm text-gray-500">Ads Captured</div>
+          </div>
+          <div className="bg-white rounded-lg border border-gray-200 p-4">
+            <div className="text-2xl font-bold text-gray-900">{stats.total_campaigns.toLocaleString()}</div>
+            <div className="text-sm text-gray-500">Advertisers</div>
+          </div>
+          <div className="bg-white rounded-lg border border-gray-200 p-4">
+            <div className="text-2xl font-bold text-gray-900">{stats.unique_domains.toLocaleString()}</div>
+            <div className="text-sm text-gray-500">Unique Domains</div>
+          </div>
+          <div className="bg-white rounded-lg border border-gray-200 p-4">
+            <div className="text-2xl font-bold text-gray-900">{stats.latest_capture ? timeAgo(stats.latest_capture) : '—'}</div>
+            <div className="text-sm text-gray-500">Last Capture</div>
+          </div>
+        </div>
+      )}
+
+      {/* Top advertisers */}
+      {stats && stats.top_advertisers.length > 0 && (
+        <div className="bg-white rounded-lg border border-gray-200 p-4">
+          <h3 className="font-semibold text-gray-900 mb-3">Top Advertisers</h3>
+          <div className="flex flex-wrap gap-2">
+            {stats.top_advertisers.map((a, i) => (
+              <span key={i} className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-gray-50 border border-gray-200 rounded-full text-sm">
+                <span className="font-medium text-gray-900">{a.name}</span>
+                <span className="text-gray-400">·</span>
+                <span className="text-gray-500">{a.capture_count} ads</span>
+              </span>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Tabs */}
+      <div className="border-b border-gray-200">
+        <nav className="flex gap-4">
+          {(['gallery', 'campaigns'] as const).map(t => (
+            <button
+              key={t}
+              onClick={() => setTab(t)}
+              className={`pb-2 px-1 text-sm font-medium border-b-2 cursor-pointer ${tab === t ? 'border-indigo-600 text-indigo-600' : 'border-transparent text-gray-500 hover:text-gray-700'}`}
+            >
+              {t === 'gallery' ? 'Ad Gallery' : 'Campaigns'}
+            </button>
+          ))}
+        </nav>
+      </div>
+
+      {tab === 'gallery' && (
+        <div className="space-y-4">
+          {/* Filters */}
+          <div className="flex gap-3 items-center">
+            <select
+              value={siteFilter}
+              onChange={e => { setSiteFilter(e.target.value); setCapturePage(1); }}
+              className="border border-gray-300 rounded-md px-3 py-1.5 text-sm cursor-pointer"
+            >
+              <option value="">All sites</option>
+              {sites.map(s => <option key={s} value={s}>{s.charAt(0).toUpperCase() + s.slice(1)}</option>)}
+            </select>
+            <input
+              type="text"
+              placeholder="Filter by domain..."
+              value={domainFilter}
+              onChange={e => { setDomainFilter(e.target.value); setCapturePage(1); }}
+              className="border border-gray-300 rounded-md px-3 py-1.5 text-sm w-48"
+            />
+            <span className="text-sm text-gray-500">{captureTotal} ads</span>
+          </div>
+
+          {loading ? (
+            <div className="flex justify-center py-12"><Loader2 className="animate-spin text-gray-400" size={32} /></div>
+          ) : captures.length === 0 ? (
+            <div className="text-center py-12 text-gray-400">
+              <Eye size={48} className="mx-auto mb-3 opacity-50" />
+              <p className="text-lg font-medium">No ads captured yet</p>
+              <p className="text-sm mt-1">Click "Scrape Ads" to start capturing banner ads from political news sites.</p>
+            </div>
+          ) : (
+            <>
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+                {captures.map(cap => (
+                  <div
+                    key={cap.id}
+                    onClick={() => loadCaptureDetail(cap.id)}
+                    className="bg-white rounded-lg border border-gray-200 overflow-hidden hover:shadow-md transition cursor-pointer"
+                  >
+                    {/* Ad preview area */}
+                    <div className="bg-gray-50 h-32 flex items-center justify-center border-b border-gray-100">
+                      {cap.has_screenshot ? (
+                        <div className="text-xs text-gray-400 flex items-center gap-1"><Eye size={14} /> Click to view</div>
+                      ) : (
+                        <div className="text-xs text-gray-300">No screenshot</div>
+                      )}
+                    </div>
+                    <div className="p-3 space-y-1">
+                      <div className="flex items-center justify-between">
+                        <span className="inline-block px-2 py-0.5 text-xs font-medium bg-indigo-50 text-indigo-700 rounded">
+                          {cap.site}
+                        </span>
+                        <span className="text-xs text-gray-400">{cap.ad_slot}</span>
+                      </div>
+                      {cap.destination_domain && (
+                        <div className="text-sm font-medium text-gray-900 truncate">{cap.destination_domain}</div>
+                      )}
+                      {cap.ad_text && (
+                        <div className="text-xs text-gray-500 truncate">{cap.ad_text}</div>
+                      )}
+                      <div className="text-xs text-gray-400">{cap.captured_at ? timeAgo(cap.captured_at) : ''}</div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+
+              {/* Pagination */}
+              {captureTotal > 24 && (
+                <div className="flex justify-center gap-2 pt-2">
+                  <button
+                    onClick={() => setCapturePage(p => Math.max(1, p - 1))}
+                    disabled={capturePage === 1}
+                    className="px-3 py-1 border rounded text-sm disabled:opacity-30 cursor-pointer"
+                  >
+                    <ChevronLeft size={16} />
+                  </button>
+                  <span className="px-3 py-1 text-sm text-gray-600">
+                    Page {capturePage} of {Math.ceil(captureTotal / 24)}
+                  </span>
+                  <button
+                    onClick={() => setCapturePage(p => p + 1)}
+                    disabled={capturePage >= Math.ceil(captureTotal / 24)}
+                    className="px-3 py-1 border rounded text-sm disabled:opacity-30 cursor-pointer"
+                  >
+                    <ChevronRight size={16} />
+                  </button>
+                </div>
+              )}
+            </>
+          )}
+        </div>
+      )}
+
+      {tab === 'campaigns' && (
+        <div className="space-y-4">
+          {campaigns.length === 0 ? (
+            <div className="text-center py-12 text-gray-400">
+              <Building2 size={48} className="mx-auto mb-3 opacity-50" />
+              <p className="text-lg font-medium">No campaigns yet</p>
+              <p className="text-sm mt-1">Campaigns are created automatically when ads are scraped and grouped by advertiser domain.</p>
+            </div>
+          ) : (
+            <div className="bg-white rounded-lg border border-gray-200 overflow-hidden">
+              <table className="w-full text-sm">
+                <thead className="bg-gray-50 border-b border-gray-200">
+                  <tr>
+                    <th className="text-left px-4 py-2 font-medium text-gray-600">Advertiser</th>
+                    <th className="text-left px-4 py-2 font-medium text-gray-600">Domain</th>
+                    <th className="text-center px-4 py-2 font-medium text-gray-600">Ads</th>
+                    <th className="text-left px-4 py-2 font-medium text-gray-600">Sites</th>
+                    <th className="text-left px-4 py-2 font-medium text-gray-600">First Seen</th>
+                    <th className="text-left px-4 py-2 font-medium text-gray-600">Last Seen</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {campaigns.map(c => (
+                    <tr key={c.id} className="border-b border-gray-100 hover:bg-gray-50">
+                      <td className="px-4 py-2 font-medium text-gray-900">
+                        {c.advertiser_name}
+                        {c.entity_id && (
+                          <button
+                            onClick={() => onNavigate('entity', c.entity_id)}
+                            className="ml-2 text-xs text-indigo-600 hover:underline cursor-pointer"
+                          >
+                            View entity
+                          </button>
+                        )}
+                      </td>
+                      <td className="px-4 py-2 text-gray-500">{c.advertiser_domain || '—'}</td>
+                      <td className="px-4 py-2 text-center font-medium">{c.capture_count}</td>
+                      <td className="px-4 py-2">
+                        <div className="flex gap-1">
+                          {c.sites_seen_on.map(s => (
+                            <span key={s} className="px-1.5 py-0.5 text-xs bg-gray-100 rounded">{s}</span>
+                          ))}
+                        </div>
+                      </td>
+                      <td className="px-4 py-2 text-gray-500 text-xs">{c.first_seen ? formatDate(c.first_seen) : '—'}</td>
+                      <td className="px-4 py-2 text-gray-500 text-xs">{c.last_seen ? formatDate(c.last_seen) : '—'}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Capture detail modal */}
+      {selectedCapture && (
+        <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4" onClick={() => setSelectedCapture(null)}>
+          <div className="bg-white rounded-xl max-w-2xl w-full max-h-[80vh] overflow-y-auto p-6" onClick={e => e.stopPropagation()}>
+            <div className="flex items-center justify-between mb-4">
+              <h3 className="text-lg font-semibold text-gray-900">Ad Capture #{selectedCapture.id}</h3>
+              <button onClick={() => setSelectedCapture(null)} className="p-1 hover:bg-gray-100 rounded cursor-pointer"><X size={20} /></button>
+            </div>
+
+            {selectedCapture.screenshot_base64 && (
+              <div className="mb-4 border border-gray-200 rounded-lg overflow-hidden bg-gray-50">
+                <img
+                  src={`data:image/png;base64,${selectedCapture.screenshot_base64}`}
+                  alt="Ad screenshot"
+                  className="max-w-full h-auto"
+                />
+              </div>
+            )}
+
+            <dl className="grid grid-cols-2 gap-3 text-sm">
+              <div><dt className="text-gray-500">Site</dt><dd className="font-medium">{selectedCapture.site}</dd></div>
+              <div><dt className="text-gray-500">Slot</dt><dd className="font-medium">{selectedCapture.ad_slot}</dd></div>
+              <div className="col-span-2"><dt className="text-gray-500">Page URL</dt><dd className="font-medium truncate">{selectedCapture.page_url}</dd></div>
+              {selectedCapture.destination_url && (
+                <div className="col-span-2">
+                  <dt className="text-gray-500">Destination</dt>
+                  <dd><a href={selectedCapture.destination_url} target="_blank" rel="noopener noreferrer" className="text-indigo-600 hover:underline truncate block">{selectedCapture.destination_url}</a></dd>
+                </div>
+              )}
+              {selectedCapture.destination_domain && (
+                <div><dt className="text-gray-500">Domain</dt><dd className="font-medium">{selectedCapture.destination_domain}</dd></div>
+              )}
+              <div><dt className="text-gray-500">Size</dt><dd className="font-medium">{selectedCapture.width} × {selectedCapture.height}</dd></div>
+              {selectedCapture.ad_text && (
+                <div className="col-span-2"><dt className="text-gray-500">Ad Text</dt><dd className="font-medium">{selectedCapture.ad_text}</dd></div>
+              )}
+              <div><dt className="text-gray-500">Captured</dt><dd className="font-medium">{selectedCapture.captured_at ? formatDate(selectedCapture.captured_at) : '—'}</dd></div>
+            </dl>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+
 // ---------- App ----------
 export default function App() {
   type NavState = { page: Page; filingUuid?: string; entityId?: number; newsletterId?: number; centerEntityId?: number; leaderboardType?: string; conversationId?: number; searchFilter?: { registrant?: string; client?: string; q?: string } };
@@ -3321,7 +3665,7 @@ export default function App() {
         return { page: 'search' };
       }
       default: {
-        const pages: Page[] = ['dashboard', 'search', 'influence', 'network', 'utilities', 'chat'];
+        const pages: Page[] = ['dashboard', 'search', 'influence', 'network', 'utilities', 'chat', 'ads'];
         if (pages.includes(segment as Page)) return { page: segment as Page };
         return { page: 'dashboard' };
       }
@@ -3429,6 +3773,7 @@ export default function App() {
         {page === 'leaderboard' && navState.leaderboardType && (
           <EntityLeaderboard entityType={navState.leaderboardType} onBack={handleBack} onNavigate={handleNavigate} />
         )}
+        {page === 'ads' && <AdsPage onNavigate={handleNavigate} />}
         {page === 'reports' && <ReportsPage syncVersion={syncVersion} onNavigate={handleNavigate} />}
         {page === 'utilities' && <UtilitiesPage onSyncComplete={() => setSyncVersion(v => v + 1)} />}
         {page === 'chat' && (

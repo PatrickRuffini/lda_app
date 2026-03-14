@@ -18,10 +18,12 @@ from .models import (
     Filing, LobbyingActivity, Registrant, Client,
     Entity, EntityMention, Newsletter, Relationship,
     ChatConversation, ChatMessage,
+    AdCapture, AdCampaign,
     get_engine, get_session, init_db, run_migrations,
 )
 from .sync import sync_filings, sync_incremental, sync_backfill, sync_backfill_chunk, sync_complete_years, sync_year, sync_date_range, get_sync_progress, _update_progress
 from .influence import scrape_and_store, reprocess_all_entities, get_scrape_progress, get_reprocess_progress, link_entities_to_lda, link_lobbyists_to_entities, merge_duplicate_entities, _normalize_org_aggressive
+from .ad_scraper import scrape_ads, get_ad_scrape_progress
 from .ai import generate_entity_summary, chat as ai_chat
 
 logger = logging.getLogger(__name__)
@@ -2371,6 +2373,190 @@ def ai_status():
     """Check if AI features are available (API key configured)."""
     has_key = bool(os.environ.get("ANTHROPIC_API_KEY"))
     return {"available": has_key}
+
+
+# ---------- Ad Tracking Endpoints ----------
+
+@app.post("/api/ads/scrape")
+def trigger_ad_scrape(
+    sites: Optional[str] = Body(None, embed=True),
+    max_pages_per_site: int = Body(3, embed=True),
+):
+    """Trigger an ad scrape. Optionally filter to specific sites (comma-separated)."""
+    progress = get_ad_scrape_progress()
+    if progress.get("status") == "running":
+        return {"status": "already_running", **progress}
+
+    site_list = [s.strip() for s in sites.split(",")] if sites else None
+
+    def _run():
+        scrape_ads(sites=site_list, max_pages_per_site=max_pages_per_site)
+
+    t = threading.Thread(target=_run, daemon=True)
+    t.start()
+    return {"status": "started"}
+
+
+@app.get("/api/ads/scrape/status")
+def ad_scrape_status():
+    """Get current ad scrape progress."""
+    return get_ad_scrape_progress()
+
+
+@app.get("/api/ads/captures")
+def list_ad_captures(
+    site: Optional[str] = Query(None),
+    domain: Optional[str] = Query(None),
+    page: int = Query(1, ge=1),
+    page_size: int = Query(25, ge=1, le=100),
+):
+    """List captured ads with optional filters."""
+    session = _get_session()
+    try:
+        q = session.query(AdCapture).order_by(desc(AdCapture.captured_at))
+        if site:
+            q = q.filter(AdCapture.site == site)
+        if domain:
+            q = q.filter(AdCapture.destination_domain.ilike(f"%{domain}%"))
+
+        total = q.count()
+        results = q.offset((page - 1) * page_size).limit(page_size).all()
+
+        return {
+            "results": [
+                {
+                    "id": r.id,
+                    "site": r.site,
+                    "page_url": r.page_url,
+                    "ad_slot": r.ad_slot,
+                    "destination_url": r.destination_url,
+                    "destination_domain": r.destination_domain,
+                    "ad_text": r.ad_text,
+                    "has_screenshot": bool(r.screenshot_base64),
+                    "width": r.width,
+                    "height": r.height,
+                    "captured_at": r.captured_at.isoformat() if r.captured_at else None,
+                    "campaign_id": r.campaign_id,
+                }
+                for r in results
+            ],
+            "total": total,
+            "page": page,
+            "page_size": page_size,
+        }
+    finally:
+        session.close()
+
+
+@app.get("/api/ads/captures/{capture_id}")
+def get_ad_capture(capture_id: int):
+    """Get a single ad capture including its screenshot."""
+    session = _get_session()
+    try:
+        r = session.query(AdCapture).get(capture_id)
+        if not r:
+            raise HTTPException(status_code=404, detail="Ad capture not found")
+        return {
+            "id": r.id,
+            "site": r.site,
+            "page_url": r.page_url,
+            "ad_slot": r.ad_slot,
+            "destination_url": r.destination_url,
+            "destination_domain": r.destination_domain,
+            "ad_text": r.ad_text,
+            "screenshot_base64": r.screenshot_base64,
+            "width": r.width,
+            "height": r.height,
+            "captured_at": r.captured_at.isoformat() if r.captured_at else None,
+            "campaign_id": r.campaign_id,
+        }
+    finally:
+        session.close()
+
+
+@app.get("/api/ads/campaigns")
+def list_ad_campaigns(
+    sort: str = Query("recent", regex="^(recent|captures|name)$"),
+    page: int = Query(1, ge=1),
+    page_size: int = Query(25, ge=1, le=100),
+):
+    """List ad campaigns (grouped advertisers)."""
+    session = _get_session()
+    try:
+        q = session.query(AdCampaign)
+        if sort == "recent":
+            q = q.order_by(desc(AdCampaign.last_seen))
+        elif sort == "captures":
+            q = q.order_by(desc(AdCampaign.capture_count))
+        else:
+            q = q.order_by(AdCampaign.advertiser_name)
+
+        total = q.count()
+        results = q.offset((page - 1) * page_size).limit(page_size).all()
+
+        return {
+            "results": [
+                {
+                    "id": r.id,
+                    "advertiser_name": r.advertiser_name,
+                    "advertiser_domain": r.advertiser_domain,
+                    "entity_id": r.entity_id,
+                    "first_seen": r.first_seen.isoformat() if r.first_seen else None,
+                    "last_seen": r.last_seen.isoformat() if r.last_seen else None,
+                    "capture_count": r.capture_count,
+                    "sites_seen_on": json.loads(r.sites_seen_on) if r.sites_seen_on else [],
+                }
+                for r in results
+            ],
+            "total": total,
+            "page": page,
+            "page_size": page_size,
+        }
+    finally:
+        session.close()
+
+
+@app.get("/api/ads/stats")
+def ad_stats():
+    """Summary statistics for ad tracking."""
+    session = _get_session()
+    try:
+        total_captures = session.query(func.count(AdCapture.id)).scalar() or 0
+        total_campaigns = session.query(func.count(AdCampaign.id)).scalar() or 0
+        unique_domains = session.query(func.count(func.distinct(AdCapture.destination_domain))).filter(
+            AdCapture.destination_domain.isnot(None)
+        ).scalar() or 0
+
+        latest = session.query(func.max(AdCapture.captured_at)).scalar()
+
+        # Top advertisers by capture count
+        top_advertisers = (
+            session.query(AdCampaign.advertiser_name, AdCampaign.capture_count, AdCampaign.advertiser_domain)
+            .order_by(desc(AdCampaign.capture_count))
+            .limit(10)
+            .all()
+        )
+
+        # Captures by site
+        by_site = (
+            session.query(AdCapture.site, func.count(AdCapture.id))
+            .group_by(AdCapture.site)
+            .all()
+        )
+
+        return {
+            "total_captures": total_captures,
+            "total_campaigns": total_campaigns,
+            "unique_domains": unique_domains,
+            "latest_capture": latest.isoformat() if latest else None,
+            "top_advertisers": [
+                {"name": name, "capture_count": count, "domain": domain}
+                for name, count, domain in top_advertisers
+            ],
+            "captures_by_site": {site: count for site, count in by_site},
+        }
+    finally:
+        session.close()
 
 
 @app.get("/api/db-dump")

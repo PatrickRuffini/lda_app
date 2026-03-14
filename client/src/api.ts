@@ -301,6 +301,47 @@ export interface ReportSeries {
   periods?: string[];
 }
 
+// ---------- Ad Tracking types ----------
+
+export interface AdCaptureSummary {
+  id: number;
+  site: string;
+  page_url: string;
+  ad_slot: string;
+  destination_url: string | null;
+  destination_domain: string | null;
+  ad_text: string | null;
+  has_screenshot: boolean;
+  width: number | null;
+  height: number | null;
+  captured_at: string | null;
+  campaign_id: number | null;
+}
+
+export interface AdCaptureDetail extends AdCaptureSummary {
+  screenshot_base64: string | null;
+}
+
+export interface AdCampaignSummary {
+  id: number;
+  advertiser_name: string;
+  advertiser_domain: string | null;
+  entity_id: number | null;
+  first_seen: string | null;
+  last_seen: string | null;
+  capture_count: number;
+  sites_seen_on: string[];
+}
+
+export interface AdStats {
+  total_captures: number;
+  total_campaigns: number;
+  unique_domains: number;
+  latest_capture: string | null;
+  top_advertisers: Array<{ name: string; capture_count: number; domain: string | null }>;
+  captures_by_site: Record<string, number>;
+}
+
 export const api = {
   searchFilings: (params: SearchParams) =>
     fetchJson<PaginatedResponse<FilingSummary>>(`${BASE}/filings?${toQuery(params)}`),
@@ -461,4 +502,23 @@ export const api = {
 
   getTopIssuesByRevenue: (limit = 15) =>
     fetchJson<Array<{ issue: string; total_revenue: number; filing_count: number; firm_count: number }>>(`${BASE}/reports/top-issues-by-revenue?limit=${limit}`),
+
+  // Ad Tracking
+  triggerAdScrape: (params?: { sites?: string; max_pages_per_site?: number }) =>
+    postJson<{ status: string }>(`${BASE}/ads/scrape`, params ?? {}),
+
+  getAdScrapeStatus: () =>
+    fetchJson<{ status: string; captured?: number; errors?: number; sites_completed?: string[] }>(`${BASE}/ads/scrape/status`),
+
+  getAdCaptures: (params?: { site?: string; domain?: string; page?: number; page_size?: number }) =>
+    fetchJson<PaginatedResponse<AdCaptureSummary>>(`${BASE}/ads/captures?${toQuery(params ?? {})}`),
+
+  getAdCapture: (id: number) =>
+    fetchJson<AdCaptureDetail>(`${BASE}/ads/captures/${id}`),
+
+  getAdCampaigns: (params?: { sort?: string; page?: number; page_size?: number }) =>
+    fetchJson<PaginatedResponse<AdCampaignSummary>>(`${BASE}/ads/campaigns?${toQuery(params ?? {})}`),
+
+  getAdStats: () =>
+    fetchJson<AdStats>(`${BASE}/ads/stats`),
 };
