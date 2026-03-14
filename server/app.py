@@ -1534,13 +1534,14 @@ def registration_trend(
         else:
             period_expr = func.to_char(Filing.dt_posted, 'YYYY-MM')
 
+        TERMINATION_TYPES = ['1T', '2T', '3T', '4T', '1TY', '2TY', '3TY', '4TY']
         q = (
             session.query(
                 Filing.filing_type,
                 period_expr.label("period"),
                 func.count(func.distinct(Filing.id)).label("count"),
             )
-            .filter(Filing.filing_type.in_(['RR', 'TR']))
+            .filter(Filing.filing_type.in_(['RR'] + TERMINATION_TYPES))
         )
         if registrant_id:
             q = q.filter(Filing.registrant_id == registrant_id)
@@ -1554,7 +1555,8 @@ def registration_trend(
             if ftype == 'RR':
                 registrations[period] = count
             else:
-                terminations[period] = count
+                # Sum all termination subtypes into the same period bucket
+                terminations[period] = terminations.get(period, 0) + count
 
         all_periods = sorted(set(list(registrations.keys()) + list(terminations.keys())))
         return {
