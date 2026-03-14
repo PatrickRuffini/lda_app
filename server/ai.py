@@ -231,10 +231,39 @@ def _extract_date_range(query: str):
         return date(year, start_month, 1), date(year, end_month, end_day)
 
     if not found_months:
-        # Check for "recent", "latest", "current" — return last 60 days
-        if any(w in query_lower for w in ["recent", "latest", "current", "new", "this month", "this quarter"]):
+        # Check for relative time references
+        if any(w in query_lower for w in ["today", "yesterday"]):
             end = date.today()
-            start = end - timedelta(days=60)
+            start = end - timedelta(days=1)
+            return start, end
+        if "this week" in query_lower:
+            end = date.today()
+            start = end - timedelta(days=end.weekday())  # Monday of current week
+            return start, end
+        if "last week" in query_lower:
+            end = date.today() - timedelta(days=date.today().weekday())  # Last Monday
+            start = end - timedelta(days=7)  # Previous Monday
+            return start, end
+        if any(w in query_lower for w in ["recent", "latest", "current", "new", "this month"]):
+            end = date.today()
+            start = end - timedelta(days=30)
+            return start, end
+        if "this quarter" in query_lower:
+            end = date.today()
+            start = end - timedelta(days=90)
+            return start, end
+        if "this year" in query_lower:
+            end = date.today()
+            start = date(end.year, 1, 1)
+            return start, end
+        # Catch-all for general temporal language
+        if any(w in query_lower for w in [
+            "developments", "happening", "going on", "update",
+            "what's new", "report", "overview", "trends",
+            "activity", "activities",
+        ]):
+            end = date.today()
+            start = end - timedelta(days=14)
             return start, end
         return None, None
 
@@ -373,6 +402,37 @@ def _gather_temporal_context(session: Session, start_date, end_date) -> list[str
     return context_parts
 
 
+def _extract_search_keywords(query: str) -> list[str]:
+    """Extract meaningful search keywords from a conversational query.
+
+    Filters out common stop words and short words to get terms
+    worth searching in the database.
+    """
+    stop_words = {
+        "a", "an", "the", "is", "are", "was", "were", "be", "been", "being",
+        "have", "has", "had", "do", "does", "did", "will", "would", "could",
+        "should", "may", "might", "shall", "can", "need", "must",
+        "i", "me", "my", "we", "our", "you", "your", "he", "she", "it",
+        "they", "them", "their", "its", "his", "her",
+        "this", "that", "these", "those", "what", "which", "who", "whom",
+        "how", "when", "where", "why",
+        "and", "but", "or", "nor", "not", "no", "so", "if", "then",
+        "in", "on", "at", "to", "for", "of", "with", "by", "from",
+        "up", "out", "off", "over", "under", "about", "into", "through",
+        "give", "get", "got", "tell", "show", "find", "know", "think",
+        "want", "like", "just", "also", "very", "really", "much",
+        "full", "any", "all", "some", "more", "most", "other",
+        "report", "developments", "update", "overview", "summary",
+        "recent", "latest", "current", "new", "happening", "going",
+        "week", "month", "year", "today", "yesterday", "last",
+    }
+    import re
+    # Extract words, keeping multi-word proper nouns if quoted
+    words = re.findall(r'\b[a-zA-Z]{3,}\b', query)
+    keywords = [w for w in words if w.lower() not in stop_words]
+    return keywords
+
+
 def _gather_chat_context(session: Session, query: str) -> str:
     """Search the database for context relevant to a chat query."""
     context_parts = []
@@ -383,7 +443,10 @@ def _gather_chat_context(session: Session, query: str) -> str:
         temporal_ctx = _gather_temporal_context(session, start_date, end_date)
         context_parts.extend(temporal_ctx)
 
-    # Search entities by name
+    # Extract meaningful keywords for database searching
+    keywords = _extract_search_keywords(query)
+
+    # Search entities by name — try full query first, then individual keywords
     entity_matches = (
         session.query(Entity)
         .filter(Entity.name.ilike(f"%{query}%"))
@@ -391,6 +454,26 @@ def _gather_chat_context(session: Session, query: str) -> str:
         .limit(10)
         .all()
     )
+
+    # If full query didn't match, try keywords
+    if not entity_matches and keywords:
+        for kw in keywords:
+            matches = (
+                session.query(Entity)
+                .filter(Entity.name.ilike(f"%{kw}%"))
+                .order_by(desc(Entity.mention_count))
+                .limit(5)
+                .all()
+            )
+            entity_matches.extend(matches)
+        # Deduplicate
+        seen_ids = set()
+        unique = []
+        for e in entity_matches:
+            if e.id not in seen_ids:
+                seen_ids.add(e.id)
+                unique.append(e)
+        entity_matches = unique[:10]
 
     if entity_matches:
         context_parts.append("## Matching Entities")
@@ -401,99 +484,113 @@ def _gather_chat_context(session: Session, query: str) -> str:
                 f"client: {e.is_client}, lobbyist: {e.is_lobbyist})"
             )
 
-    # Search for entities mentioned in the query — get their full context
-    # Try to find the most relevant entity
-    best_entity = None
-    if entity_matches:
-        best_entity = entity_matches[0]
-    else:
-        # Try partial matching on individual words (3+ chars)
-        words = [w for w in query.split() if len(w) >= 3]
-        for word in words:
-            match = (
-                session.query(Entity)
-                .filter(Entity.name.ilike(f"%{word}%"))
-                .order_by(desc(Entity.mention_count))
-                .first()
-            )
-            if match:
-                best_entity = match
-                break
+    # Get detailed context for the best matching entity
+    best_entity = entity_matches[0] if entity_matches else None
 
     if best_entity:
         full_ctx = _gather_entity_context(session, best_entity.id)
         context_parts.append(f"\n## Detailed Context for {best_entity.display_name or best_entity.name}")
         context_parts.append(json.dumps(full_ctx, indent=2, default=str))
 
-    # Search newsletter content
-    newsletter_matches = (
-        session.query(Newsletter)
-        .filter(Newsletter.body_text.ilike(f"%{query}%"))
-        .order_by(desc(Newsletter.published_date))
-        .limit(5)
-        .all()
-    )
+    # Search newsletter content — use keywords instead of full query
+    newsletter_matches = []
+    search_terms = keywords if keywords else [query]
+    for term in search_terms[:3]:  # Limit to top 3 keywords
+        matches = (
+            session.query(Newsletter)
+            .filter(Newsletter.body_text.ilike(f"%{term}%"))
+            .order_by(desc(Newsletter.published_date))
+            .limit(3)
+            .all()
+        )
+        newsletter_matches.extend(matches)
+
+    # Deduplicate newsletters
+    seen_nl_ids = set()
+    unique_nls = []
+    for nl in newsletter_matches:
+        if nl.id not in seen_nl_ids:
+            seen_nl_ids.add(nl.id)
+            unique_nls.append(nl)
+    newsletter_matches = unique_nls[:5]
+
     if newsletter_matches:
         context_parts.append("\n## Relevant Newsletter Excerpts")
         for nl in newsletter_matches:
-            # Extract relevant paragraph
             text = nl.body_text or ""
             lower = text.lower()
-            idx = lower.find(query.lower())
-            if idx >= 0:
-                start = max(0, idx - 200)
-                end = min(len(text), idx + 300)
+            # Find best matching keyword in text
+            best_idx = -1
+            for term in (keywords if keywords else [query]):
+                idx = lower.find(term.lower())
+                if idx >= 0:
+                    best_idx = idx
+                    break
+            if best_idx >= 0:
+                start = max(0, best_idx - 200)
+                end = min(len(text), best_idx + 300)
                 excerpt = text[start:end].strip()
             else:
                 excerpt = text[:500]
             context_parts.append(f"### {nl.title} ({nl.published_date})")
             context_parts.append(excerpt)
 
-    # Search filings by registrant/client name
-    filing_matches = (
-        session.query(Filing, Registrant, Client)
-        .outerjoin(Registrant, Filing.registrant_id == Registrant.id)
-        .outerjoin(Client, Filing.client_id == Client.id)
-        .filter(
-            (Registrant.name.ilike(f"%{query}%")) |
-            (Client.name.ilike(f"%{query}%"))
+    # Search filings by registrant/client name — use keywords
+    filing_matches = []
+    for term in (keywords[:3] if keywords else [query]):
+        matches = (
+            session.query(Filing, Registrant, Client)
+            .outerjoin(Registrant, Filing.registrant_id == Registrant.id)
+            .outerjoin(Client, Filing.client_id == Client.id)
+            .filter(
+                (Registrant.name.ilike(f"%{term}%")) |
+                (Client.name.ilike(f"%{term}%"))
+            )
+            .order_by(desc(Filing.dt_posted))
+            .limit(5)
+            .all()
         )
-        .order_by(desc(Filing.dt_posted))
-        .limit(10)
-        .all()
-    )
+        filing_matches.extend(matches)
+
+    # Deduplicate filings
+    seen_f_ids = set()
+    unique_filings = []
+    for item in filing_matches:
+        f = item[0]
+        if f.id not in seen_f_ids:
+            seen_f_ids.add(f.id)
+            unique_filings.append(item)
+    filing_matches = unique_filings[:10]
 
     # Search lobbying activities by description, specific issues, and lobbyist names
-    query_words = [w for w in query.split() if len(w) >= 3]
-    activity_matches = (
-        session.query(LobbyingActivity, Filing, Registrant, Client)
-        .join(Filing, LobbyingActivity.filing_id == Filing.id)
-        .outerjoin(Registrant, Filing.registrant_id == Registrant.id)
-        .outerjoin(Client, Filing.client_id == Client.id)
-        .filter(
-            (LobbyingActivity.description.ilike(f"%{query}%")) |
-            (LobbyingActivity.specific_issues.ilike(f"%{query}%")) |
-            (LobbyingActivity.government_entities.ilike(f"%{query}%")) |
-            (LobbyingActivity.lobbyists.ilike(f"%{query}%"))
-        )
-        .order_by(desc(Filing.dt_posted))
-        .limit(15)
-        .all()
-    )
-
-    # If no exact matches on activities, try matching each word for lobbyist names
-    if not activity_matches and len(query_words) > 1:
-        word_filters = [LobbyingActivity.lobbyists.ilike(f"%{w}%") for w in query_words]
-        activity_matches = (
+    activity_matches = []
+    for term in (keywords[:3] if keywords else [query]):
+        matches = (
             session.query(LobbyingActivity, Filing, Registrant, Client)
             .join(Filing, LobbyingActivity.filing_id == Filing.id)
             .outerjoin(Registrant, Filing.registrant_id == Registrant.id)
             .outerjoin(Client, Filing.client_id == Client.id)
-            .filter(*word_filters)
+            .filter(
+                (LobbyingActivity.description.ilike(f"%{term}%")) |
+                (LobbyingActivity.specific_issues.ilike(f"%{term}%")) |
+                (LobbyingActivity.government_entities.ilike(f"%{term}%")) |
+                (LobbyingActivity.lobbyists.ilike(f"%{term}%"))
+            )
             .order_by(desc(Filing.dt_posted))
-            .limit(15)
+            .limit(10)
             .all()
         )
+        activity_matches.extend(matches)
+
+    # Deduplicate activities
+    seen_act_ids = set()
+    unique_acts = []
+    for item in activity_matches:
+        act = item[0]
+        if act.id not in seen_act_ids:
+            seen_act_ids.add(act.id)
+            unique_acts.append(item)
+    activity_matches = unique_acts[:15]
 
     # Collect filing IDs already shown from the registrant/client search
     seen_filing_ids = set()
@@ -560,6 +657,18 @@ def _gather_chat_context(session: Session, query: str) -> str:
             shown += 1
             if shown >= 10:
                 break
+
+    # Fallback: if no temporal context was gathered and very little was found,
+    # automatically gather recent data (last 14 days) so the AI has something to work with
+    has_temporal = start_date is not None and end_date is not None
+    has_substantive = bool(entity_matches or newsletter_matches or filing_matches or activity_matches)
+    if not has_temporal and not has_substantive:
+        from datetime import date as date_type, timedelta
+        fallback_end = date_type.today()
+        fallback_start = fallback_end - timedelta(days=14)
+        context_parts.append(f"\n## Recent Activity (auto-retrieved, last 14 days)")
+        fallback_ctx = _gather_temporal_context(session, fallback_start, fallback_end)
+        context_parts.extend(fallback_ctx)
 
     # Get overall stats for context
     total_entities = session.query(func.count(Entity.id)).scalar() or 0
