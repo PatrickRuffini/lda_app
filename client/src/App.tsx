@@ -3312,7 +3312,7 @@ function AdsPage({ onNavigate }: { onNavigate: (p: Page, ctx?: unknown) => void 
   const [domainFilter, setDomainFilter] = useState('');
   const [loading, setLoading] = useState(true);
   const [selectedCapture, setSelectedCapture] = useState<AdCaptureDetail | null>(null);
-  const [scrapeStatus, setScrapeStatus] = useState<{ status: string; captured?: number; errors?: number; sites_completed?: string[]; log?: string[] } | null>(null);
+  const [scrapeStatus, setScrapeStatus] = useState<{ status: string; captured?: number; errors?: number; sites_completed?: string[]; log?: string[]; error?: string } | null>(null);
 
   // Load stats on mount
   useEffect(() => {
@@ -3418,7 +3418,12 @@ function AdsPage({ onNavigate }: { onNavigate: (p: Page, ctx?: unknown) => void 
       )}
       {scrapeStatus && scrapeStatus.status === 'error' && (
         <div className="bg-red-50 border border-red-200 rounded-lg p-3 space-y-2">
-          <div className="text-sm text-red-700 font-medium">Scrape failed</div>
+          <div className="text-sm text-red-700 font-medium">
+            Scrape failed
+            {scrapeStatus.error && scrapeStatus.error.includes('proxy') && (
+              <span className="font-normal"> — network access to news sites is blocked in this environment. Deploy to production for full scraping.</span>
+            )}
+          </div>
           {scrapeStatus.log && scrapeStatus.log.length > 0 && (
             <div className="bg-red-100/50 rounded p-2 max-h-40 overflow-y-auto font-mono text-xs text-red-600 space-y-0.5">
               {scrapeStatus.log.map((line, i) => <div key={i}>{line}</div>)}
