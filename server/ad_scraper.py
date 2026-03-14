@@ -610,6 +610,164 @@ def _capture_ads_httpx(page_url: str, site: str, _log=None) -> list[dict]:
     return captures
 
 
+# ---------- Landing page resolver ----------
+
+# Keywords that suggest what type of landing page it is
+_PAGE_TYPE_SIGNALS = {
+    "advocacy": [
+        "take action", "tell congress", "sign the petition", "call your",
+        "urge", "support", "oppose", "protect", "fight for", "stand with",
+        "grassroots", "campaign", "mobilize", "pledge", "voice",
+    ],
+    "donation": [
+        "donate", "contribution", "give now", "support us", "chip in",
+        "fundrais", "recurring gift",
+    ],
+    "issue": [
+        "policy", "legislation", "bill", "regulation", "issue brief",
+        "fact sheet", "white paper", "research", "report", "study",
+    ],
+    "corporate": [
+        "about us", "our company", "our mission", "investor", "careers",
+        "annual report", "sustainability", "press release",
+    ],
+    "product": [
+        "buy now", "shop", "pricing", "free trial", "subscribe",
+        "get started", "demo",
+    ],
+}
+
+
+def _classify_landing_page_type(title: str, description: str, body_text: str) -> str:
+    """Classify the landing page type based on its content."""
+    combined = f"{title} {description} {body_text}".lower()
+    scores = {}
+    for ptype, keywords in _PAGE_TYPE_SIGNALS.items():
+        scores[ptype] = sum(1 for kw in keywords if kw in combined)
+    best = max(scores, key=scores.get)
+    if scores[best] > 0:
+        return best
+    return "unknown"
+
+
+def _fetch_url(url: str, follow_redirects: bool = True, timeout: int = 15):
+    """Fetch a URL using the best available HTTP client. Returns (response_obj, final_url, html_text) or raises."""
+    # Try curl_cffi first for Cloudflare bypass
+    try:
+        from curl_cffi import requests as cffi_requests
+        r = cffi_requests.get(url, impersonate="chrome", timeout=timeout, allow_redirects=follow_redirects)
+        # curl_cffi tracks the final URL after redirects
+        final_url = str(r.url) if hasattr(r, 'url') else url
+        return r.status_code, final_url, r.text
+    except ImportError:
+        pass
+    except Exception:
+        pass
+
+    # Fall back to httpx
+    import httpx
+    r = httpx.get(
+        url,
+        follow_redirects=follow_redirects,
+        timeout=timeout,
+        headers={
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        },
+    )
+    final_url = str(r.url)
+    return r.status_code, final_url, r.text
+
+
+def resolve_landing_page(destination_url: str, _log=None) -> dict:
+    """Follow a destination URL through redirects and extract landing page metadata.
+
+    Returns a dict with:
+        resolved_url, resolved_domain, landing_page_title, landing_page_description,
+        landing_page_og_image, landing_page_keywords, landing_page_type
+    """
+    result = {
+        "resolved_url": None,
+        "resolved_domain": None,
+        "landing_page_title": None,
+        "landing_page_description": None,
+        "landing_page_og_image": None,
+        "landing_page_keywords": None,
+        "landing_page_type": None,
+    }
+
+    if not destination_url:
+        return result
+
+    try:
+        from bs4 import BeautifulSoup
+    except ImportError:
+        if _log:
+            _log("  beautifulsoup4 not installed, skipping landing page resolution")
+        return result
+
+    try:
+        status, final_url, html = _fetch_url(destination_url)
+        if status != 200:
+            if _log:
+                _log(f"    Landing page HTTP {status}: {destination_url}")
+            return result
+
+        result["resolved_url"] = final_url
+        result["resolved_domain"] = _extract_domain(final_url)
+
+        soup = BeautifulSoup(html, "lxml")
+
+        # Title: prefer og:title, fall back to <title>
+        og_title = soup.find("meta", property="og:title")
+        if og_title and og_title.get("content"):
+            result["landing_page_title"] = og_title["content"][:1000]
+        else:
+            title_tag = soup.find("title")
+            if title_tag:
+                result["landing_page_title"] = title_tag.get_text(strip=True)[:1000]
+
+        # Description: prefer og:description, fall back to meta description
+        og_desc = soup.find("meta", property="og:description")
+        if og_desc and og_desc.get("content"):
+            result["landing_page_description"] = og_desc["content"][:2000]
+        else:
+            meta_desc = soup.find("meta", attrs={"name": "description"})
+            if meta_desc and meta_desc.get("content"):
+                result["landing_page_description"] = meta_desc["content"][:2000]
+
+        # OG image
+        og_image = soup.find("meta", property="og:image")
+        if og_image and og_image.get("content"):
+            result["landing_page_og_image"] = og_image["content"][:2000]
+
+        # Keywords from meta tag
+        meta_kw = soup.find("meta", attrs={"name": "keywords"})
+        if meta_kw and meta_kw.get("content"):
+            result["landing_page_keywords"] = meta_kw["content"][:2000]
+
+        # Classify landing page type using title + description + some body text
+        body_text = ""
+        body = soup.find("body")
+        if body:
+            body_text = body.get_text(" ", strip=True)[:5000]
+
+        result["landing_page_type"] = _classify_landing_page_type(
+            result["landing_page_title"] or "",
+            result["landing_page_description"] or "",
+            body_text,
+        )
+
+        if _log:
+            _log(f"    Resolved: {result['resolved_domain']} — {result['landing_page_title'][:80] if result['landing_page_title'] else '(no title)'} [{result['landing_page_type']}]")
+
+    except Exception as e:
+        if _log:
+            _log(f"    Failed to resolve {destination_url}: {str(e)[:100]}")
+
+    return result
+
+
 # ---------- Campaign management ----------
 
 def _find_or_create_campaign(session, domain: str, advertiser_name: str, site: str) -> Optional[int]:
@@ -746,19 +904,41 @@ def scrape_ads(sites: Optional[list[str]] = None, max_pages_per_site: int = 3):
                     _log(f"  {page_url}: {len(ad_captures)} ads found")
 
                     for cap_data in ad_captures:
+                        dest_url = cap_data.get("destination_url")
                         domain = cap_data.get("destination_domain")
-                        advertiser = KNOWN_ADVOCACY_DOMAINS.get(domain, domain or "Unknown")
+
+                        # Resolve the landing page
+                        landing = {"resolved_url": None, "resolved_domain": None,
+                                   "landing_page_title": None, "landing_page_description": None,
+                                   "landing_page_og_image": None, "landing_page_keywords": None,
+                                   "landing_page_type": None}
+                        if dest_url:
+                            try:
+                                landing = resolve_landing_page(dest_url, _log)
+                            except Exception as e:
+                                _log(f"    Landing page error: {str(e)[:100]}")
+
+                        # Use resolved domain for campaign grouping if available
+                        effective_domain = landing.get("resolved_domain") or domain
+                        advertiser = KNOWN_ADVOCACY_DOMAINS.get(effective_domain, effective_domain or "Unknown")
 
                         campaign_id = _find_or_create_campaign(
-                            session, domain, advertiser, site_key
-                        ) if domain else None
+                            session, effective_domain, advertiser, site_key
+                        ) if effective_domain else None
 
                         capture = AdCapture(
                             site=cap_data["site"],
                             page_url=cap_data["page_url"],
                             ad_slot=cap_data["ad_slot"],
-                            destination_url=cap_data.get("destination_url"),
+                            destination_url=dest_url,
                             destination_domain=domain,
+                            resolved_url=landing.get("resolved_url"),
+                            resolved_domain=landing.get("resolved_domain"),
+                            landing_page_title=landing.get("landing_page_title"),
+                            landing_page_description=landing.get("landing_page_description"),
+                            landing_page_og_image=landing.get("landing_page_og_image"),
+                            landing_page_keywords=landing.get("landing_page_keywords"),
+                            landing_page_type=landing.get("landing_page_type"),
                             ad_text=cap_data.get("ad_text"),
                             screenshot_base64=cap_data.get("screenshot_base64"),
                             width=cap_data.get("width"),

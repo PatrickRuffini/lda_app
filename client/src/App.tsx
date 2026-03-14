@@ -3537,14 +3537,29 @@ function AdsPage({ onNavigate }: { onNavigate: (p: Page, ctx?: unknown) => void 
                         <span className="inline-block px-2 py-0.5 text-xs font-medium bg-indigo-50 text-indigo-700 rounded">
                           {cap.site}
                         </span>
-                        <span className="text-xs text-gray-400">{cap.ad_slot}</span>
+                        <div className="flex items-center gap-1.5">
+                          {cap.landing_page_type && cap.landing_page_type !== 'unknown' && (
+                            <span className={`px-1.5 py-0.5 text-xs rounded ${
+                              cap.landing_page_type === 'advocacy' ? 'bg-red-50 text-red-700' :
+                              cap.landing_page_type === 'issue' ? 'bg-amber-50 text-amber-700' :
+                              cap.landing_page_type === 'corporate' ? 'bg-blue-50 text-blue-700' :
+                              cap.landing_page_type === 'donation' ? 'bg-green-50 text-green-700' :
+                              'bg-gray-50 text-gray-600'
+                            }`}>{cap.landing_page_type}</span>
+                          )}
+                          <span className="text-xs text-gray-400">{cap.ad_slot}</span>
+                        </div>
                       </div>
-                      {cap.destination_domain && (
+                      {cap.resolved_domain ? (
+                        <div className="text-sm font-medium text-gray-900 truncate">{cap.resolved_domain}</div>
+                      ) : cap.destination_domain ? (
                         <div className="text-sm font-medium text-gray-900 truncate">{cap.destination_domain}</div>
-                      )}
-                      {cap.ad_text && (
+                      ) : null}
+                      {cap.landing_page_title ? (
+                        <div className="text-xs text-gray-600 truncate">{cap.landing_page_title}</div>
+                      ) : cap.ad_text ? (
                         <div className="text-xs text-gray-500 truncate">{cap.ad_text}</div>
-                      )}
+                      ) : null}
                       <div className="text-xs text-gray-400">{cap.captured_at ? timeAgo(cap.captured_at) : ''}</div>
                     </div>
                   </div>
@@ -3652,20 +3667,72 @@ function AdsPage({ onNavigate }: { onNavigate: (p: Page, ctx?: unknown) => void 
               </div>
             )}
 
+            {/* Landing page info card */}
+            {selectedCapture.landing_page_title && (
+              <div className="mb-4 bg-gray-50 border border-gray-200 rounded-lg overflow-hidden">
+                {selectedCapture.landing_page_og_image && (
+                  <img
+                    src={selectedCapture.landing_page_og_image}
+                    alt=""
+                    className="w-full h-36 object-cover"
+                    onError={e => (e.currentTarget.style.display = 'none')}
+                  />
+                )}
+                <div className="p-3 space-y-1.5">
+                  <div className="flex items-center gap-2">
+                    <h4 className="font-semibold text-gray-900 text-sm flex-1">{selectedCapture.landing_page_title}</h4>
+                    {selectedCapture.landing_page_type && selectedCapture.landing_page_type !== 'unknown' && (
+                      <span className={`flex-shrink-0 px-2 py-0.5 text-xs font-medium rounded ${
+                        selectedCapture.landing_page_type === 'advocacy' ? 'bg-red-100 text-red-700' :
+                        selectedCapture.landing_page_type === 'issue' ? 'bg-amber-100 text-amber-700' :
+                        selectedCapture.landing_page_type === 'corporate' ? 'bg-blue-100 text-blue-700' :
+                        selectedCapture.landing_page_type === 'donation' ? 'bg-green-100 text-green-700' :
+                        selectedCapture.landing_page_type === 'product' ? 'bg-purple-100 text-purple-700' :
+                        'bg-gray-100 text-gray-600'
+                      }`}>{selectedCapture.landing_page_type}</span>
+                    )}
+                  </div>
+                  {selectedCapture.landing_page_description && (
+                    <p className="text-xs text-gray-600 line-clamp-3">{selectedCapture.landing_page_description}</p>
+                  )}
+                  {selectedCapture.resolved_url && (
+                    <a href={selectedCapture.resolved_url} target="_blank" rel="noopener noreferrer" className="text-xs text-indigo-600 hover:underline truncate block">
+                      {selectedCapture.resolved_domain || selectedCapture.resolved_url}
+                    </a>
+                  )}
+                  {selectedCapture.landing_page_keywords && (
+                    <div className="flex flex-wrap gap-1 pt-1">
+                      {selectedCapture.landing_page_keywords.split(',').slice(0, 8).map((kw, i) => (
+                        <span key={i} className="px-1.5 py-0.5 bg-gray-200 text-gray-600 text-xs rounded">{kw.trim()}</span>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
+
             <dl className="grid grid-cols-2 gap-3 text-sm">
               <div><dt className="text-gray-500">Site</dt><dd className="font-medium">{selectedCapture.site}</dd></div>
               <div><dt className="text-gray-500">Slot</dt><dd className="font-medium">{selectedCapture.ad_slot}</dd></div>
               <div className="col-span-2"><dt className="text-gray-500">Page URL</dt><dd className="font-medium truncate">{selectedCapture.page_url}</dd></div>
               {selectedCapture.destination_url && (
                 <div className="col-span-2">
-                  <dt className="text-gray-500">Destination</dt>
+                  <dt className="text-gray-500">Ad Click URL</dt>
                   <dd><a href={selectedCapture.destination_url} target="_blank" rel="noopener noreferrer" className="text-indigo-600 hover:underline truncate block">{selectedCapture.destination_url}</a></dd>
                 </div>
               )}
-              {selectedCapture.destination_domain && (
-                <div><dt className="text-gray-500">Domain</dt><dd className="font-medium">{selectedCapture.destination_domain}</dd></div>
+              {selectedCapture.resolved_url && selectedCapture.resolved_url !== selectedCapture.destination_url && (
+                <div className="col-span-2">
+                  <dt className="text-gray-500">Resolves To</dt>
+                  <dd><a href={selectedCapture.resolved_url} target="_blank" rel="noopener noreferrer" className="text-indigo-600 hover:underline truncate block">{selectedCapture.resolved_url}</a></dd>
+                </div>
               )}
-              <div><dt className="text-gray-500">Size</dt><dd className="font-medium">{selectedCapture.width} × {selectedCapture.height}</dd></div>
+              {(selectedCapture.resolved_domain || selectedCapture.destination_domain) && (
+                <div><dt className="text-gray-500">Advertiser Domain</dt><dd className="font-medium">{selectedCapture.resolved_domain || selectedCapture.destination_domain}</dd></div>
+              )}
+              {selectedCapture.width && selectedCapture.height && (
+                <div><dt className="text-gray-500">Size</dt><dd className="font-medium">{selectedCapture.width} × {selectedCapture.height}</dd></div>
+              )}
               {selectedCapture.ad_text && (
                 <div className="col-span-2"><dt className="text-gray-500">Ad Text</dt><dd className="font-medium">{selectedCapture.ad_text}</dd></div>
               )}

@@ -310,6 +310,10 @@ export interface AdCaptureSummary {
   ad_slot: string;
   destination_url: string | null;
   destination_domain: string | null;
+  resolved_url: string | null;
+  resolved_domain: string | null;
+  landing_page_title: string | null;
+  landing_page_type: string | null;
   ad_text: string | null;
   has_screenshot: boolean;
   width: number | null;
@@ -320,6 +324,9 @@ export interface AdCaptureSummary {
 
 export interface AdCaptureDetail extends AdCaptureSummary {
   screenshot_base64: string | null;
+  landing_page_description: string | null;
+  landing_page_og_image: string | null;
+  landing_page_keywords: string | null;
 }
 
 export interface AdCampaignSummary {
