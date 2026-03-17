@@ -380,11 +380,13 @@ function IssueSidebarItem({ rank, name, value, maxValue, formatValue, onClick, a
 }
 
 // ---------- Search Page ----------
-function SearchPage({ onNavigate, initialFilter }: { onNavigate: (page: Page, ctx?: unknown) => void; initialFilter?: { registrant?: string; client?: string; q?: string } }) {
+function SearchPage({ onNavigate, initialFilter }: { onNavigate: (page: Page, ctx?: unknown) => void; initialFilter?: { registrant?: string; client?: string; lobbyist?: string; government_entity?: string; q?: string } }) {
   const [params, setParams] = useState<SearchParams>(() => ({
     sort: '-dt_posted', page: 1, page_size: 25,
     ...(initialFilter?.registrant ? { registrant: initialFilter.registrant } : {}),
     ...(initialFilter?.client ? { client: initialFilter.client } : {}),
+    ...(initialFilter?.lobbyist ? { lobbyist: initialFilter.lobbyist } : {}),
+    ...(initialFilter?.government_entity ? { government_entity: initialFilter.government_entity } : {}),
     ...(initialFilter?.q ? { q: initialFilter.q } : {}),
   }));
   const [results, setResults] = useState<FilingSummary[]>([]);
@@ -682,22 +684,38 @@ function SearchPage({ onNavigate, initialFilter }: { onNavigate: (page: Page, ct
           <h2 className="text-lg font-semibold text-gray-900 mb-3">
             {issueName || 'All Filings'} <span className="text-sm font-normal text-gray-400">({total} filings)</span>
           </h2>
-          {initialFilter && (initialFilter.registrant || initialFilter.client || initialFilter.q) && (
-            <div className="flex items-center gap-2 mb-3 bg-indigo-50 border border-indigo-200 rounded-lg px-3 py-2 text-sm">
-              <span className="text-indigo-700">
-                Filtered by {initialFilter.registrant ? 'firm' : initialFilter.client ? 'client' : 'keyword'}: <span className="font-medium">{initialFilter.registrant || initialFilter.client || initialFilter.q}</span>
-              </span>
-              <button onClick={() => onNavigate('search')} className="ml-auto text-indigo-400 hover:text-indigo-600 cursor-pointer"><X size={14} /></button>
-            </div>
-          )}
-          {activeFilter && (
-            <div className="flex items-center gap-2 mb-3 bg-indigo-50 border border-indigo-200 rounded-lg px-3 py-2 text-sm">
-              <span className="text-indigo-700">
-                Filtered by {activeFilter.type === 'firm' ? 'firm' : activeFilter.type === 'client' ? 'client' : 'lobbyist'}: <span className="font-medium">{activeFilter.name}</span>
-              </span>
-              <button onClick={clearFilter} className="ml-auto text-indigo-400 hover:text-indigo-600 cursor-pointer"><X size={14} /></button>
-            </div>
-          )}
+          {/* Active filter badges */}
+          {(() => {
+            const badges: Array<{ label: string; value: string; onClear: () => void }> = [];
+            if (selectedIssue) badges.push({ label: 'Issue', value: issueName || selectedIssue, onClear: () => setSelectedIssue(null) });
+            if (params.q) badges.push({ label: 'Search', value: params.q, onClear: () => { setSearchText(''); setParams(p => ({ ...p, q: undefined, page: 1 })); } });
+            if (params.registrant) badges.push({ label: 'Firm', value: params.registrant, onClear: () => { setRegistrantSearch(''); setActiveFilter(f => f?.type === 'firm' ? null : f); setParams(p => ({ ...p, registrant: undefined, page: 1 })); } });
+            if (params.client) badges.push({ label: 'Client', value: params.client, onClear: () => { setClientSearch(''); setActiveFilter(f => f?.type === 'client' ? null : f); setParams(p => ({ ...p, client: undefined, page: 1 })); } });
+            if (params.lobbyist) badges.push({ label: 'Lobbyist', value: params.lobbyist, onClear: () => { setActiveFilter(f => f?.type === 'lobbyist' ? null : f); setParams(p => ({ ...p, lobbyist: undefined, page: 1 })); } });
+            if (params.government_entity) badges.push({ label: 'Gov. Entity', value: params.government_entity, onClear: () => setParams(p => ({ ...p, government_entity: undefined, page: 1 })) });
+            if (params.filing_year) badges.push({ label: 'Year', value: String(params.filing_year), onClear: () => setParams(p => ({ ...p, filing_year: undefined, page: 1 })) });
+            if (params.filing_period) badges.push({ label: 'Period', value: params.filing_period.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase()), onClear: () => setParams(p => ({ ...p, filing_period: undefined, page: 1 })) });
+            if (badges.length === 0) return null;
+            return (
+              <div className="flex flex-wrap gap-2 mb-3">
+                {badges.map(b => (
+                  <div key={b.label} className="flex items-center gap-1.5 bg-indigo-50 border border-indigo-200 rounded-lg px-2.5 py-1 text-sm">
+                    <span className="text-indigo-500 text-xs">{b.label}:</span>
+                    <span className="text-indigo-700 font-medium">{b.value}</span>
+                    <button onClick={b.onClear} className="text-indigo-400 hover:text-indigo-600 cursor-pointer ml-0.5"><X size={12} /></button>
+                  </div>
+                ))}
+                {badges.length > 1 && (
+                  <button
+                    onClick={() => { setSearchText(''); setRegistrantSearch(''); setClientSearch(''); setActiveFilter(null); setSelectedIssue(null); setParams({ sort: '-dt_posted', page: 1, page_size: 25 }); }}
+                    className="text-xs text-gray-400 hover:text-gray-600 cursor-pointer px-2 py-1"
+                  >
+                    Clear all
+                  </button>
+                )}
+              </div>
+            );
+          })()}
           {loading ? (
             <div className="flex items-center justify-center h-32"><Loader2 className="animate-spin text-indigo-600" size={24} /></div>
           ) : results.length > 0 ? (
@@ -955,7 +973,7 @@ function FilingDetailPage({ filingUuid, onBack, onNavigate }: { filingUuid: stri
                         const name = l.lobbyist ? `${l.lobbyist.first_name || ''} ${l.lobbyist.last_name || ''}`.trim() : '';
                         return (
                           <div key={j} className="text-sm text-gray-700 flex items-center gap-1">
-                            <button onClick={() => onNavigate('search', { q: name })} className="hover:text-indigo-600 transition cursor-pointer text-left">{name}</button>
+                            <button onClick={() => onNavigate('search', { lobbyist: name })} className="hover:text-indigo-600 transition cursor-pointer text-left">{name}</button>
                             {l.covered_position ? <span className="text-gray-400 shrink-0">({l.covered_position})</span> : null}
                           </div>
                         );
@@ -3796,7 +3814,7 @@ function AdsPage({ onNavigate }: { onNavigate: (p: Page, ctx?: unknown) => void 
 
 // ---------- App ----------
 export default function App() {
-  type NavState = { page: Page; filingUuid?: string; entityId?: number; newsletterId?: number; centerEntityId?: number; leaderboardType?: string; conversationId?: number; searchFilter?: { registrant?: string; client?: string; q?: string } };
+  type NavState = { page: Page; filingUuid?: string; entityId?: number; newsletterId?: number; centerEntityId?: number; leaderboardType?: string; conversationId?: number; searchFilter?: { registrant?: string; client?: string; lobbyist?: string; government_entity?: string; q?: string } };
 
   // Build a NavState from the current browser URL hash
   const parseHash = useCallback((): NavState => {
