@@ -394,43 +394,34 @@ function SearchPage({ onNavigate, initialFilter }: { onNavigate: (page: Page, ct
   const [searchText, setSearchText] = useState(initialFilter?.q || '');
   const [issuesLoading, setIssuesLoading] = useState(true);
 
-  // Issue sidebar state
+  // Issue filter
   const [selectedIssue, setSelectedIssue] = useState<string | null>(null);
+
+  // Unified sidebar state — recomputes when any filter changes
   const [sidebar, setSidebar] = useState<{
     firms: Array<{ id: number; name: string; filing_count: number; total_income: number }>;
     clients: Array<{ id: number; name: string; filing_count: number; total_spending: number }>;
     lobbyists: Array<{ name: string; filing_count: number }>;
   } | null>(null);
-  const [sidebarLoading, setSidebarLoading] = useState(false);
+  const [sidebarLoading, setSidebarLoading] = useState(true);
   const [activeFilter, setActiveFilter] = useState<{ type: 'firm' | 'client' | 'lobbyist'; id?: number; name: string } | null>(null);
 
   // Government entity filter state
   const [govEntities, setGovEntities] = useState<Array<{ name: string; count: number }>>([]);
-  const [govEntitySearch, setGovEntitySearch] = useState('');
-  const [showGovDropdown, setShowGovDropdown] = useState(false);
 
-  useEffect(() => {
-    api.getGovernmentEntities().then(d => setGovEntities(d.entities)).catch(() => {});
-  }, []);
-
-  // Global sidebar for unfiltered view
-  const [globalFirms, setGlobalFirms] = useState<Array<{ name: string; total_income: number; filing_count: number; [k: string]: unknown }>>([]);
-  const [globalClients, setGlobalClients] = useState<Array<{ name: string; total_spend: number; filing_count: number; [k: string]: unknown }>>([]);
-  const [globalLobbyists, setGlobalLobbyists] = useState<Array<{ name: string; unique_clients: number; firms: string[] }>>([]);
-  const [globalLoading, setGlobalLoading] = useState(true);
+  // Registrant + client typeahead lists
+  const [registrantList, setRegistrantList] = useState<Array<{ id: number; name: string; filing_count: number }>>([]);
+  const [clientList, setClientList] = useState<Array<{ id: number; name: string; filing_count: number }>>([]);
+  const [registrantSearch, setRegistrantSearch] = useState(params.registrant || '');
+  const [clientSearch, setClientSearch] = useState(params.client || '');
+  const [showRegistrantDropdown, setShowRegistrantDropdown] = useState(false);
+  const [showClientDropdown, setShowClientDropdown] = useState(false);
 
   useEffect(() => {
     api.getIssues().then(i => { setIssues(i); setIssuesLoading(false); }).catch(() => setIssuesLoading(false));
-    Promise.all([
-      api.getTopRegistrants(10, 'revenue'),
-      api.getTopClientsBySpend(10),
-      api.getTopLobbyistsByClients(10),
-    ]).then(([firms, clients, lobbyists]) => {
-      setGlobalFirms(firms);
-      setGlobalClients(clients);
-      setGlobalLobbyists(lobbyists);
-      setGlobalLoading(false);
-    }).catch(() => setGlobalLoading(false));
+    api.getGovernmentEntities().then(d => setGovEntities(d.entities)).catch(() => {});
+    api.getRegistrants().then(setRegistrantList).catch(() => {});
+    api.getClients().then(setClientList).catch(() => {});
   }, []);
 
   // Search filings
@@ -448,25 +439,33 @@ function SearchPage({ onNavigate, initialFilter }: { onNavigate: (page: Page, ct
 
   useEffect(() => { doSearch(params); }, [params, doSearch]);
 
+  // Fetch sidebar whenever search-driving params change (excluding page/sort/page_size)
+  useEffect(() => {
+    setSidebarLoading(true);
+    api.getFilingsSidebar({
+      issue_code: params.issue_code,
+      registrant: params.registrant,
+      client: params.client,
+      government_entity: params.government_entity,
+      filing_year: params.filing_year,
+      filing_period: params.filing_period,
+    }).then(d => { setSidebar(d); setSidebarLoading(false); }).catch(() => setSidebarLoading(false));
+  }, [params.issue_code, params.registrant, params.client, params.government_entity, params.filing_year, params.filing_period]);
+
   // When issue selection changes, update params and clear any sidebar filter
   useEffect(() => {
-    setParams(p => ({ ...p, issue_code: selectedIssue || undefined, registrant: undefined, client: undefined, lobbyist: undefined, q: searchText || undefined, page: 1 }));
+    setParams(p => ({ ...p, issue_code: selectedIssue || undefined, page: 1 }));
     setActiveFilter(null);
-  }, [selectedIssue]);
-
-  // Fetch sidebar insights when issue changes
-  useEffect(() => {
-    if (!selectedIssue) { setSidebar(null); return; }
-    setSidebarLoading(true);
-    api.getIssueSidebar(selectedIssue, 10).then(d => { setSidebar(d); setSidebarLoading(false); }).catch(() => setSidebarLoading(false));
   }, [selectedIssue]);
 
   // When a sidebar insight filter is clicked, apply as registrant/client text filter
   useEffect(() => {
     if (!activeFilter) return;
     if (activeFilter.type === 'firm') {
+      setRegistrantSearch(activeFilter.name);
       setParams(p => ({ ...p, registrant: activeFilter.name, client: undefined, page: 1 }));
     } else if (activeFilter.type === 'client') {
+      setClientSearch(activeFilter.name);
       setParams(p => ({ ...p, client: activeFilter.name, registrant: undefined, page: 1 }));
     } else if (activeFilter.type === 'lobbyist') {
       setParams(p => ({ ...p, lobbyist: activeFilter.name, registrant: undefined, client: undefined, page: 1 }));
@@ -481,6 +480,8 @@ function SearchPage({ onNavigate, initialFilter }: { onNavigate: (page: Page, ct
   const clearFilter = () => {
     setActiveFilter(null);
     setParams(p => ({ ...p, registrant: undefined, client: undefined, lobbyist: undefined, q: searchText || undefined, page: 1 }));
+    setRegistrantSearch('');
+    setClientSearch('');
   };
   const applyFilter = (f: typeof activeFilter) => {
     if (!f) { clearFilter(); return; }
@@ -530,70 +531,120 @@ function SearchPage({ onNavigate, initialFilter }: { onNavigate: (page: Page, ct
             <option value="mid_year">Mid-Year</option>
             <option value="year_end">Year-End</option>
           </select>
-          <input
-            type="text"
-            placeholder="Registrant name"
-            value={params.registrant || ''}
-            onChange={e => { setParams(p => ({ ...p, registrant: e.target.value || undefined, page: 1 })); if (activeFilter?.type === 'firm') setActiveFilter(null); }}
-            className="border border-gray-300 rounded-lg px-3 py-1.5 text-sm w-40"
-          />
-          <input
-            type="text"
-            placeholder="Client name"
-            value={params.client || ''}
-            onChange={e => { setParams(p => ({ ...p, client: e.target.value || undefined, page: 1 })); if (activeFilter?.type === 'client') setActiveFilter(null); }}
-            className="border border-gray-300 rounded-lg px-3 py-1.5 text-sm w-40"
-          />
           <div className="relative">
             <input
               type="text"
-              placeholder="Gov. entity contacted"
-              value={govEntitySearch || params.government_entity || ''}
+              placeholder="Registrant name"
+              value={registrantSearch}
               onChange={e => {
-                setGovEntitySearch(e.target.value);
-                setShowGovDropdown(true);
+                setRegistrantSearch(e.target.value);
+                setShowRegistrantDropdown(true);
                 if (!e.target.value) {
-                  setParams(p => ({ ...p, government_entity: undefined, page: 1 }));
+                  setParams(p => ({ ...p, registrant: undefined, page: 1 }));
+                  if (activeFilter?.type === 'firm') setActiveFilter(null);
                 }
               }}
-              onFocus={() => setShowGovDropdown(true)}
-              onBlur={() => setTimeout(() => setShowGovDropdown(false), 200)}
-              className="border border-gray-300 rounded-lg px-3 py-1.5 text-sm w-48"
+              onFocus={() => setShowRegistrantDropdown(true)}
+              onBlur={() => setTimeout(() => setShowRegistrantDropdown(false), 200)}
+              className="border border-gray-300 rounded-lg px-3 py-1.5 text-sm w-44"
             />
-            {showGovDropdown && govEntitySearch.length > 0 && (
+            {showRegistrantDropdown && registrantSearch.length > 0 && (
               <div className="absolute top-full left-0 mt-1 w-72 bg-white border border-gray-200 rounded-lg shadow-lg max-h-48 overflow-y-auto z-30">
-                {govEntities
-                  .filter(ge => ge.name.toLowerCase().includes(govEntitySearch.toLowerCase()))
+                {registrantList
+                  .filter(r => r.name.toLowerCase().includes(registrantSearch.toLowerCase()))
                   .slice(0, 15)
-                  .map(ge => (
+                  .map(r => (
                     <button
-                      key={ge.name}
+                      key={r.id}
                       onMouseDown={e => e.preventDefault()}
                       onClick={() => {
-                        setGovEntitySearch(ge.name);
-                        setShowGovDropdown(false);
-                        setParams(p => ({ ...p, government_entity: ge.name, page: 1 }));
+                        setRegistrantSearch(r.name);
+                        setShowRegistrantDropdown(false);
+                        setParams(p => ({ ...p, registrant: r.name, page: 1 }));
+                        if (activeFilter?.type === 'firm') setActiveFilter(null);
                       }}
                       className="w-full text-left px-3 py-1.5 text-sm hover:bg-indigo-50 cursor-pointer flex justify-between"
                     >
-                      <span className="truncate">{ge.name}</span>
-                      <span className="text-xs text-gray-400 ml-2 shrink-0">{ge.count}</span>
+                      <span className="truncate">{r.name}</span>
+                      <span className="text-xs text-gray-400 ml-2 shrink-0">{r.filing_count}</span>
                     </button>
                   ))}
-                {govEntities.filter(ge => ge.name.toLowerCase().includes(govEntitySearch.toLowerCase())).length === 0 && (
-                  <div className="px-3 py-2 text-xs text-gray-400">No matching entities</div>
+                {registrantList.filter(r => r.name.toLowerCase().includes(registrantSearch.toLowerCase())).length === 0 && (
+                  <div className="px-3 py-2 text-xs text-gray-400">No matching registrants</div>
                 )}
               </div>
             )}
-            {params.government_entity && (
+            {params.registrant && (
               <button
-                onClick={() => { setGovEntitySearch(''); setParams(p => ({ ...p, government_entity: undefined, page: 1 })); }}
+                onClick={() => { setRegistrantSearch(''); setParams(p => ({ ...p, registrant: undefined, page: 1 })); if (activeFilter?.type === 'firm') setActiveFilter(null); }}
                 className="absolute right-2 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600 cursor-pointer"
               >
                 <X size={14} />
               </button>
             )}
           </div>
+          <div className="relative">
+            <input
+              type="text"
+              placeholder="Client name"
+              value={clientSearch}
+              onChange={e => {
+                setClientSearch(e.target.value);
+                setShowClientDropdown(true);
+                if (!e.target.value) {
+                  setParams(p => ({ ...p, client: undefined, page: 1 }));
+                  if (activeFilter?.type === 'client') setActiveFilter(null);
+                }
+              }}
+              onFocus={() => setShowClientDropdown(true)}
+              onBlur={() => setTimeout(() => setShowClientDropdown(false), 200)}
+              className="border border-gray-300 rounded-lg px-3 py-1.5 text-sm w-44"
+            />
+            {showClientDropdown && clientSearch.length > 0 && (
+              <div className="absolute top-full left-0 mt-1 w-72 bg-white border border-gray-200 rounded-lg shadow-lg max-h-48 overflow-y-auto z-30">
+                {clientList
+                  .filter(c => c.name.toLowerCase().includes(clientSearch.toLowerCase()))
+                  .slice(0, 15)
+                  .map(c => (
+                    <button
+                      key={c.id}
+                      onMouseDown={e => e.preventDefault()}
+                      onClick={() => {
+                        setClientSearch(c.name);
+                        setShowClientDropdown(false);
+                        setParams(p => ({ ...p, client: c.name, page: 1 }));
+                        if (activeFilter?.type === 'client') setActiveFilter(null);
+                      }}
+                      className="w-full text-left px-3 py-1.5 text-sm hover:bg-indigo-50 cursor-pointer flex justify-between"
+                    >
+                      <span className="truncate">{c.name}</span>
+                      <span className="text-xs text-gray-400 ml-2 shrink-0">{c.filing_count}</span>
+                    </button>
+                  ))}
+                {clientList.filter(c => c.name.toLowerCase().includes(clientSearch.toLowerCase())).length === 0 && (
+                  <div className="px-3 py-2 text-xs text-gray-400">No matching clients</div>
+                )}
+              </div>
+            )}
+            {params.client && (
+              <button
+                onClick={() => { setClientSearch(''); setParams(p => ({ ...p, client: undefined, page: 1 })); if (activeFilter?.type === 'client') setActiveFilter(null); }}
+                className="absolute right-2 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600 cursor-pointer"
+              >
+                <X size={14} />
+              </button>
+            )}
+          </div>
+          <select
+            value={params.government_entity || ''}
+            onChange={e => setParams(p => ({ ...p, government_entity: e.target.value || undefined, page: 1 }))}
+            className="border border-gray-300 rounded-lg px-3 py-1.5 text-sm cursor-pointer max-w-52"
+          >
+            <option value="">All Gov. Entities</option>
+            {govEntities.map(ge => (
+              <option key={ge.name} value={ge.name}>{ge.name} ({ge.count})</option>
+            ))}
+          </select>
         </div>
       </form>
 
@@ -670,131 +721,66 @@ function SearchPage({ onNavigate, initialFilter }: { onNavigate: (page: Page, ct
         <div className="min-w-0">
           <h2 className="text-lg font-semibold text-gray-900 mb-3">Insights</h2>
           <div className="space-y-4">
-          {selectedIssue ? (
-            <>
-              {sidebarLoading && (
-                <div className="flex justify-center py-8"><Loader2 className="animate-spin text-gray-300" size={20} /></div>
-              )}
-              {!sidebarLoading && sidebar && (
-                <>
-                  <div className="bg-white rounded-lg border border-gray-200 p-3">
-                    <h3 className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2 flex items-center gap-1.5"><Building2 size={12} /> Top Firms</h3>
-                    <div className="space-y-1">
-                      {sidebar.firms.map((f, i) => (
-                        <IssueSidebarItem
-                          key={f.id}
-                          rank={i + 1}
-                          name={f.name}
-                          value={f.filing_count}
-                          maxValue={sidebar.firms[0]?.filing_count || 1}
-                          formatValue={v => `${v} filings`}
-                          active={activeFilter?.type === 'firm' && activeFilter.id === f.id}
-                          onClick={() => applyFilter(activeFilter?.type === 'firm' && activeFilter.id === f.id ? null : { type: 'firm', id: f.id, name: f.name })}
-                        />
-                      ))}
-                      {sidebar.firms.length === 0 && <p className="text-xs text-gray-400 py-1">No data</p>}
-                    </div>
+            {sidebarLoading ? (
+              <div className="flex justify-center py-8"><Loader2 className="animate-spin text-gray-300" size={20} /></div>
+            ) : sidebar ? (
+              <>
+                <div className="bg-white rounded-lg border border-gray-200 p-3">
+                  <h3 className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2 flex items-center gap-1.5"><Building2 size={12} /> Top Firms</h3>
+                  <div className="space-y-1">
+                    {sidebar.firms.map((f, i) => (
+                      <IssueSidebarItem
+                        key={f.id}
+                        rank={i + 1}
+                        name={f.name}
+                        value={f.filing_count}
+                        maxValue={sidebar.firms[0]?.filing_count || 1}
+                        formatValue={v => `${v} filings`}
+                        active={activeFilter?.type === 'firm' && activeFilter.name === f.name}
+                        onClick={() => applyFilter(activeFilter?.type === 'firm' && activeFilter.name === f.name ? null : { type: 'firm', id: f.id, name: f.name })}
+                      />
+                    ))}
+                    {sidebar.firms.length === 0 && <p className="text-xs text-gray-400 py-1">No data</p>}
                   </div>
-                  <div className="bg-white rounded-lg border border-gray-200 p-3">
-                    <h3 className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2 flex items-center gap-1.5"><DollarSign size={12} /> Top Clients by Spending</h3>
-                    <div className="space-y-1">
-                      {sidebar.clients.map((c, i) => (
-                        <IssueSidebarItem
-                          key={c.id}
-                          rank={i + 1}
-                          name={c.name}
-                          value={c.total_spending}
-                          maxValue={sidebar.clients[0]?.total_spending || 1}
-                          formatValue={formatMoney}
-                          active={activeFilter?.type === 'client' && activeFilter.id === c.id}
-                          onClick={() => applyFilter(activeFilter?.type === 'client' && activeFilter.id === c.id ? null : { type: 'client', id: c.id, name: c.name })}
-                        />
-                      ))}
-                      {sidebar.clients.length === 0 && <p className="text-xs text-gray-400 py-1">No data</p>}
-                    </div>
+                </div>
+                <div className="bg-white rounded-lg border border-gray-200 p-3">
+                  <h3 className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2 flex items-center gap-1.5"><DollarSign size={12} /> Top Clients by Spending</h3>
+                  <div className="space-y-1">
+                    {sidebar.clients.map((c, i) => (
+                      <IssueSidebarItem
+                        key={c.id}
+                        rank={i + 1}
+                        name={c.name}
+                        value={c.total_spending}
+                        maxValue={sidebar.clients[0]?.total_spending || 1}
+                        formatValue={formatMoney}
+                        active={activeFilter?.type === 'client' && activeFilter.name === c.name}
+                        onClick={() => applyFilter(activeFilter?.type === 'client' && activeFilter.name === c.name ? null : { type: 'client', id: c.id, name: c.name })}
+                      />
+                    ))}
+                    {sidebar.clients.length === 0 && <p className="text-xs text-gray-400 py-1">No data</p>}
                   </div>
-                  <div className="bg-white rounded-lg border border-gray-200 p-3">
-                    <h3 className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2 flex items-center gap-1.5"><User size={12} /> Top Lobbyists</h3>
-                    <div className="space-y-1">
-                      {sidebar.lobbyists.map((l, i) => (
-                        <IssueSidebarItem
-                          key={l.name}
-                          rank={i + 1}
-                          name={l.name}
-                          value={l.filing_count}
-                          maxValue={sidebar.lobbyists[0]?.filing_count || 1}
-                          formatValue={v => `${v} filings`}
-                          active={activeFilter?.type === 'lobbyist' && activeFilter.name === l.name}
-                          onClick={() => applyFilter(activeFilter?.type === 'lobbyist' && activeFilter.name === l.name ? null : { type: 'lobbyist', name: l.name })}
-                        />
-                      ))}
-                      {sidebar.lobbyists.length === 0 && <p className="text-xs text-gray-400 py-1">No data</p>}
-                    </div>
+                </div>
+                <div className="bg-white rounded-lg border border-gray-200 p-3">
+                  <h3 className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2 flex items-center gap-1.5"><User size={12} /> Top Lobbyists</h3>
+                  <div className="space-y-1">
+                    {sidebar.lobbyists.map((l, i) => (
+                      <IssueSidebarItem
+                        key={l.name}
+                        rank={i + 1}
+                        name={l.name}
+                        value={l.filing_count}
+                        maxValue={sidebar.lobbyists[0]?.filing_count || 1}
+                        formatValue={v => `${v} filings`}
+                        active={activeFilter?.type === 'lobbyist' && activeFilter.name === l.name}
+                        onClick={() => applyFilter(activeFilter?.type === 'lobbyist' && activeFilter.name === l.name ? null : { type: 'lobbyist', name: l.name })}
+                      />
+                    ))}
+                    {sidebar.lobbyists.length === 0 && <p className="text-xs text-gray-400 py-1">No data</p>}
                   </div>
-                </>
-              )}
-            </>
-          ) : (
-            <>
-              {globalLoading ? (
-                <div className="flex justify-center py-8"><Loader2 className="animate-spin text-gray-300" size={20} /></div>
-              ) : (
-                <>
-                  <div className="bg-white rounded-lg border border-gray-200 p-3">
-                    <h3 className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2 flex items-center gap-1.5"><Building2 size={12} /> Top Firms by Revenue</h3>
-                    <div className="space-y-1">
-                      {globalFirms.map((f, i) => (
-                        <IssueSidebarItem
-                          key={f.name}
-                          rank={i + 1}
-                          name={f.name}
-                          value={f.total_income}
-                          maxValue={globalFirms[0]?.total_income || 1}
-                          formatValue={formatMoney}
-                          active={activeFilter?.type === 'firm' && activeFilter.name === f.name}
-                          onClick={() => applyFilter(activeFilter?.type === 'firm' && activeFilter.name === f.name ? null : { type: 'firm', name: f.name })}
-                        />
-                      ))}
-                    </div>
-                  </div>
-                  <div className="bg-white rounded-lg border border-gray-200 p-3">
-                    <h3 className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2 flex items-center gap-1.5"><DollarSign size={12} /> Top Clients by Spending</h3>
-                    <div className="space-y-1">
-                      {globalClients.map((c, i) => (
-                        <IssueSidebarItem
-                          key={c.name}
-                          rank={i + 1}
-                          name={c.name}
-                          value={c.total_spend}
-                          maxValue={globalClients[0]?.total_spend || 1}
-                          formatValue={formatMoney}
-                          active={activeFilter?.type === 'client' && activeFilter.name === c.name}
-                          onClick={() => applyFilter(activeFilter?.type === 'client' && activeFilter.name === c.name ? null : { type: 'client', name: c.name })}
-                        />
-                      ))}
-                    </div>
-                  </div>
-                  <div className="bg-white rounded-lg border border-gray-200 p-3">
-                    <h3 className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2 flex items-center gap-1.5"><User size={12} /> Top Lobbyists by Clients</h3>
-                    <div className="space-y-1">
-                      {globalLobbyists.map((l, i) => (
-                        <IssueSidebarItem
-                          key={l.name}
-                          rank={i + 1}
-                          name={l.name}
-                          value={l.unique_clients}
-                          maxValue={globalLobbyists[0]?.unique_clients || 1}
-                          formatValue={v => `${v} clients`}
-                          active={activeFilter?.type === 'lobbyist' && activeFilter.name === l.name}
-                          onClick={() => applyFilter(activeFilter?.type === 'lobbyist' && activeFilter.name === l.name ? null : { type: 'lobbyist', name: l.name })}
-                        />
-                      ))}
-                    </div>
-                  </div>
-                </>
-              )}
-            </>
-          )}
+                </div>
+              </>
+            ) : null}
           </div>
         </div>
       </div>
@@ -2866,27 +2852,30 @@ function TopConsultantsByRevenue({ onNavigate }: { onNavigate?: (page: Page, ctx
 }
 
 function TopLobbyistsChart({ onNavigate }: { onNavigate?: (page: Page, ctx?: unknown) => void }) {
-  const [data, setData] = useState<Array<{ id: number; name: string; display_name: string; mention_count: number }>>([]);
+  const [data, setData] = useState<Array<{ name: string; unique_clients: number; firms: string[] }>>([]);
   const [loading, setLoading] = useState(true);
-  useEffect(() => { api.getTopLobbyists(15).then(setData).catch(() => setData([])).finally(() => setLoading(false)); }, []);
+  useEffect(() => { api.getTopLobbyistsByClients(15).then(setData).catch(() => setData([])).finally(() => setLoading(false)); }, []);
   if (loading) return <div className="bg-white rounded-lg border border-gray-200 p-4 flex justify-center py-8"><Loader2 className="animate-spin text-gray-300" size={20} /></div>;
   if (!data.length) return null;
-  const maxCount = Math.max(...data.map(d => d.mention_count));
+  const maxCount = Math.max(...data.map(d => d.unique_clients));
   return (
     <div className="bg-white rounded-lg border border-gray-200 p-4">
-      <h3 className="font-semibold text-gray-900 mb-3">Top Lobbyists</h3>
+      <h3 className="font-semibold text-gray-900 mb-3">Top Lobbyists by Clients</h3>
       <div className="space-y-1.5">
         {data.map((d, i) => (
-          <div key={d.id}>
+          <div key={d.name}>
             <div className="flex items-center justify-between text-sm mb-0.5">
-              <button onClick={() => onNavigate?.('entity', d.id)} className="text-gray-700 truncate text-xs hover:text-indigo-600 cursor-pointer text-left">
-                <span className="text-gray-400 mr-1">{i + 1}.</span>{d.display_name}
+              <button onClick={() => onNavigate?.('search', { q: d.name })} className="text-gray-700 truncate text-xs hover:text-indigo-600 cursor-pointer text-left">
+                <span className="text-gray-400 mr-1">{i + 1}.</span>{d.name}
               </button>
-              <span className="text-indigo-600 font-medium text-xs shrink-0 ml-2">{d.mention_count} appearances</span>
+              <span className="text-indigo-600 font-medium text-xs shrink-0 ml-2">{d.unique_clients} clients</span>
             </div>
             <div className="w-full h-1.5 bg-gray-100 rounded-full overflow-hidden">
-              <div className="h-full bg-indigo-400 rounded-full" style={{ width: `${d.mention_count / maxCount * 100}%` }} />
+              <div className="h-full bg-indigo-400 rounded-full" style={{ width: `${d.unique_clients / maxCount * 100}%` }} />
             </div>
+            {d.firms.length > 0 && (
+              <p className="text-[10px] text-gray-400 truncate mt-0.5">{d.firms.join(', ')}</p>
+            )}
           </div>
         ))}
       </div>

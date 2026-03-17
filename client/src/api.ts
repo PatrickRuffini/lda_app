@@ -378,6 +378,16 @@ export const api = {
       lobbyists: Array<{ name: string; filing_count: number }>;
     }>(`${BASE}/issues/${code}/sidebar?limit=${limit}`),
 
+  getFilingsSidebar: (params: { issue_code?: string; registrant?: string; client?: string; government_entity?: string; filing_year?: number; filing_period?: string; limit?: number }) =>
+    fetchJson<{
+      firms: Array<{ id: number; name: string; filing_count: number; total_income: number }>;
+      clients: Array<{ id: number; name: string; filing_count: number; total_spending: number }>;
+      lobbyists: Array<{ name: string; filing_count: number }>;
+    }>(`${BASE}/filings/sidebar?${toQuery(params)}`),
+
+  getClients: () =>
+    fetchJson<Array<{ id: number; name: string; filing_count: number }>>(`${BASE}/clients`),
+
   getTopRegistrants: (limit = 20, sort = 'filings') =>
     fetchJson<TopEntity[]>(`${BASE}/top-registrants?limit=${limit}&sort=${sort}`),
 
