@@ -374,14 +374,27 @@ def list_government_entities(q: Optional[str] = Query(None, description="Filter 
         )
         rows = query.distinct().all()
 
-        # government_entities is a comma/semicolon separated text field — split and deduplicate
+        # government_entities is stored as JSON array of {id, name} objects
         entity_counts: dict[str, int] = {}
         for (raw,) in rows:
-            # Split on common delimiters
-            for part in re.split(r'[;,\n]+', raw):
-                name = part.strip()
-                if name and len(name) > 1:
-                    entity_counts[name] = entity_counts.get(name, 0) + 1
+            try:
+                entities = json.loads(raw)
+                if isinstance(entities, list):
+                    for ent in entities:
+                        if isinstance(ent, dict):
+                            name = ent.get("name", "").strip()
+                        elif isinstance(ent, str):
+                            name = ent.strip()
+                        else:
+                            continue
+                        if name and len(name) > 1:
+                            entity_counts[name] = entity_counts.get(name, 0) + 1
+            except (json.JSONDecodeError, TypeError):
+                # Fallback for any legacy comma-separated values
+                for part in re.split(r'[;,\n]+', raw):
+                    name = part.strip()
+                    if name and len(name) > 1 and not name.startswith('{') and not name.startswith('['):
+                        entity_counts[name] = entity_counts.get(name, 0) + 1
 
         # Filter if query provided
         if q:
