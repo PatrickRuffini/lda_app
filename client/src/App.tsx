@@ -108,10 +108,10 @@ function FilingCard({ filing, onClick }: { filing: FilingSummary; onClick: () =>
       <div className="flex items-center gap-4 text-xs text-gray-500">
         <span className="flex items-center gap-1"><Calendar size={12} />{timeAgo(filing.dt_posted)}</span>
         {filing.income != null && filing.income > 0 && (
-          <span className="flex items-center gap-1"><DollarSign size={12} />{formatMoney(filing.income)}</span>
+          <span className="flex items-center gap-1 text-green-600">{formatMoney(filing.income)}</span>
         )}
         {filing.expenses != null && filing.expenses > 0 && (
-          <span className="flex items-center gap-1 text-orange-600"><DollarSign size={12} />{formatMoney(filing.expenses)} exp.</span>
+          <span className="flex items-center gap-1 text-orange-600">{formatMoney(filing.expenses)} exp.</span>
         )}
         <span>{filing.filing_year} {filing.filing_period_display}</span>
       </div>
@@ -404,6 +404,15 @@ function SearchPage({ onNavigate, initialFilter }: { onNavigate: (page: Page, ct
   const [sidebarLoading, setSidebarLoading] = useState(false);
   const [activeFilter, setActiveFilter] = useState<{ type: 'firm' | 'client' | 'lobbyist'; id?: number; name: string } | null>(null);
 
+  // Government entity filter state
+  const [govEntities, setGovEntities] = useState<Array<{ name: string; count: number }>>([]);
+  const [govEntitySearch, setGovEntitySearch] = useState('');
+  const [showGovDropdown, setShowGovDropdown] = useState(false);
+
+  useEffect(() => {
+    api.getGovernmentEntities().then(d => setGovEntities(d.entities)).catch(() => {});
+  }, []);
+
   // Global sidebar for unfiltered view
   const [globalFirms, setGlobalFirms] = useState<Array<{ name: string; total_income: number; filing_count: number; [k: string]: unknown }>>([]);
   const [globalClients, setGlobalClients] = useState<Array<{ name: string; total_spend: number; filing_count: number; [k: string]: unknown }>>([]);
@@ -535,6 +544,56 @@ function SearchPage({ onNavigate, initialFilter }: { onNavigate: (page: Page, ct
             onChange={e => { setParams(p => ({ ...p, client: e.target.value || undefined, page: 1 })); if (activeFilter?.type === 'client') setActiveFilter(null); }}
             className="border border-gray-300 rounded-lg px-3 py-1.5 text-sm w-40"
           />
+          <div className="relative">
+            <input
+              type="text"
+              placeholder="Gov. entity contacted"
+              value={govEntitySearch || params.government_entity || ''}
+              onChange={e => {
+                setGovEntitySearch(e.target.value);
+                setShowGovDropdown(true);
+                if (!e.target.value) {
+                  setParams(p => ({ ...p, government_entity: undefined, page: 1 }));
+                }
+              }}
+              onFocus={() => setShowGovDropdown(true)}
+              onBlur={() => setTimeout(() => setShowGovDropdown(false), 200)}
+              className="border border-gray-300 rounded-lg px-3 py-1.5 text-sm w-48"
+            />
+            {showGovDropdown && govEntitySearch.length > 0 && (
+              <div className="absolute top-full left-0 mt-1 w-72 bg-white border border-gray-200 rounded-lg shadow-lg max-h-48 overflow-y-auto z-30">
+                {govEntities
+                  .filter(ge => ge.name.toLowerCase().includes(govEntitySearch.toLowerCase()))
+                  .slice(0, 15)
+                  .map(ge => (
+                    <button
+                      key={ge.name}
+                      onMouseDown={e => e.preventDefault()}
+                      onClick={() => {
+                        setGovEntitySearch(ge.name);
+                        setShowGovDropdown(false);
+                        setParams(p => ({ ...p, government_entity: ge.name, page: 1 }));
+                      }}
+                      className="w-full text-left px-3 py-1.5 text-sm hover:bg-indigo-50 cursor-pointer flex justify-between"
+                    >
+                      <span className="truncate">{ge.name}</span>
+                      <span className="text-xs text-gray-400 ml-2 shrink-0">{ge.count}</span>
+                    </button>
+                  ))}
+                {govEntities.filter(ge => ge.name.toLowerCase().includes(govEntitySearch.toLowerCase())).length === 0 && (
+                  <div className="px-3 py-2 text-xs text-gray-400">No matching entities</div>
+                )}
+              </div>
+            )}
+            {params.government_entity && (
+              <button
+                onClick={() => { setGovEntitySearch(''); setParams(p => ({ ...p, government_entity: undefined, page: 1 })); }}
+                className="absolute right-2 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600 cursor-pointer"
+              >
+                <X size={14} />
+              </button>
+            )}
+          </div>
         </div>
       </form>
 

@@ -2,6 +2,7 @@
 import json
 import logging
 import os
+import re
 import threading
 import time
 from datetime import datetime
@@ -240,6 +241,7 @@ def search_filings(
     registrant: Optional[str] = Query(None),
     client: Optional[str] = Query(None),
     lobbyist: Optional[str] = Query(None, description="Filter by lobbyist name (searches JSON lobbyists field)"),
+    government_entity: Optional[str] = Query(None, description="Filter by government entity contacted"),
     min_income: Optional[float] = Query(None),
     min_expenses: Optional[float] = Query(None),
     sort: str = Query("-dt_posted", description="Sort field"),
@@ -324,8 +326,16 @@ def search_filings(
             lob_filters = [LobbyingActivity.lobbyists.ilike(f"%{part}%") for part in lob_parts]
             if not _joined_activity:
                 query = query.join(LobbyingActivity)
+                _joined_activity = True
             query = query.filter(*lob_filters)
-        if lobbyist or _joined_activity:
+        if government_entity:
+            if not _joined_activity:
+                query = query.join(LobbyingActivity)
+                _joined_activity = True
+            query = query.filter(
+                LobbyingActivity.government_entities.ilike(f"%{government_entity}%")
+            )
+        if _joined_activity:
             query = query.distinct()
 
         if total is None:
@@ -348,6 +358,42 @@ def search_filings(
             "total": total,
             "page": page,
             "page_size": page_size,
+        }
+    finally:
+        session.close()
+
+
+@app.get("/api/government-entities")
+def list_government_entities(q: Optional[str] = Query(None, description="Filter entities by name")):
+    """Get distinct government entities from lobbying activities."""
+    session = _get_session()
+    try:
+        query = session.query(LobbyingActivity.government_entities).filter(
+            LobbyingActivity.government_entities.isnot(None),
+            LobbyingActivity.government_entities != '',
+        )
+        rows = query.distinct().all()
+
+        # government_entities is a comma/semicolon separated text field — split and deduplicate
+        entity_counts: dict[str, int] = {}
+        for (raw,) in rows:
+            # Split on common delimiters
+            for part in re.split(r'[;,\n]+', raw):
+                name = part.strip()
+                if name and len(name) > 1:
+                    entity_counts[name] = entity_counts.get(name, 0) + 1
+
+        # Filter if query provided
+        if q:
+            q_lower = q.lower()
+            entity_counts = {k: v for k, v in entity_counts.items() if q_lower in k.lower()}
+
+        # Sort by frequency, then alphabetically
+        sorted_entities = sorted(entity_counts.items(), key=lambda x: (-x[1], x[0]))
+
+        return {
+            "entities": [{"name": name, "count": count} for name, count in sorted_entities[:200]],
+            "total": len(sorted_entities),
         }
     finally:
         session.close()

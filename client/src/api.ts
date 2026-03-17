@@ -163,6 +163,7 @@ export interface SearchParams {
   registrant?: string;
   client?: string;
   lobbyist?: string;
+  government_entity?: string;
   min_income?: number;
   min_expenses?: number;
   sort?: string;
@@ -355,6 +356,9 @@ export const api = {
 
   getFiling: (uuid: string) =>
     fetchJson<FilingDetail>(`${BASE}/filings/${uuid}`),
+
+  getGovernmentEntities: (q?: string) =>
+    fetchJson<{ entities: Array<{ name: string; count: number }>; total: number }>(`${BASE}/government-entities${q ? `?q=${encodeURIComponent(q)}` : ''}`),
 
   getIssues: () =>
     fetchJson<IssueSummary[]>(`${BASE}/issues`),
