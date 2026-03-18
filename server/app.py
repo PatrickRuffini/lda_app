@@ -417,17 +417,51 @@ def filings_sidebar(
     issue_code: Optional[str] = Query(None),
     registrant: Optional[str] = Query(None),
     client: Optional[str] = Query(None),
+    lobbyist: Optional[str] = Query(None),
     government_entity: Optional[str] = Query(None),
     filing_year: Optional[int] = Query(None),
     filing_period: Optional[str] = Query(None),
+    q: Optional[str] = Query(None),
     limit: int = Query(10, ge=1, le=25),
 ):
     """Top firms, clients, and lobbyists for the current set of search filters."""
     import json as _json
     session = _get_session()
     try:
+        # --- Compute the set of matching filing IDs once, then use it everywhere ---
+        needs_activity = bool(issue_code or government_entity or lobbyist)
+        fid_q = session.query(Filing.id).select_from(Filing)
+        if needs_activity:
+            fid_q = fid_q.join(LobbyingActivity, LobbyingActivity.filing_id == Filing.id)
+            if issue_code:
+                fid_q = fid_q.filter(LobbyingActivity.general_issue_code == issue_code)
+            if government_entity:
+                fid_q = fid_q.filter(LobbyingActivity.government_entities.ilike(f"%{government_entity}%"))
+            if lobbyist:
+                lob_parts = [p.strip() for p in lobbyist.split() if p.strip()]
+                for part in lob_parts:
+                    fid_q = fid_q.filter(LobbyingActivity.lobbyists.ilike(f"%{part}%"))
+        if registrant:
+            fid_q = fid_q.join(Registrant, Filing.registrant_id == Registrant.id).filter(Registrant.name.ilike(f"%{registrant}%"))
+        if client:
+            fid_q = fid_q.join(Client, Filing.client_id == Client.id).filter(Client.name.ilike(f"%{client}%"))
+        if filing_year:
+            fid_q = fid_q.filter(Filing.filing_year == filing_year)
+        if filing_period:
+            fid_q = fid_q.filter(Filing.filing_period == filing_period)
+        if q:
+            fid_q = fid_q.filter(
+                text("""to_tsvector('english',
+                    coalesce((SELECT r2.name FROM registrants r2 WHERE r2.id = filings.registrant_id), '') || ' ' ||
+                    coalesce((SELECT c2.name FROM clients c2 WHERE c2.id = filings.client_id), '') || ' ' ||
+                    coalesce(filings.filing_type_display, '') || ' ' ||
+                    coalesce(filings.posted_by_name, '')
+                ) @@ plainto_tsquery('english', :query)""")
+            ).params(query=q)
+        filing_ids_sub = fid_q.distinct().subquery()
+
         # Top firms
-        firms_q = (
+        top_firms = (
             session.query(
                 Registrant.id,
                 Registrant.name,
@@ -436,50 +470,33 @@ def filings_sidebar(
             )
             .select_from(Registrant)
             .join(Filing, Filing.registrant_id == Registrant.id)
+            .filter(Filing.id.in_(session.query(filing_ids_sub.c.id)))
+            .group_by(Registrant.id, Registrant.name)
+            .order_by(desc("filing_count"))
+            .limit(limit)
+            .all()
         )
-        # Apply filters except registrant (we're aggregating BY registrant)
-        if issue_code or government_entity:
-            firms_q = firms_q.join(LobbyingActivity, LobbyingActivity.filing_id == Filing.id)
-            if issue_code:
-                firms_q = firms_q.filter(LobbyingActivity.general_issue_code == issue_code)
-            if government_entity:
-                firms_q = firms_q.filter(LobbyingActivity.government_entities.ilike(f"%{government_entity}%"))
-        if client:
-            firms_q = firms_q.join(Client, Filing.client_id == Client.id).filter(Client.name.ilike(f"%{client}%"))
-        if filing_year:
-            firms_q = firms_q.filter(Filing.filing_year == filing_year)
-        if filing_period:
-            firms_q = firms_q.filter(Filing.filing_period == filing_period)
-        top_firms = firms_q.group_by(Registrant.id, Registrant.name).order_by(desc("filing_count")).limit(limit).all()
         firms = [{"id": r[0], "name": r[1], "filing_count": r[2], "total_income": float(r[3]) if r[3] else 0} for r in top_firms]
 
         # Top clients
-        clients_sub = session.query(
-            Filing.client_id,
-            Filing.id.label("filing_id"),
-            func.coalesce(Filing.income, Filing.expenses, 0).label("amount"),
+        clients_sub = (
+            session.query(
+                Filing.client_id,
+                Filing.id.label("filing_id"),
+                func.coalesce(Filing.income, Filing.expenses, 0).label("amount"),
+            )
+            .filter(Filing.id.in_(session.query(filing_ids_sub.c.id)))
+            .distinct()
+            .subquery()
         )
-        if issue_code or government_entity:
-            clients_sub = clients_sub.join(LobbyingActivity, LobbyingActivity.filing_id == Filing.id)
-            if issue_code:
-                clients_sub = clients_sub.filter(LobbyingActivity.general_issue_code == issue_code)
-            if government_entity:
-                clients_sub = clients_sub.filter(LobbyingActivity.government_entities.ilike(f"%{government_entity}%"))
-        if registrant:
-            clients_sub = clients_sub.join(Registrant, Filing.registrant_id == Registrant.id).filter(Registrant.name.ilike(f"%{registrant}%"))
-        if filing_year:
-            clients_sub = clients_sub.filter(Filing.filing_year == filing_year)
-        if filing_period:
-            clients_sub = clients_sub.filter(Filing.filing_period == filing_period)
-        filing_sub = clients_sub.distinct().subquery()
         top_clients = (
             session.query(
                 Client.id,
                 Client.name,
-                func.count(filing_sub.c.filing_id).label("filing_count"),
-                func.coalesce(func.sum(filing_sub.c.amount), 0).label("total_spending"),
+                func.count(clients_sub.c.filing_id).label("filing_count"),
+                func.coalesce(func.sum(clients_sub.c.amount), 0).label("total_spending"),
             )
-            .join(filing_sub, filing_sub.c.client_id == Client.id)
+            .join(clients_sub, clients_sub.c.client_id == Client.id)
             .group_by(Client.id, Client.name)
             .order_by(desc("total_spending"))
             .limit(limit)
@@ -492,20 +509,9 @@ def filings_sidebar(
             session.query(LobbyingActivity.lobbyists, Filing.id)
             .select_from(LobbyingActivity)
             .join(Filing)
+            .filter(Filing.id.in_(session.query(filing_ids_sub.c.id)))
             .filter(LobbyingActivity.lobbyists.isnot(None))
         )
-        if issue_code:
-            lob_q = lob_q.filter(LobbyingActivity.general_issue_code == issue_code)
-        if government_entity:
-            lob_q = lob_q.filter(LobbyingActivity.government_entities.ilike(f"%{government_entity}%"))
-        if registrant:
-            lob_q = lob_q.join(Registrant, Filing.registrant_id == Registrant.id).filter(Registrant.name.ilike(f"%{registrant}%"))
-        if client:
-            lob_q = lob_q.join(Client, Filing.client_id == Client.id).filter(Client.name.ilike(f"%{client}%"))
-        if filing_year:
-            lob_q = lob_q.filter(Filing.filing_year == filing_year)
-        if filing_period:
-            lob_q = lob_q.filter(Filing.filing_period == filing_period)
         activities = lob_q.all()
         lobbyist_filings: dict[str, set[int]] = {}
         for lob_json, filing_id in activities:

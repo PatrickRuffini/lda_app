@@ -463,11 +463,13 @@ function SearchPage({ onNavigate, initialFilter }: { onNavigate: (page: Page, ct
       issue_code: params.issue_code,
       registrant: params.registrant,
       client: params.client,
+      lobbyist: params.lobbyist,
       government_entity: params.government_entity,
       filing_year: params.filing_year,
       filing_period: params.filing_period,
+      q: params.q,
     }).then(d => { setSidebar(d); setSidebarLoading(false); }).catch(() => setSidebarLoading(false));
-  }, [params.issue_code, params.registrant, params.client, params.government_entity, params.filing_year, params.filing_period]);
+  }, [params.issue_code, params.registrant, params.client, params.lobbyist, params.government_entity, params.filing_year, params.filing_period, params.q]);
 
   // When issue selection changes, update params and clear any sidebar filter
   useEffect(() => {
@@ -475,17 +477,17 @@ function SearchPage({ onNavigate, initialFilter }: { onNavigate: (page: Page, ct
     setActiveFilter(null);
   }, [selectedIssue]);
 
-  // When a sidebar insight filter is clicked, apply as registrant/client text filter
+  // When a sidebar insight filter is clicked, apply as additive filter
   useEffect(() => {
     if (!activeFilter) return;
     if (activeFilter.type === 'firm') {
       setRegistrantSearch(activeFilter.name);
-      setParams(p => ({ ...p, registrant: activeFilter.name, client: undefined, page: 1 }));
+      setParams(p => ({ ...p, registrant: activeFilter.name, page: 1 }));
     } else if (activeFilter.type === 'client') {
       setClientSearch(activeFilter.name);
-      setParams(p => ({ ...p, client: activeFilter.name, registrant: undefined, page: 1 }));
+      setParams(p => ({ ...p, client: activeFilter.name, page: 1 }));
     } else if (activeFilter.type === 'lobbyist') {
-      setParams(p => ({ ...p, lobbyist: activeFilter.name, registrant: undefined, client: undefined, page: 1 }));
+      setParams(p => ({ ...p, lobbyist: activeFilter.name, page: 1 }));
     }
   }, [activeFilter]);
 
@@ -495,10 +497,17 @@ function SearchPage({ onNavigate, initialFilter }: { onNavigate: (page: Page, ct
   };
 
   const clearFilter = () => {
+    if (!activeFilter) return;
+    if (activeFilter.type === 'firm') {
+      setRegistrantSearch('');
+      setParams(p => ({ ...p, registrant: undefined, page: 1 }));
+    } else if (activeFilter.type === 'client') {
+      setClientSearch('');
+      setParams(p => ({ ...p, client: undefined, page: 1 }));
+    } else if (activeFilter.type === 'lobbyist') {
+      setParams(p => ({ ...p, lobbyist: undefined, page: 1 }));
+    }
     setActiveFilter(null);
-    setParams(p => ({ ...p, registrant: undefined, client: undefined, lobbyist: undefined, q: searchText || undefined, page: 1 }));
-    setRegistrantSearch('');
-    setClientSearch('');
   };
   const applyFilter = (f: typeof activeFilter) => {
     if (!f) { clearFilter(); return; }

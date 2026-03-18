@@ -378,7 +378,7 @@ export const api = {
       lobbyists: Array<{ name: string; filing_count: number }>;
     }>(`${BASE}/issues/${code}/sidebar?limit=${limit}`),
 
-  getFilingsSidebar: (params: { issue_code?: string; registrant?: string; client?: string; government_entity?: string; filing_year?: number; filing_period?: string; limit?: number }) =>
+  getFilingsSidebar: (params: { issue_code?: string; registrant?: string; client?: string; lobbyist?: string; government_entity?: string; filing_year?: number; filing_period?: string; q?: string; limit?: number }) =>
     fetchJson<{
       firms: Array<{ id: number; name: string; filing_count: number; total_income: number }>;
       clients: Array<{ id: number; name: string; filing_count: number; total_spending: number }>;
