@@ -552,16 +552,51 @@ def get_filing(filing_uuid: str):
 
 
 @app.get("/api/issues")
-def list_issues():
-    """List all issue codes with filing counts."""
+def list_issues(
+    registrant: Optional[str] = Query(None),
+    client: Optional[str] = Query(None),
+    lobbyist: Optional[str] = Query(None),
+    government_entity: Optional[str] = Query(None),
+    filing_year: Optional[int] = Query(None),
+    filing_period: Optional[str] = Query(None),
+    q: Optional[str] = Query(None),
+):
+    """List all issue codes with filing counts, optionally filtered."""
     session = _get_session()
     try:
-        results = (
+        query = (
             session.query(
                 LobbyingActivity.general_issue_code,
                 LobbyingActivity.general_issue_code_display,
-                func.count(LobbyingActivity.id).label("count"),
+                func.count(func.distinct(LobbyingActivity.id)).label("count"),
             )
+            .join(Filing, LobbyingActivity.filing_id == Filing.id)
+        )
+        if registrant:
+            query = query.join(Registrant, Filing.registrant_id == Registrant.id).filter(Registrant.name.ilike(f"%{registrant}%"))
+        if client:
+            query = query.join(Client, Filing.client_id == Client.id).filter(Client.name.ilike(f"%{client}%"))
+        if government_entity:
+            query = query.filter(LobbyingActivity.government_entities.ilike(f"%{government_entity}%"))
+        if filing_year:
+            query = query.filter(Filing.filing_year == filing_year)
+        if filing_period:
+            query = query.filter(Filing.filing_period == filing_period)
+        if lobbyist:
+            lob_parts = [p.strip() for p in lobbyist.split() if p.strip()]
+            for part in lob_parts:
+                query = query.filter(LobbyingActivity.lobbyists.ilike(f"%{part}%"))
+        if q:
+            query = query.filter(
+                text("""to_tsvector('english',
+                    coalesce((SELECT r2.name FROM registrants r2 WHERE r2.id = filings.registrant_id), '') || ' ' ||
+                    coalesce((SELECT c2.name FROM clients c2 WHERE c2.id = filings.client_id), '') || ' ' ||
+                    coalesce(filings.filing_type_display, '') || ' ' ||
+                    coalesce(filings.posted_by_name, '')
+                ) @@ plainto_tsquery('english', :query)""")
+            ).params(query=q)
+        results = (
+            query
             .group_by(
                 LobbyingActivity.general_issue_code,
                 LobbyingActivity.general_issue_code_display,

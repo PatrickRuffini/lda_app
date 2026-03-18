@@ -420,11 +420,26 @@ function SearchPage({ onNavigate, initialFilter }: { onNavigate: (page: Page, ct
   const [showClientDropdown, setShowClientDropdown] = useState(false);
 
   useEffect(() => {
-    api.getIssues().then(i => { setIssues(i); setIssuesLoading(false); }).catch(() => setIssuesLoading(false));
     api.getGovernmentEntities().then(d => setGovEntities(d.entities)).catch(() => {});
     api.getRegistrants().then(setRegistrantList).catch(() => {});
     api.getClients().then(setClientList).catch(() => {});
   }, []);
+
+  // Re-fetch issue area counts whenever non-issue filters change
+  useEffect(() => {
+    setIssuesLoading(true);
+    const filters: Record<string, unknown> = {};
+    if (params.registrant) filters.registrant = params.registrant;
+    if (params.client) filters.client = params.client;
+    if (params.lobbyist) filters.lobbyist = params.lobbyist;
+    if (params.government_entity) filters.government_entity = params.government_entity;
+    if (params.filing_year) filters.filing_year = params.filing_year;
+    if (params.filing_period) filters.filing_period = params.filing_period;
+    if (params.q) filters.q = params.q;
+    api.getIssues(Object.keys(filters).length > 0 ? filters as Parameters<typeof api.getIssues>[0] : undefined)
+      .then(i => { setIssues(i); setIssuesLoading(false); })
+      .catch(() => setIssuesLoading(false));
+  }, [params.registrant, params.client, params.lobbyist, params.government_entity, params.filing_year, params.filing_period, params.q]);
 
   // Search filings
   const doSearch = useCallback(async (p: SearchParams) => {

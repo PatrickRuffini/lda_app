@@ -360,8 +360,8 @@ export const api = {
   getGovernmentEntities: (q?: string) =>
     fetchJson<{ entities: Array<{ name: string; count: number }>; total: number }>(`${BASE}/government-entities${q ? `?q=${encodeURIComponent(q)}` : ''}`),
 
-  getIssues: () =>
-    fetchJson<IssueSummary[]>(`${BASE}/issues`),
+  getIssues: (filters?: { registrant?: string; client?: string; lobbyist?: string; government_entity?: string; filing_year?: number; filing_period?: string; q?: string }) =>
+    fetchJson<IssueSummary[]>(`${BASE}/issues${filters ? `?${toQuery(filters)}` : ''}`),
 
   getFilingsByIssue: (code: string, page = 1, filters?: { registrant_id?: number; client_id?: number; lobbyist_name?: string }) => {
     const params = new URLSearchParams({ page: String(page) });
