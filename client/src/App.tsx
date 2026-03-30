@@ -3836,6 +3836,81 @@ function AdsPage({ onNavigate }: { onNavigate: (p: Page, ctx?: unknown) => void 
 }
 
 
+// ---------- Auto-sync Toast ----------
+function AutoSyncToast({ onComplete }: { onComplete: () => void }) {
+  const [status, setStatus] = useState<{ status: string; phase?: string; lda?: { stored: number; skipped?: number; duplicates?: number; pages: number } | null; newsletters?: { stored: number; skipped?: number; errors?: number } | null; error?: string | null } | null>(null);
+  const [dismissed, setDismissed] = useState(false);
+
+  useEffect(() => {
+    let timer: ReturnType<typeof setInterval>;
+    const poll = () => {
+      api.getAutoSyncStatus().then(s => {
+        setStatus(s);
+        if (s.status === 'completed' || s.status === 'error') {
+          clearInterval(timer);
+          onComplete();
+        }
+      }).catch(() => {});
+    };
+    poll();
+    timer = setInterval(poll, 3000);
+    return () => clearInterval(timer);
+  }, [onComplete]);
+
+  if (dismissed || !status || status.status === 'idle') return null;
+
+  const isRunning = status.status === 'running';
+  const isError = status.status === 'error';
+  const isDone = status.status === 'completed';
+
+  return (
+    <div className={`fixed bottom-4 right-4 z-50 max-w-sm rounded-lg border shadow-lg p-4 text-sm ${isError ? 'bg-red-50 border-red-200' : isDone ? 'bg-green-50 border-green-200' : 'bg-white border-gray-200'}`}>
+      <div className="flex items-start gap-3">
+        <div className="shrink-0 mt-0.5">
+          {isRunning && <Loader2 size={16} className="animate-spin text-indigo-500" />}
+          {isDone && <RefreshCw size={16} className="text-green-600" />}
+          {isError && <X size={16} className="text-red-500" />}
+        </div>
+        <div className="flex-1 min-w-0">
+          {isRunning && (
+            <>
+              <p className="font-medium text-gray-900">Syncing data...</p>
+              <p className="text-gray-500 text-xs mt-0.5">
+                {status.phase === 'lda_sync' ? 'Fetching new LDA filings...' : 'Scraping newsletters...'}
+              </p>
+              {status.lda && (
+                <p className="text-gray-400 text-xs mt-0.5">LDA: {status.lda.stored} new filings</p>
+              )}
+            </>
+          )}
+          {isDone && (
+            <>
+              <p className="font-medium text-green-800">Sync complete</p>
+              <div className="text-xs text-green-700 mt-1 space-y-0.5">
+                {status.lda && <p>LDA: {status.lda.stored} new filing{status.lda.stored !== 1 ? 's' : ''}{status.lda.duplicates ? `, ${status.lda.duplicates} existing` : ''}</p>}
+                {status.newsletters && <p>Newsletters: {status.newsletters.stored} new{status.newsletters.skipped ? `, ${status.newsletters.skipped} existing` : ''}</p>}
+              </div>
+            </>
+          )}
+          {isError && (
+            <>
+              <p className="font-medium text-red-800">Sync error</p>
+              <p className="text-xs text-red-600 mt-0.5 truncate">{status.error}</p>
+              {status.lda && <p className="text-xs text-red-600">LDA: {status.lda.stored} new filings (before error)</p>}
+            </>
+          )}
+        </div>
+        {(isDone || isError) && (
+          <button onClick={() => setDismissed(true)} className="text-gray-400 hover:text-gray-600 cursor-pointer shrink-0">
+            <X size={14} />
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
+
+
 // ---------- App ----------
 export default function App() {
   type NavState = { page: Page; filingUuid?: string; entityId?: number; newsletterId?: number; centerEntityId?: number; leaderboardType?: string; conversationId?: number; searchFilter?: { registrant?: string; client?: string; lobbyist?: string; government_entity?: string; q?: string } };
@@ -3947,9 +4022,12 @@ export default function App() {
     : (page === 'entity' || page === 'newsletter' || page === 'leaderboard') ? 'influence'
     : page;
 
+  const handleAutoSyncComplete = useCallback(() => setSyncVersion(v => v + 1), []);
+
   return (
     <div className="min-h-screen">
       <Nav page={navPage} setPage={p => { setNavState({ page: p }); }} />
+      <AutoSyncToast onComplete={handleAutoSyncComplete} />
       <main className="max-w-7xl mx-auto px-4 sm:px-6 py-6">
         {page === 'dashboard' && <Dashboard onNavigate={handleNavigate} />}
         {page === 'search' && <SearchPage key={JSON.stringify(navState.searchFilter ?? {})} onNavigate={handleNavigate} initialFilter={navState.searchFilter} />}

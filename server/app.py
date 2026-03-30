@@ -123,6 +123,44 @@ def _run_startup_migrations():
             except Exception as e:
                 logger.error(f"Startup reprocess failed: {e}")
 
+    # Kick off background auto-sync (LDA filings + newsletters)
+    def _auto_sync():
+        global _auto_sync_status
+        _auto_sync_status = {"status": "running", "phase": "lda_sync", "lda": None, "newsletters": None, "error": None}
+        try:
+            # 1. Incremental LDA filing sync
+            logger.info("Auto-sync: starting incremental LDA sync...")
+            lda_result = sync_incremental(db_url=DB_URL, max_pages=200)
+            _auto_sync_status["lda"] = lda_result
+            _auto_sync_status["phase"] = "newsletter_scrape"
+            logger.info(f"Auto-sync: LDA sync complete — {lda_result}")
+
+            # 2. Newsletter scrape
+            logger.info("Auto-sync: starting newsletter scrape...")
+            nl_result = scrape_and_store(max_newsletters=50, max_discovery_pages=5, db_url=DB_URL)
+            _auto_sync_status["newsletters"] = nl_result
+            _auto_sync_status["phase"] = "done"
+            _auto_sync_status["status"] = "completed"
+            logger.info(f"Auto-sync: newsletter scrape complete — {nl_result}")
+        except Exception as e:
+            logger.error(f"Auto-sync error: {e}")
+            _auto_sync_status["status"] = "error"
+            _auto_sync_status["error"] = str(e)
+        finally:
+            _invalidate_cache("stats", "top_registrants_10", "top_registrants_20", "top_clients_10", "top_clients_20")
+
+    thread = threading.Thread(target=_auto_sync, daemon=True)
+    thread.start()
+
+
+_auto_sync_status: dict = {"status": "idle"}
+
+
+@app.get("/api/auto-sync/status")
+def auto_sync_status():
+    """Get the status of the startup auto-sync."""
+    return _auto_sync_status
+
 
 # ---------- Pydantic schemas ----------
 

@@ -406,6 +406,9 @@ export const api = {
   getTopLobbyists: (limit = 10, sort = 'mention_count') =>
     fetchJson<Array<{ id: number; name: string; display_name: string; mention_count: number }>>(`${BASE}/top-lobbyists?limit=${limit}&sort=${sort}`),
 
+  getAutoSyncStatus: () =>
+    fetchJson<{ status: string; phase?: string; lda?: { stored: number; skipped?: number; duplicates?: number; pages: number } | null; newsletters?: { stored: number; skipped?: number; errors?: number } | null; error?: string | null }>(`${BASE}/auto-sync/status`),
+
   getStats: () =>
     fetchJson<Stats>(`${BASE}/stats`),
 
