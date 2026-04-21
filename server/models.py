@@ -157,6 +157,53 @@ class Relationship(Base):
     )
 
 
+# ---------- Ad Tracking Models ----------
+
+class AdCapture(Base):
+    __tablename__ = "ad_captures"
+
+    id = Column(Integer, primary_key=True)
+    site = Column(String(50), nullable=False, index=True)  # politico, axios, punchbowl
+    page_url = Column(String(1000), nullable=False)
+    ad_slot = Column(String(200))  # e.g. "leaderboard", "sidebar", "mid-article"
+    destination_url = Column(String(2000))
+    destination_domain = Column(String(500), index=True)
+    resolved_url = Column(String(2000))  # final URL after following all redirects
+    resolved_domain = Column(String(500), index=True)
+    landing_page_title = Column(String(1000))
+    landing_page_description = Column(Text)
+    landing_page_og_image = Column(String(2000))
+    landing_page_keywords = Column(Text)  # comma-separated or JSON
+    landing_page_type = Column(String(100))  # e.g. "advocacy", "product", "donation", "corporate"
+    ad_text = Column(Text)  # any text extracted from the ad
+    screenshot_base64 = Column(Text)  # base64-encoded PNG screenshot of the ad
+    width = Column(Integer)
+    height = Column(Integer)
+    captured_at = Column(DateTime, default=datetime.datetime.utcnow, index=True)
+    campaign_id = Column(Integer, ForeignKey("ad_campaigns.id"), nullable=True, index=True)
+
+    campaign = relationship("AdCampaign", back_populates="captures")
+
+    __table_args__ = (
+        Index("ix_ad_captures_site_date", "site", "captured_at"),
+    )
+
+
+class AdCampaign(Base):
+    __tablename__ = "ad_campaigns"
+
+    id = Column(Integer, primary_key=True)
+    advertiser_name = Column(String(500), nullable=False, index=True)
+    advertiser_domain = Column(String(500), index=True)
+    entity_id = Column(Integer, ForeignKey("entities.id"), nullable=True, index=True)
+    first_seen = Column(DateTime)
+    last_seen = Column(DateTime)
+    capture_count = Column(Integer, default=0)
+    sites_seen_on = Column(Text)  # JSON array of site names
+
+    captures = relationship("AdCapture", back_populates="campaign")
+
+
 class ChatConversation(Base):
     __tablename__ = "chat_conversations"
 
@@ -274,6 +321,28 @@ def run_migrations(engine):
         ChatMessage.__table__.create(engine, checkfirst=True)
         applied.add("chat_tables")
 
+    # Migration: create ad tracking tables
+    if "ad_campaigns" not in table_names:
+        AdCampaign.__table__.create(engine, checkfirst=True)
+        applied.add("ad_campaigns_table")
+    if "ad_captures" not in table_names:
+        AdCapture.__table__.create(engine, checkfirst=True)
+        applied.add("ad_captures_table")
+
+    # Migration: add landing page columns to ad_captures
+    if "ad_captures" in table_names:
+        ac_cols = {c["name"] for c in inspector.get_columns("ad_captures")}
+        if "resolved_url" not in ac_cols:
+            with engine.begin() as conn:
+                conn.execute(sa_text("ALTER TABLE ad_captures ADD COLUMN resolved_url VARCHAR(2000)"))
+                conn.execute(sa_text("ALTER TABLE ad_captures ADD COLUMN resolved_domain VARCHAR(500)"))
+                conn.execute(sa_text("ALTER TABLE ad_captures ADD COLUMN landing_page_title VARCHAR(1000)"))
+                conn.execute(sa_text("ALTER TABLE ad_captures ADD COLUMN landing_page_description TEXT"))
+                conn.execute(sa_text("ALTER TABLE ad_captures ADD COLUMN landing_page_og_image VARCHAR(2000)"))
+                conn.execute(sa_text("ALTER TABLE ad_captures ADD COLUMN landing_page_keywords TEXT"))
+                conn.execute(sa_text("ALTER TABLE ad_captures ADD COLUMN landing_page_type VARCHAR(100)"))
+                conn.execute(sa_text("CREATE INDEX ix_ad_captures_resolved_domain ON ad_captures (resolved_domain)"))
+            applied.add("ad_captures_landing_page")
 
     return applied
 

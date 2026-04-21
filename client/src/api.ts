@@ -163,6 +163,7 @@ export interface SearchParams {
   registrant?: string;
   client?: string;
   lobbyist?: string;
+  government_entity?: string;
   min_income?: number;
   min_expenses?: number;
   sort?: string;
@@ -301,6 +302,54 @@ export interface ReportSeries {
   periods?: string[];
 }
 
+// ---------- Ad Tracking types ----------
+
+export interface AdCaptureSummary {
+  id: number;
+  site: string;
+  page_url: string;
+  ad_slot: string;
+  destination_url: string | null;
+  destination_domain: string | null;
+  resolved_url: string | null;
+  resolved_domain: string | null;
+  landing_page_title: string | null;
+  landing_page_type: string | null;
+  ad_text: string | null;
+  has_screenshot: boolean;
+  width: number | null;
+  height: number | null;
+  captured_at: string | null;
+  campaign_id: number | null;
+}
+
+export interface AdCaptureDetail extends AdCaptureSummary {
+  screenshot_base64: string | null;
+  landing_page_description: string | null;
+  landing_page_og_image: string | null;
+  landing_page_keywords: string | null;
+}
+
+export interface AdCampaignSummary {
+  id: number;
+  advertiser_name: string;
+  advertiser_domain: string | null;
+  entity_id: number | null;
+  first_seen: string | null;
+  last_seen: string | null;
+  capture_count: number;
+  sites_seen_on: string[];
+}
+
+export interface AdStats {
+  total_captures: number;
+  total_campaigns: number;
+  unique_domains: number;
+  latest_capture: string | null;
+  top_advertisers: Array<{ name: string; capture_count: number; domain: string | null }>;
+  captures_by_site: Record<string, number>;
+}
+
 export const api = {
   searchFilings: (params: SearchParams) =>
     fetchJson<PaginatedResponse<FilingSummary>>(`${BASE}/filings?${toQuery(params)}`),
@@ -308,8 +357,11 @@ export const api = {
   getFiling: (uuid: string) =>
     fetchJson<FilingDetail>(`${BASE}/filings/${uuid}`),
 
-  getIssues: () =>
-    fetchJson<IssueSummary[]>(`${BASE}/issues`),
+  getGovernmentEntities: (q?: string) =>
+    fetchJson<{ entities: Array<{ name: string; count: number }>; total: number }>(`${BASE}/government-entities${q ? `?q=${encodeURIComponent(q)}` : ''}`),
+
+  getIssues: (filters?: { registrant?: string; client?: string; lobbyist?: string; government_entity?: string; filing_year?: number; filing_period?: string; q?: string }) =>
+    fetchJson<IssueSummary[]>(`${BASE}/issues${filters ? `?${toQuery(filters)}` : ''}`),
 
   getFilingsByIssue: (code: string, page = 1, filters?: { registrant_id?: number; client_id?: number; lobbyist_name?: string }) => {
     const params = new URLSearchParams({ page: String(page) });
@@ -325,6 +377,16 @@ export const api = {
       clients: Array<{ id: number; name: string; filing_count: number; total_spending: number }>;
       lobbyists: Array<{ name: string; filing_count: number }>;
     }>(`${BASE}/issues/${code}/sidebar?limit=${limit}`),
+
+  getFilingsSidebar: (params: { issue_code?: string; registrant?: string; client?: string; lobbyist?: string; government_entity?: string; filing_year?: number; filing_period?: string; q?: string; limit?: number }) =>
+    fetchJson<{
+      firms: Array<{ id: number; name: string; filing_count: number; total_income: number }>;
+      clients: Array<{ id: number; name: string; filing_count: number; total_spending: number }>;
+      lobbyists: Array<{ name: string; filing_count: number }>;
+    }>(`${BASE}/filings/sidebar?${toQuery(params)}`),
+
+  getClients: () =>
+    fetchJson<Array<{ id: number; name: string; filing_count: number }>>(`${BASE}/clients`),
 
   getTopRegistrants: (limit = 20, sort = 'filings') =>
     fetchJson<TopEntity[]>(`${BASE}/top-registrants?limit=${limit}&sort=${sort}`),
@@ -343,6 +405,9 @@ export const api = {
 
   getTopLobbyists: (limit = 10, sort = 'mention_count') =>
     fetchJson<Array<{ id: number; name: string; display_name: string; mention_count: number }>>(`${BASE}/top-lobbyists?limit=${limit}&sort=${sort}`),
+
+  getAutoSyncStatus: () =>
+    fetchJson<{ status: string; phase?: string; lda?: { stored: number; skipped?: number; duplicates?: number; pages: number } | null; newsletters?: { stored: number; skipped?: number; errors?: number } | null; error?: string | null }>(`${BASE}/auto-sync/status`),
 
   getStats: () =>
     fetchJson<Stats>(`${BASE}/stats`),
@@ -461,4 +526,23 @@ export const api = {
 
   getTopIssuesByRevenue: (limit = 15) =>
     fetchJson<Array<{ issue: string; total_revenue: number; filing_count: number; firm_count: number }>>(`${BASE}/reports/top-issues-by-revenue?limit=${limit}`),
+
+  // Ad Tracking
+  triggerAdScrape: (params?: { sites?: string; max_pages_per_site?: number }) =>
+    postJson<{ status: string }>(`${BASE}/ads/scrape`, params ?? {}),
+
+  getAdScrapeStatus: () =>
+    fetchJson<{ status: string; captured?: number; errors?: number; sites_completed?: string[]; log?: string[]; error?: string }>(`${BASE}/ads/scrape/status`),
+
+  getAdCaptures: (params?: { site?: string; domain?: string; page?: number; page_size?: number }) =>
+    fetchJson<PaginatedResponse<AdCaptureSummary>>(`${BASE}/ads/captures?${toQuery(params ?? {})}`),
+
+  getAdCapture: (id: number) =>
+    fetchJson<AdCaptureDetail>(`${BASE}/ads/captures/${id}`),
+
+  getAdCampaigns: (params?: { sort?: string; page?: number; page_size?: number }) =>
+    fetchJson<PaginatedResponse<AdCampaignSummary>>(`${BASE}/ads/campaigns?${toQuery(params ?? {})}`),
+
+  getAdStats: () =>
+    fetchJson<AdStats>(`${BASE}/ads/stats`),
 };

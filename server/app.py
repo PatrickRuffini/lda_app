@@ -2,6 +2,7 @@
 import json
 import logging
 import os
+import re
 import threading
 import time
 from datetime import datetime
@@ -18,10 +19,12 @@ from .models import (
     Filing, LobbyingActivity, Registrant, Client,
     Entity, EntityMention, Newsletter, Relationship,
     ChatConversation, ChatMessage,
+    AdCapture, AdCampaign,
     get_engine, get_session, init_db, run_migrations,
 )
 from .sync import sync_filings, sync_incremental, sync_backfill, sync_backfill_chunk, sync_complete_years, sync_year, sync_date_range, get_sync_progress, _update_progress
 from .influence import scrape_and_store, reprocess_all_entities, get_scrape_progress, get_reprocess_progress, link_entities_to_lda, link_lobbyists_to_entities, merge_duplicate_entities, _normalize_org_aggressive
+from .ad_scraper import scrape_ads, get_ad_scrape_progress
 from .ai import generate_entity_summary, chat as ai_chat
 
 logger = logging.getLogger(__name__)
@@ -119,6 +122,44 @@ def _run_startup_migrations():
                 logger.info(f"Startup reprocess complete: {result}")
             except Exception as e:
                 logger.error(f"Startup reprocess failed: {e}")
+
+    # Kick off background auto-sync (LDA filings + newsletters)
+    def _auto_sync():
+        global _auto_sync_status
+        _auto_sync_status = {"status": "running", "phase": "lda_sync", "lda": None, "newsletters": None, "error": None}
+        try:
+            # 1. Incremental LDA filing sync
+            logger.info("Auto-sync: starting incremental LDA sync...")
+            lda_result = sync_incremental(db_url=DB_URL, max_pages=200)
+            _auto_sync_status["lda"] = lda_result
+            _auto_sync_status["phase"] = "newsletter_scrape"
+            logger.info(f"Auto-sync: LDA sync complete — {lda_result}")
+
+            # 2. Newsletter scrape
+            logger.info("Auto-sync: starting newsletter scrape...")
+            nl_result = scrape_and_store(max_newsletters=50, max_discovery_pages=5, db_url=DB_URL)
+            _auto_sync_status["newsletters"] = nl_result
+            _auto_sync_status["phase"] = "done"
+            _auto_sync_status["status"] = "completed"
+            logger.info(f"Auto-sync: newsletter scrape complete — {nl_result}")
+        except Exception as e:
+            logger.error(f"Auto-sync error: {e}")
+            _auto_sync_status["status"] = "error"
+            _auto_sync_status["error"] = str(e)
+        finally:
+            _invalidate_cache("stats", "top_registrants_10", "top_registrants_20", "top_clients_10", "top_clients_20")
+
+    thread = threading.Thread(target=_auto_sync, daemon=True)
+    thread.start()
+
+
+_auto_sync_status: dict = {"status": "idle"}
+
+
+@app.get("/api/auto-sync/status")
+def auto_sync_status():
+    """Get the status of the startup auto-sync."""
+    return _auto_sync_status
 
 
 # ---------- Pydantic schemas ----------
@@ -238,6 +279,7 @@ def search_filings(
     registrant: Optional[str] = Query(None),
     client: Optional[str] = Query(None),
     lobbyist: Optional[str] = Query(None, description="Filter by lobbyist name (searches JSON lobbyists field)"),
+    government_entity: Optional[str] = Query(None, description="Filter by government entity contacted"),
     min_income: Optional[float] = Query(None),
     min_expenses: Optional[float] = Query(None),
     sort: str = Query("-dt_posted", description="Sort field"),
@@ -322,8 +364,16 @@ def search_filings(
             lob_filters = [LobbyingActivity.lobbyists.ilike(f"%{part}%") for part in lob_parts]
             if not _joined_activity:
                 query = query.join(LobbyingActivity)
+                _joined_activity = True
             query = query.filter(*lob_filters)
-        if lobbyist or _joined_activity:
+        if government_entity:
+            if not _joined_activity:
+                query = query.join(LobbyingActivity)
+                _joined_activity = True
+            query = query.filter(
+                LobbyingActivity.government_entities.ilike(f"%{government_entity}%")
+            )
+        if _joined_activity:
             query = query.distinct()
 
         if total is None:
@@ -351,6 +401,187 @@ def search_filings(
         session.close()
 
 
+@app.get("/api/government-entities")
+def list_government_entities(q: Optional[str] = Query(None, description="Filter entities by name")):
+    """Get distinct government entities from lobbying activities."""
+    session = _get_session()
+    try:
+        query = session.query(LobbyingActivity.government_entities).filter(
+            LobbyingActivity.government_entities.isnot(None),
+            LobbyingActivity.government_entities != '',
+        )
+        rows = query.distinct().all()
+
+        # government_entities is stored as JSON array of {id, name} objects
+        entity_counts: dict[str, int] = {}
+        for (raw,) in rows:
+            try:
+                entities = json.loads(raw)
+                if isinstance(entities, list):
+                    for ent in entities:
+                        if isinstance(ent, dict):
+                            name = ent.get("name", "").strip()
+                        elif isinstance(ent, str):
+                            name = ent.strip()
+                        else:
+                            continue
+                        if name and len(name) > 1:
+                            entity_counts[name] = entity_counts.get(name, 0) + 1
+            except (json.JSONDecodeError, TypeError):
+                # Fallback for any legacy comma-separated values
+                for part in re.split(r'[;,\n]+', raw):
+                    name = part.strip()
+                    if name and len(name) > 1 and not name.startswith('{') and not name.startswith('['):
+                        entity_counts[name] = entity_counts.get(name, 0) + 1
+
+        # Filter if query provided
+        if q:
+            q_lower = q.lower()
+            entity_counts = {k: v for k, v in entity_counts.items() if q_lower in k.lower()}
+
+        # Sort by frequency, then alphabetically
+        sorted_entities = sorted(entity_counts.items(), key=lambda x: (-x[1], x[0]))
+
+        return {
+            "entities": [{"name": name, "count": count} for name, count in sorted_entities[:200]],
+            "total": len(sorted_entities),
+        }
+    finally:
+        session.close()
+
+
+@app.get("/api/filings/sidebar")
+def filings_sidebar(
+    issue_code: Optional[str] = Query(None),
+    registrant: Optional[str] = Query(None),
+    client: Optional[str] = Query(None),
+    lobbyist: Optional[str] = Query(None),
+    government_entity: Optional[str] = Query(None),
+    filing_year: Optional[int] = Query(None),
+    filing_period: Optional[str] = Query(None),
+    q: Optional[str] = Query(None),
+    limit: int = Query(10, ge=1, le=25),
+):
+    """Top firms, clients, and lobbyists for the current set of search filters."""
+    import json as _json
+    session = _get_session()
+    try:
+        # --- Compute the set of matching filing IDs once, then use it everywhere ---
+        needs_activity = bool(issue_code or government_entity or lobbyist)
+        fid_q = session.query(Filing.id).select_from(Filing)
+        if needs_activity:
+            fid_q = fid_q.join(LobbyingActivity, LobbyingActivity.filing_id == Filing.id)
+            if issue_code:
+                fid_q = fid_q.filter(LobbyingActivity.general_issue_code == issue_code)
+            if government_entity:
+                fid_q = fid_q.filter(LobbyingActivity.government_entities.ilike(f"%{government_entity}%"))
+            if lobbyist:
+                lob_parts = [p.strip() for p in lobbyist.split() if p.strip()]
+                for part in lob_parts:
+                    fid_q = fid_q.filter(LobbyingActivity.lobbyists.ilike(f"%{part}%"))
+        if registrant:
+            fid_q = fid_q.join(Registrant, Filing.registrant_id == Registrant.id).filter(Registrant.name.ilike(f"%{registrant}%"))
+        if client:
+            fid_q = fid_q.join(Client, Filing.client_id == Client.id).filter(Client.name.ilike(f"%{client}%"))
+        if filing_year:
+            fid_q = fid_q.filter(Filing.filing_year == filing_year)
+        if filing_period:
+            fid_q = fid_q.filter(Filing.filing_period == filing_period)
+        if q:
+            fid_q = fid_q.filter(
+                text("""to_tsvector('english',
+                    coalesce((SELECT r2.name FROM registrants r2 WHERE r2.id = filings.registrant_id), '') || ' ' ||
+                    coalesce((SELECT c2.name FROM clients c2 WHERE c2.id = filings.client_id), '') || ' ' ||
+                    coalesce(filings.filing_type_display, '') || ' ' ||
+                    coalesce(filings.posted_by_name, '')
+                ) @@ plainto_tsquery('english', :query)""")
+            ).params(query=q)
+        filing_ids_sub = fid_q.distinct().subquery()
+
+        # Top firms
+        top_firms = (
+            session.query(
+                Registrant.id,
+                Registrant.name,
+                func.count(func.distinct(Filing.id)).label("filing_count"),
+                func.sum(Filing.income).label("total_income"),
+            )
+            .select_from(Registrant)
+            .join(Filing, Filing.registrant_id == Registrant.id)
+            .filter(Filing.id.in_(session.query(filing_ids_sub.c.id)))
+            .group_by(Registrant.id, Registrant.name)
+            .order_by(desc("filing_count"))
+            .limit(limit)
+            .all()
+        )
+        firms = [{"id": r[0], "name": r[1], "filing_count": r[2], "total_income": float(r[3]) if r[3] else 0} for r in top_firms]
+
+        # Top clients
+        clients_sub = (
+            session.query(
+                Filing.client_id,
+                Filing.id.label("filing_id"),
+                func.coalesce(Filing.income, Filing.expenses, 0).label("amount"),
+            )
+            .filter(Filing.id.in_(session.query(filing_ids_sub.c.id)))
+            .distinct()
+            .subquery()
+        )
+        top_clients = (
+            session.query(
+                Client.id,
+                Client.name,
+                func.count(clients_sub.c.filing_id).label("filing_count"),
+                func.coalesce(func.sum(clients_sub.c.amount), 0).label("total_spending"),
+            )
+            .join(clients_sub, clients_sub.c.client_id == Client.id)
+            .group_by(Client.id, Client.name)
+            .order_by(desc("total_spending"))
+            .limit(limit)
+            .all()
+        )
+        clients_list = [{"id": r[0], "name": r[1], "filing_count": r[2], "total_spending": float(r[3]) if r[3] else 0} for r in top_clients]
+
+        # Top lobbyists
+        lob_q = (
+            session.query(LobbyingActivity.lobbyists, Filing.id)
+            .select_from(LobbyingActivity)
+            .join(Filing)
+            .filter(Filing.id.in_(session.query(filing_ids_sub.c.id)))
+            .filter(LobbyingActivity.lobbyists.isnot(None))
+        )
+        activities = lob_q.all()
+        lobbyist_filings: dict[str, set[int]] = {}
+        for lob_json, filing_id in activities:
+            try:
+                lob_list = _json.loads(lob_json)
+            except (ValueError, TypeError):
+                continue
+            if not isinstance(lob_list, list):
+                continue
+            for entry in lob_list:
+                lob = entry.get("lobbyist", {}) if isinstance(entry, dict) else {}
+                first = (lob.get("first_name") or "").strip()
+                last = (lob.get("last_name") or "").strip()
+                full = f"{first} {last}".strip()
+                if not full:
+                    continue
+                key = full.lower()
+                lobbyist_filings.setdefault(key, set()).add(filing_id)
+
+        lobbyists_list = sorted(
+            [{"name": key.title(), "filing_count": len(fids)} for key, fids in lobbyist_filings.items()],
+            key=lambda x: x["filing_count"], reverse=True,
+        )[:limit]
+
+        return {"firms": firms, "clients": clients_list, "lobbyists": lobbyists_list}
+    except Exception as e:
+        logger.exception("filings_sidebar failed: %s", e)
+        raise
+    finally:
+        session.close()
+
+
 @app.get("/api/filings/{filing_uuid}")
 def get_filing(filing_uuid: str):
     """Get a single filing by UUID."""
@@ -365,16 +596,51 @@ def get_filing(filing_uuid: str):
 
 
 @app.get("/api/issues")
-def list_issues():
-    """List all issue codes with filing counts."""
+def list_issues(
+    registrant: Optional[str] = Query(None),
+    client: Optional[str] = Query(None),
+    lobbyist: Optional[str] = Query(None),
+    government_entity: Optional[str] = Query(None),
+    filing_year: Optional[int] = Query(None),
+    filing_period: Optional[str] = Query(None),
+    q: Optional[str] = Query(None),
+):
+    """List all issue codes with filing counts, optionally filtered."""
     session = _get_session()
     try:
-        results = (
+        query = (
             session.query(
                 LobbyingActivity.general_issue_code,
                 LobbyingActivity.general_issue_code_display,
-                func.count(LobbyingActivity.id).label("count"),
+                func.count(func.distinct(LobbyingActivity.id)).label("count"),
             )
+            .join(Filing, LobbyingActivity.filing_id == Filing.id)
+        )
+        if registrant:
+            query = query.join(Registrant, Filing.registrant_id == Registrant.id).filter(Registrant.name.ilike(f"%{registrant}%"))
+        if client:
+            query = query.join(Client, Filing.client_id == Client.id).filter(Client.name.ilike(f"%{client}%"))
+        if government_entity:
+            query = query.filter(LobbyingActivity.government_entities.ilike(f"%{government_entity}%"))
+        if filing_year:
+            query = query.filter(Filing.filing_year == filing_year)
+        if filing_period:
+            query = query.filter(Filing.filing_period == filing_period)
+        if lobbyist:
+            lob_parts = [p.strip() for p in lobbyist.split() if p.strip()]
+            for part in lob_parts:
+                query = query.filter(LobbyingActivity.lobbyists.ilike(f"%{part}%"))
+        if q:
+            query = query.filter(
+                text("""to_tsvector('english',
+                    coalesce((SELECT r2.name FROM registrants r2 WHERE r2.id = filings.registrant_id), '') || ' ' ||
+                    coalesce((SELECT c2.name FROM clients c2 WHERE c2.id = filings.client_id), '') || ' ' ||
+                    coalesce(filings.filing_type_display, '') || ' ' ||
+                    coalesce(filings.posted_by_name, '')
+                ) @@ plainto_tsquery('english', :query)""")
+            ).params(query=q)
+        results = (
+            query
             .group_by(
                 LobbyingActivity.general_issue_code,
                 LobbyingActivity.general_issue_code_display,
@@ -535,6 +801,23 @@ def list_registrants():
             session.query(Registrant.id, Registrant.name, func.count(Filing.id).label("cnt"))
             .join(Filing)
             .group_by(Registrant.id, Registrant.name)
+            .order_by(desc("cnt"))
+            .all()
+        )
+        return [{"id": r[0], "name": r[1], "filing_count": r[2]} for r in rows]
+    finally:
+        session.close()
+
+
+@app.get("/api/clients")
+def list_clients():
+    """List all clients with filing counts, for filter dropdowns."""
+    session = _get_session()
+    try:
+        rows = (
+            session.query(Client.id, Client.name, func.count(Filing.id).label("cnt"))
+            .join(Filing)
+            .group_by(Client.id, Client.name)
             .order_by(desc("cnt"))
             .all()
         )
@@ -1534,13 +1817,14 @@ def registration_trend(
         else:
             period_expr = func.to_char(Filing.dt_posted, 'YYYY-MM')
 
+        TERMINATION_TYPES = ['1T', '2T', '3T', '4T', '1TY', '2TY', '3TY', '4TY']
         q = (
             session.query(
                 Filing.filing_type,
                 period_expr.label("period"),
                 func.count(func.distinct(Filing.id)).label("count"),
             )
-            .filter(Filing.filing_type.in_(['RR', 'TR']))
+            .filter(Filing.filing_type.in_(['RR'] + TERMINATION_TYPES))
         )
         if registrant_id:
             q = q.filter(Filing.registrant_id == registrant_id)
@@ -1554,7 +1838,8 @@ def registration_trend(
             if ftype == 'RR':
                 registrations[period] = count
             else:
-                terminations[period] = count
+                # Sum all termination subtypes into the same period bucket
+                terminations[period] = terminations.get(period, 0) + count
 
         all_periods = sorted(set(list(registrations.keys()) + list(terminations.keys())))
         return {
@@ -2369,6 +2654,201 @@ def ai_status():
     """Check if AI features are available (API key configured)."""
     has_key = bool(os.environ.get("ANTHROPIC_API_KEY"))
     return {"available": has_key}
+
+
+# ---------- Ad Tracking Endpoints ----------
+
+@app.post("/api/ads/scrape")
+def trigger_ad_scrape(
+    sites: Optional[str] = Body(None, embed=True),
+    max_pages_per_site: int = Body(3, embed=True),
+):
+    """Trigger an ad scrape. Optionally filter to specific sites (comma-separated)."""
+    progress = get_ad_scrape_progress()
+    if progress.get("status") == "running":
+        return {"status": "already_running", **progress}
+
+    site_list = [s.strip() for s in sites.split(",")] if sites else None
+
+    def _run():
+        scrape_ads(sites=site_list, max_pages_per_site=max_pages_per_site)
+
+    t = threading.Thread(target=_run, daemon=True)
+    t.start()
+    return {"status": "started"}
+
+
+@app.get("/api/ads/scrape/status")
+def ad_scrape_status():
+    """Get current ad scrape progress."""
+    return get_ad_scrape_progress()
+
+
+@app.get("/api/ads/captures")
+def list_ad_captures(
+    site: Optional[str] = Query(None),
+    domain: Optional[str] = Query(None),
+    page: int = Query(1, ge=1),
+    page_size: int = Query(25, ge=1, le=100),
+):
+    """List captured ads with optional filters."""
+    session = _get_session()
+    try:
+        q = session.query(AdCapture).order_by(desc(AdCapture.captured_at))
+        if site:
+            q = q.filter(AdCapture.site == site)
+        if domain:
+            q = q.filter(AdCapture.destination_domain.ilike(f"%{domain}%"))
+
+        total = q.count()
+        results = q.offset((page - 1) * page_size).limit(page_size).all()
+
+        return {
+            "results": [
+                {
+                    "id": r.id,
+                    "site": r.site,
+                    "page_url": r.page_url,
+                    "ad_slot": r.ad_slot,
+                    "destination_url": r.destination_url,
+                    "destination_domain": r.destination_domain,
+                    "resolved_url": r.resolved_url,
+                    "resolved_domain": r.resolved_domain,
+                    "landing_page_title": r.landing_page_title,
+                    "landing_page_type": r.landing_page_type,
+                    "ad_text": r.ad_text,
+                    "has_screenshot": bool(r.screenshot_base64),
+                    "width": r.width,
+                    "height": r.height,
+                    "captured_at": r.captured_at.isoformat() if r.captured_at else None,
+                    "campaign_id": r.campaign_id,
+                }
+                for r in results
+            ],
+            "total": total,
+            "page": page,
+            "page_size": page_size,
+        }
+    finally:
+        session.close()
+
+
+@app.get("/api/ads/captures/{capture_id}")
+def get_ad_capture(capture_id: int):
+    """Get a single ad capture including its screenshot."""
+    session = _get_session()
+    try:
+        r = session.query(AdCapture).get(capture_id)
+        if not r:
+            raise HTTPException(status_code=404, detail="Ad capture not found")
+        return {
+            "id": r.id,
+            "site": r.site,
+            "page_url": r.page_url,
+            "ad_slot": r.ad_slot,
+            "destination_url": r.destination_url,
+            "destination_domain": r.destination_domain,
+            "resolved_url": r.resolved_url,
+            "resolved_domain": r.resolved_domain,
+            "landing_page_title": r.landing_page_title,
+            "landing_page_description": r.landing_page_description,
+            "landing_page_og_image": r.landing_page_og_image,
+            "landing_page_keywords": r.landing_page_keywords,
+            "landing_page_type": r.landing_page_type,
+            "ad_text": r.ad_text,
+            "screenshot_base64": r.screenshot_base64,
+            "width": r.width,
+            "height": r.height,
+            "captured_at": r.captured_at.isoformat() if r.captured_at else None,
+            "campaign_id": r.campaign_id,
+        }
+    finally:
+        session.close()
+
+
+@app.get("/api/ads/campaigns")
+def list_ad_campaigns(
+    sort: str = Query("recent", regex="^(recent|captures|name)$"),
+    page: int = Query(1, ge=1),
+    page_size: int = Query(25, ge=1, le=100),
+):
+    """List ad campaigns (grouped advertisers)."""
+    session = _get_session()
+    try:
+        q = session.query(AdCampaign)
+        if sort == "recent":
+            q = q.order_by(desc(AdCampaign.last_seen))
+        elif sort == "captures":
+            q = q.order_by(desc(AdCampaign.capture_count))
+        else:
+            q = q.order_by(AdCampaign.advertiser_name)
+
+        total = q.count()
+        results = q.offset((page - 1) * page_size).limit(page_size).all()
+
+        return {
+            "results": [
+                {
+                    "id": r.id,
+                    "advertiser_name": r.advertiser_name,
+                    "advertiser_domain": r.advertiser_domain,
+                    "entity_id": r.entity_id,
+                    "first_seen": r.first_seen.isoformat() if r.first_seen else None,
+                    "last_seen": r.last_seen.isoformat() if r.last_seen else None,
+                    "capture_count": r.capture_count,
+                    "sites_seen_on": json.loads(r.sites_seen_on) if r.sites_seen_on else [],
+                }
+                for r in results
+            ],
+            "total": total,
+            "page": page,
+            "page_size": page_size,
+        }
+    finally:
+        session.close()
+
+
+@app.get("/api/ads/stats")
+def ad_stats():
+    """Summary statistics for ad tracking."""
+    session = _get_session()
+    try:
+        total_captures = session.query(func.count(AdCapture.id)).scalar() or 0
+        total_campaigns = session.query(func.count(AdCampaign.id)).scalar() or 0
+        unique_domains = session.query(func.count(func.distinct(AdCapture.destination_domain))).filter(
+            AdCapture.destination_domain.isnot(None)
+        ).scalar() or 0
+
+        latest = session.query(func.max(AdCapture.captured_at)).scalar()
+
+        # Top advertisers by capture count
+        top_advertisers = (
+            session.query(AdCampaign.advertiser_name, AdCampaign.capture_count, AdCampaign.advertiser_domain)
+            .order_by(desc(AdCampaign.capture_count))
+            .limit(10)
+            .all()
+        )
+
+        # Captures by site
+        by_site = (
+            session.query(AdCapture.site, func.count(AdCapture.id))
+            .group_by(AdCapture.site)
+            .all()
+        )
+
+        return {
+            "total_captures": total_captures,
+            "total_campaigns": total_campaigns,
+            "unique_domains": unique_domains,
+            "latest_capture": latest.isoformat() if latest else None,
+            "top_advertisers": [
+                {"name": name, "capture_count": count, "domain": domain}
+                for name, count, domain in top_advertisers
+            ],
+            "captures_by_site": {site: count for site, count in by_site},
+        }
+    finally:
+        session.close()
 
 
 @app.get("/api/db-dump")

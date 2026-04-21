@@ -1,11 +1,11 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
-import { Search, FileText, Tag, BarChart3, RefreshCw, Building2, Users, ChevronLeft, ChevronRight, ExternalLink, DollarSign, Calendar, Loader2, Network, Newspaper, User, Briefcase, Menu, X, Download, Square, ChevronDown, Target, Sparkles, Send, MessageCircle, Bot, PanelLeftOpen, PanelLeftClose, TrendingUp, Settings } from 'lucide-react';
-import { api, type FilingSummary, type FilingDetail, type IssueSummary, type Stats, type SyncStatus, type SyncCoverage, type SearchParams, type TopEntity, type NewsletterSummary, type NewsletterDetail, type EntitySummary, type EntityDetail, type NetworkData, type InfluenceStats, type ReportSeries, type EntityAppearance, type RevenueByQuarter, type IssueFirmHeatmap, type EntityLdaStats } from './api';
+import { Search, FileText, Tag, BarChart3, RefreshCw, Building2, Users, ChevronLeft, ChevronRight, ExternalLink, DollarSign, Calendar, Loader2, Network, Newspaper, User, Briefcase, Menu, X, Download, Square, ChevronDown, Target, Sparkles, Send, MessageCircle, Bot, PanelLeftOpen, PanelLeftClose, TrendingUp, Settings, Eye } from 'lucide-react';
+import { api, type FilingSummary, type FilingDetail, type IssueSummary, type Stats, type SyncStatus, type SyncCoverage, type SearchParams, type TopEntity, type NewsletterSummary, type NewsletterDetail, type EntitySummary, type EntityDetail, type NetworkData, type InfluenceStats, type ReportSeries, type EntityAppearance, type RevenueByQuarter, type IssueFirmHeatmap, type EntityLdaStats, type AdCaptureSummary, type AdCaptureDetail, type AdCampaignSummary, type AdStats } from './api';
 import { formatDistanceToNow, format } from 'date-fns';
 import NetworkGraph, { computeEigenvectorCentrality, type SizeMode } from './NetworkGraph';
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from 'recharts';
 
-type Page = 'dashboard' | 'search' | 'issues' | 'filing' | 'influence' | 'network' | 'entity' | 'newsletter' | 'leaderboard' | 'chat' | 'reports' | 'utilities';
+type Page = 'dashboard' | 'search' | 'issues' | 'filing' | 'influence' | 'network' | 'entity' | 'newsletter' | 'leaderboard' | 'chat' | 'reports' | 'utilities' | 'ads';
 
 function formatMoney(val: number | null | undefined): string {
   if (val === null || val === undefined) return '-';
@@ -35,6 +35,7 @@ function Nav({ page, setPage }: { page: Page; setPage: (p: Page) => void }) {
     { id: 'influence', label: 'Influence', icon: <Newspaper size={18} /> },
     { id: 'network', label: 'Network', icon: <Network size={18} /> },
     { id: 'reports', label: 'Reports', icon: <TrendingUp size={18} /> },
+    { id: 'ads', label: 'Ad Tracker', icon: <Eye size={18} /> },
     { id: 'chat', label: 'AI Chat', icon: <Bot size={18} /> },
   ];
   const allLinks = [...links, { id: 'utilities' as Page, label: 'Utilities', icon: <Settings size={18} /> }];
@@ -107,10 +108,10 @@ function FilingCard({ filing, onClick }: { filing: FilingSummary; onClick: () =>
       <div className="flex items-center gap-4 text-xs text-gray-500">
         <span className="flex items-center gap-1"><Calendar size={12} />{timeAgo(filing.dt_posted)}</span>
         {filing.income != null && filing.income > 0 && (
-          <span className="flex items-center gap-1"><DollarSign size={12} />{formatMoney(filing.income)}</span>
+          <span className="flex items-center gap-1 text-green-600">{formatMoney(filing.income)}</span>
         )}
         {filing.expenses != null && filing.expenses > 0 && (
-          <span className="flex items-center gap-1 text-orange-600"><DollarSign size={12} />{formatMoney(filing.expenses)} exp.</span>
+          <span className="flex items-center gap-1 text-orange-600">{formatMoney(filing.expenses)} exp.</span>
         )}
         <span>{filing.filing_year} {filing.filing_period_display}</span>
       </div>
@@ -379,11 +380,13 @@ function IssueSidebarItem({ rank, name, value, maxValue, formatValue, onClick, a
 }
 
 // ---------- Search Page ----------
-function SearchPage({ onNavigate, initialFilter }: { onNavigate: (page: Page, ctx?: unknown) => void; initialFilter?: { registrant?: string; client?: string; q?: string } }) {
+function SearchPage({ onNavigate, initialFilter }: { onNavigate: (page: Page, ctx?: unknown) => void; initialFilter?: { registrant?: string; client?: string; lobbyist?: string; government_entity?: string; q?: string } }) {
   const [params, setParams] = useState<SearchParams>(() => ({
     sort: '-dt_posted', page: 1, page_size: 25,
     ...(initialFilter?.registrant ? { registrant: initialFilter.registrant } : {}),
     ...(initialFilter?.client ? { client: initialFilter.client } : {}),
+    ...(initialFilter?.lobbyist ? { lobbyist: initialFilter.lobbyist } : {}),
+    ...(initialFilter?.government_entity ? { government_entity: initialFilter.government_entity } : {}),
     ...(initialFilter?.q ? { q: initialFilter.q } : {}),
   }));
   const [results, setResults] = useState<FilingSummary[]>([]);
@@ -393,35 +396,50 @@ function SearchPage({ onNavigate, initialFilter }: { onNavigate: (page: Page, ct
   const [searchText, setSearchText] = useState(initialFilter?.q || '');
   const [issuesLoading, setIssuesLoading] = useState(true);
 
-  // Issue sidebar state
+  // Issue filter
   const [selectedIssue, setSelectedIssue] = useState<string | null>(null);
+
+  // Unified sidebar state — recomputes when any filter changes
   const [sidebar, setSidebar] = useState<{
     firms: Array<{ id: number; name: string; filing_count: number; total_income: number }>;
     clients: Array<{ id: number; name: string; filing_count: number; total_spending: number }>;
     lobbyists: Array<{ name: string; filing_count: number }>;
   } | null>(null);
-  const [sidebarLoading, setSidebarLoading] = useState(false);
+  const [sidebarLoading, setSidebarLoading] = useState(true);
   const [activeFilter, setActiveFilter] = useState<{ type: 'firm' | 'client' | 'lobbyist'; id?: number; name: string } | null>(null);
 
-  // Global sidebar for unfiltered view
-  const [globalFirms, setGlobalFirms] = useState<Array<{ name: string; total_income: number; filing_count: number; [k: string]: unknown }>>([]);
-  const [globalClients, setGlobalClients] = useState<Array<{ name: string; total_spend: number; filing_count: number; [k: string]: unknown }>>([]);
-  const [globalLobbyists, setGlobalLobbyists] = useState<Array<{ name: string; unique_clients: number; firms: string[] }>>([]);
-  const [globalLoading, setGlobalLoading] = useState(true);
+  // Government entity filter state
+  const [govEntities, setGovEntities] = useState<Array<{ name: string; count: number }>>([]);
+
+  // Registrant + client typeahead lists
+  const [registrantList, setRegistrantList] = useState<Array<{ id: number; name: string; filing_count: number }>>([]);
+  const [clientList, setClientList] = useState<Array<{ id: number; name: string; filing_count: number }>>([]);
+  const [registrantSearch, setRegistrantSearch] = useState(params.registrant || '');
+  const [clientSearch, setClientSearch] = useState(params.client || '');
+  const [showRegistrantDropdown, setShowRegistrantDropdown] = useState(false);
+  const [showClientDropdown, setShowClientDropdown] = useState(false);
 
   useEffect(() => {
-    api.getIssues().then(i => { setIssues(i); setIssuesLoading(false); }).catch(() => setIssuesLoading(false));
-    Promise.all([
-      api.getTopRegistrants(10, 'revenue'),
-      api.getTopClientsBySpend(10),
-      api.getTopLobbyistsByClients(10),
-    ]).then(([firms, clients, lobbyists]) => {
-      setGlobalFirms(firms);
-      setGlobalClients(clients);
-      setGlobalLobbyists(lobbyists);
-      setGlobalLoading(false);
-    }).catch(() => setGlobalLoading(false));
+    api.getGovernmentEntities().then(d => setGovEntities(d.entities)).catch(() => {});
+    api.getRegistrants().then(setRegistrantList).catch(() => {});
+    api.getClients().then(setClientList).catch(() => {});
   }, []);
+
+  // Re-fetch issue area counts whenever non-issue filters change
+  useEffect(() => {
+    setIssuesLoading(true);
+    const filters: Record<string, unknown> = {};
+    if (params.registrant) filters.registrant = params.registrant;
+    if (params.client) filters.client = params.client;
+    if (params.lobbyist) filters.lobbyist = params.lobbyist;
+    if (params.government_entity) filters.government_entity = params.government_entity;
+    if (params.filing_year) filters.filing_year = params.filing_year;
+    if (params.filing_period) filters.filing_period = params.filing_period;
+    if (params.q) filters.q = params.q;
+    api.getIssues(Object.keys(filters).length > 0 ? filters as Parameters<typeof api.getIssues>[0] : undefined)
+      .then(i => { setIssues(i); setIssuesLoading(false); })
+      .catch(() => setIssuesLoading(false));
+  }, [params.registrant, params.client, params.lobbyist, params.government_entity, params.filing_year, params.filing_period, params.q]);
 
   // Search filings
   const doSearch = useCallback(async (p: SearchParams) => {
@@ -438,28 +456,38 @@ function SearchPage({ onNavigate, initialFilter }: { onNavigate: (page: Page, ct
 
   useEffect(() => { doSearch(params); }, [params, doSearch]);
 
+  // Fetch sidebar whenever search-driving params change (excluding page/sort/page_size)
+  useEffect(() => {
+    setSidebarLoading(true);
+    api.getFilingsSidebar({
+      issue_code: params.issue_code,
+      registrant: params.registrant,
+      client: params.client,
+      lobbyist: params.lobbyist,
+      government_entity: params.government_entity,
+      filing_year: params.filing_year,
+      filing_period: params.filing_period,
+      q: params.q,
+    }).then(d => { setSidebar(d); setSidebarLoading(false); }).catch(() => setSidebarLoading(false));
+  }, [params.issue_code, params.registrant, params.client, params.lobbyist, params.government_entity, params.filing_year, params.filing_period, params.q]);
+
   // When issue selection changes, update params and clear any sidebar filter
   useEffect(() => {
-    setParams(p => ({ ...p, issue_code: selectedIssue || undefined, registrant: undefined, client: undefined, lobbyist: undefined, q: searchText || undefined, page: 1 }));
+    setParams(p => ({ ...p, issue_code: selectedIssue || undefined, page: 1 }));
     setActiveFilter(null);
   }, [selectedIssue]);
 
-  // Fetch sidebar insights when issue changes
-  useEffect(() => {
-    if (!selectedIssue) { setSidebar(null); return; }
-    setSidebarLoading(true);
-    api.getIssueSidebar(selectedIssue, 10).then(d => { setSidebar(d); setSidebarLoading(false); }).catch(() => setSidebarLoading(false));
-  }, [selectedIssue]);
-
-  // When a sidebar insight filter is clicked, apply as registrant/client text filter
+  // When a sidebar insight filter is clicked, apply as additive filter
   useEffect(() => {
     if (!activeFilter) return;
     if (activeFilter.type === 'firm') {
-      setParams(p => ({ ...p, registrant: activeFilter.name, client: undefined, page: 1 }));
+      setRegistrantSearch(activeFilter.name);
+      setParams(p => ({ ...p, registrant: activeFilter.name, page: 1 }));
     } else if (activeFilter.type === 'client') {
-      setParams(p => ({ ...p, client: activeFilter.name, registrant: undefined, page: 1 }));
+      setClientSearch(activeFilter.name);
+      setParams(p => ({ ...p, client: activeFilter.name, page: 1 }));
     } else if (activeFilter.type === 'lobbyist') {
-      setParams(p => ({ ...p, lobbyist: activeFilter.name, registrant: undefined, client: undefined, page: 1 }));
+      setParams(p => ({ ...p, lobbyist: activeFilter.name, page: 1 }));
     }
   }, [activeFilter]);
 
@@ -469,8 +497,17 @@ function SearchPage({ onNavigate, initialFilter }: { onNavigate: (page: Page, ct
   };
 
   const clearFilter = () => {
+    if (!activeFilter) return;
+    if (activeFilter.type === 'firm') {
+      setRegistrantSearch('');
+      setParams(p => ({ ...p, registrant: undefined, page: 1 }));
+    } else if (activeFilter.type === 'client') {
+      setClientSearch('');
+      setParams(p => ({ ...p, client: undefined, page: 1 }));
+    } else if (activeFilter.type === 'lobbyist') {
+      setParams(p => ({ ...p, lobbyist: undefined, page: 1 }));
+    }
     setActiveFilter(null);
-    setParams(p => ({ ...p, registrant: undefined, client: undefined, lobbyist: undefined, q: searchText || undefined, page: 1 }));
   };
   const applyFilter = (f: typeof activeFilter) => {
     if (!f) { clearFilter(); return; }
@@ -520,20 +557,120 @@ function SearchPage({ onNavigate, initialFilter }: { onNavigate: (page: Page, ct
             <option value="mid_year">Mid-Year</option>
             <option value="year_end">Year-End</option>
           </select>
-          <input
-            type="text"
-            placeholder="Registrant name"
-            value={params.registrant || ''}
-            onChange={e => { setParams(p => ({ ...p, registrant: e.target.value || undefined, page: 1 })); if (activeFilter?.type === 'firm') setActiveFilter(null); }}
-            className="border border-gray-300 rounded-lg px-3 py-1.5 text-sm w-40"
-          />
-          <input
-            type="text"
-            placeholder="Client name"
-            value={params.client || ''}
-            onChange={e => { setParams(p => ({ ...p, client: e.target.value || undefined, page: 1 })); if (activeFilter?.type === 'client') setActiveFilter(null); }}
-            className="border border-gray-300 rounded-lg px-3 py-1.5 text-sm w-40"
-          />
+          <div className="relative">
+            <input
+              type="text"
+              placeholder="Registrant name"
+              value={registrantSearch}
+              onChange={e => {
+                setRegistrantSearch(e.target.value);
+                setShowRegistrantDropdown(true);
+                if (!e.target.value) {
+                  setParams(p => ({ ...p, registrant: undefined, page: 1 }));
+                  if (activeFilter?.type === 'firm') setActiveFilter(null);
+                }
+              }}
+              onFocus={() => setShowRegistrantDropdown(true)}
+              onBlur={() => setTimeout(() => setShowRegistrantDropdown(false), 200)}
+              className="border border-gray-300 rounded-lg px-3 py-1.5 text-sm w-44"
+            />
+            {showRegistrantDropdown && registrantSearch.length > 0 && (
+              <div className="absolute top-full left-0 mt-1 w-72 bg-white border border-gray-200 rounded-lg shadow-lg max-h-48 overflow-y-auto z-30">
+                {registrantList
+                  .filter(r => r.name.toLowerCase().includes(registrantSearch.toLowerCase()))
+                  .slice(0, 15)
+                  .map(r => (
+                    <button
+                      key={r.id}
+                      onMouseDown={e => e.preventDefault()}
+                      onClick={() => {
+                        setRegistrantSearch(r.name);
+                        setShowRegistrantDropdown(false);
+                        setParams(p => ({ ...p, registrant: r.name, page: 1 }));
+                        if (activeFilter?.type === 'firm') setActiveFilter(null);
+                      }}
+                      className="w-full text-left px-3 py-1.5 text-sm hover:bg-indigo-50 cursor-pointer flex justify-between"
+                    >
+                      <span className="truncate">{r.name}</span>
+                      <span className="text-xs text-gray-400 ml-2 shrink-0">{r.filing_count}</span>
+                    </button>
+                  ))}
+                {registrantList.filter(r => r.name.toLowerCase().includes(registrantSearch.toLowerCase())).length === 0 && (
+                  <div className="px-3 py-2 text-xs text-gray-400">No matching registrants</div>
+                )}
+              </div>
+            )}
+            {params.registrant && (
+              <button
+                onClick={() => { setRegistrantSearch(''); setParams(p => ({ ...p, registrant: undefined, page: 1 })); if (activeFilter?.type === 'firm') setActiveFilter(null); }}
+                className="absolute right-2 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600 cursor-pointer"
+              >
+                <X size={14} />
+              </button>
+            )}
+          </div>
+          <div className="relative">
+            <input
+              type="text"
+              placeholder="Client name"
+              value={clientSearch}
+              onChange={e => {
+                setClientSearch(e.target.value);
+                setShowClientDropdown(true);
+                if (!e.target.value) {
+                  setParams(p => ({ ...p, client: undefined, page: 1 }));
+                  if (activeFilter?.type === 'client') setActiveFilter(null);
+                }
+              }}
+              onFocus={() => setShowClientDropdown(true)}
+              onBlur={() => setTimeout(() => setShowClientDropdown(false), 200)}
+              className="border border-gray-300 rounded-lg px-3 py-1.5 text-sm w-44"
+            />
+            {showClientDropdown && clientSearch.length > 0 && (
+              <div className="absolute top-full left-0 mt-1 w-72 bg-white border border-gray-200 rounded-lg shadow-lg max-h-48 overflow-y-auto z-30">
+                {clientList
+                  .filter(c => c.name.toLowerCase().includes(clientSearch.toLowerCase()))
+                  .slice(0, 15)
+                  .map(c => (
+                    <button
+                      key={c.id}
+                      onMouseDown={e => e.preventDefault()}
+                      onClick={() => {
+                        setClientSearch(c.name);
+                        setShowClientDropdown(false);
+                        setParams(p => ({ ...p, client: c.name, page: 1 }));
+                        if (activeFilter?.type === 'client') setActiveFilter(null);
+                      }}
+                      className="w-full text-left px-3 py-1.5 text-sm hover:bg-indigo-50 cursor-pointer flex justify-between"
+                    >
+                      <span className="truncate">{c.name}</span>
+                      <span className="text-xs text-gray-400 ml-2 shrink-0">{c.filing_count}</span>
+                    </button>
+                  ))}
+                {clientList.filter(c => c.name.toLowerCase().includes(clientSearch.toLowerCase())).length === 0 && (
+                  <div className="px-3 py-2 text-xs text-gray-400">No matching clients</div>
+                )}
+              </div>
+            )}
+            {params.client && (
+              <button
+                onClick={() => { setClientSearch(''); setParams(p => ({ ...p, client: undefined, page: 1 })); if (activeFilter?.type === 'client') setActiveFilter(null); }}
+                className="absolute right-2 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600 cursor-pointer"
+              >
+                <X size={14} />
+              </button>
+            )}
+          </div>
+          <select
+            value={params.government_entity || ''}
+            onChange={e => setParams(p => ({ ...p, government_entity: e.target.value || undefined, page: 1 }))}
+            className="border border-gray-300 rounded-lg px-3 py-1.5 text-sm cursor-pointer max-w-52"
+          >
+            <option value="">All Gov. Entities</option>
+            {govEntities.map(ge => (
+              <option key={ge.name} value={ge.name}>{ge.name} ({ge.count})</option>
+            ))}
+          </select>
         </div>
       </form>
 
@@ -571,22 +708,38 @@ function SearchPage({ onNavigate, initialFilter }: { onNavigate: (page: Page, ct
           <h2 className="text-lg font-semibold text-gray-900 mb-3">
             {issueName || 'All Filings'} <span className="text-sm font-normal text-gray-400">({total} filings)</span>
           </h2>
-          {initialFilter && (initialFilter.registrant || initialFilter.client || initialFilter.q) && (
-            <div className="flex items-center gap-2 mb-3 bg-indigo-50 border border-indigo-200 rounded-lg px-3 py-2 text-sm">
-              <span className="text-indigo-700">
-                Filtered by {initialFilter.registrant ? 'firm' : initialFilter.client ? 'client' : 'keyword'}: <span className="font-medium">{initialFilter.registrant || initialFilter.client || initialFilter.q}</span>
-              </span>
-              <button onClick={() => onNavigate('search')} className="ml-auto text-indigo-400 hover:text-indigo-600 cursor-pointer"><X size={14} /></button>
-            </div>
-          )}
-          {activeFilter && (
-            <div className="flex items-center gap-2 mb-3 bg-indigo-50 border border-indigo-200 rounded-lg px-3 py-2 text-sm">
-              <span className="text-indigo-700">
-                Filtered by {activeFilter.type === 'firm' ? 'firm' : activeFilter.type === 'client' ? 'client' : 'lobbyist'}: <span className="font-medium">{activeFilter.name}</span>
-              </span>
-              <button onClick={clearFilter} className="ml-auto text-indigo-400 hover:text-indigo-600 cursor-pointer"><X size={14} /></button>
-            </div>
-          )}
+          {/* Active filter badges */}
+          {(() => {
+            const badges: Array<{ label: string; value: string; onClear: () => void }> = [];
+            if (selectedIssue) badges.push({ label: 'Issue', value: issueName || selectedIssue, onClear: () => setSelectedIssue(null) });
+            if (params.q) badges.push({ label: 'Search', value: params.q, onClear: () => { setSearchText(''); setParams(p => ({ ...p, q: undefined, page: 1 })); } });
+            if (params.registrant) badges.push({ label: 'Firm', value: params.registrant, onClear: () => { setRegistrantSearch(''); setActiveFilter(f => f?.type === 'firm' ? null : f); setParams(p => ({ ...p, registrant: undefined, page: 1 })); } });
+            if (params.client) badges.push({ label: 'Client', value: params.client, onClear: () => { setClientSearch(''); setActiveFilter(f => f?.type === 'client' ? null : f); setParams(p => ({ ...p, client: undefined, page: 1 })); } });
+            if (params.lobbyist) badges.push({ label: 'Lobbyist', value: params.lobbyist, onClear: () => { setActiveFilter(f => f?.type === 'lobbyist' ? null : f); setParams(p => ({ ...p, lobbyist: undefined, page: 1 })); } });
+            if (params.government_entity) badges.push({ label: 'Gov. Entity', value: params.government_entity, onClear: () => setParams(p => ({ ...p, government_entity: undefined, page: 1 })) });
+            if (params.filing_year) badges.push({ label: 'Year', value: String(params.filing_year), onClear: () => setParams(p => ({ ...p, filing_year: undefined, page: 1 })) });
+            if (params.filing_period) badges.push({ label: 'Period', value: params.filing_period.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase()), onClear: () => setParams(p => ({ ...p, filing_period: undefined, page: 1 })) });
+            if (badges.length === 0) return null;
+            return (
+              <div className="flex flex-wrap gap-2 mb-3">
+                {badges.map(b => (
+                  <div key={b.label} className="flex items-center gap-1.5 bg-indigo-50 border border-indigo-200 rounded-lg px-2.5 py-1 text-sm">
+                    <span className="text-indigo-500 text-xs">{b.label}:</span>
+                    <span className="text-indigo-700 font-medium">{b.value}</span>
+                    <button onClick={b.onClear} className="text-indigo-400 hover:text-indigo-600 cursor-pointer ml-0.5"><X size={12} /></button>
+                  </div>
+                ))}
+                {badges.length > 1 && (
+                  <button
+                    onClick={() => { setSearchText(''); setRegistrantSearch(''); setClientSearch(''); setActiveFilter(null); setSelectedIssue(null); setParams({ sort: '-dt_posted', page: 1, page_size: 25 }); }}
+                    className="text-xs text-gray-400 hover:text-gray-600 cursor-pointer px-2 py-1"
+                  >
+                    Clear all
+                  </button>
+                )}
+              </div>
+            );
+          })()}
           {loading ? (
             <div className="flex items-center justify-center h-32"><Loader2 className="animate-spin text-indigo-600" size={24} /></div>
           ) : results.length > 0 ? (
@@ -610,131 +763,66 @@ function SearchPage({ onNavigate, initialFilter }: { onNavigate: (page: Page, ct
         <div className="min-w-0">
           <h2 className="text-lg font-semibold text-gray-900 mb-3">Insights</h2>
           <div className="space-y-4">
-          {selectedIssue ? (
-            <>
-              {sidebarLoading && (
-                <div className="flex justify-center py-8"><Loader2 className="animate-spin text-gray-300" size={20} /></div>
-              )}
-              {!sidebarLoading && sidebar && (
-                <>
-                  <div className="bg-white rounded-lg border border-gray-200 p-3">
-                    <h3 className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2 flex items-center gap-1.5"><Building2 size={12} /> Top Firms</h3>
-                    <div className="space-y-1">
-                      {sidebar.firms.map((f, i) => (
-                        <IssueSidebarItem
-                          key={f.id}
-                          rank={i + 1}
-                          name={f.name}
-                          value={f.filing_count}
-                          maxValue={sidebar.firms[0]?.filing_count || 1}
-                          formatValue={v => `${v} filings`}
-                          active={activeFilter?.type === 'firm' && activeFilter.id === f.id}
-                          onClick={() => applyFilter(activeFilter?.type === 'firm' && activeFilter.id === f.id ? null : { type: 'firm', id: f.id, name: f.name })}
-                        />
-                      ))}
-                      {sidebar.firms.length === 0 && <p className="text-xs text-gray-400 py-1">No data</p>}
-                    </div>
+            {sidebarLoading ? (
+              <div className="flex justify-center py-8"><Loader2 className="animate-spin text-gray-300" size={20} /></div>
+            ) : sidebar ? (
+              <>
+                <div className="bg-white rounded-lg border border-gray-200 p-3">
+                  <h3 className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2 flex items-center gap-1.5"><Building2 size={12} /> Top Firms</h3>
+                  <div className="space-y-1">
+                    {sidebar.firms.map((f, i) => (
+                      <IssueSidebarItem
+                        key={f.id}
+                        rank={i + 1}
+                        name={f.name}
+                        value={f.filing_count}
+                        maxValue={sidebar.firms[0]?.filing_count || 1}
+                        formatValue={v => `${v} filings`}
+                        active={activeFilter?.type === 'firm' && activeFilter.name === f.name}
+                        onClick={() => applyFilter(activeFilter?.type === 'firm' && activeFilter.name === f.name ? null : { type: 'firm', id: f.id, name: f.name })}
+                      />
+                    ))}
+                    {sidebar.firms.length === 0 && <p className="text-xs text-gray-400 py-1">No data</p>}
                   </div>
-                  <div className="bg-white rounded-lg border border-gray-200 p-3">
-                    <h3 className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2 flex items-center gap-1.5"><DollarSign size={12} /> Top Clients by Spending</h3>
-                    <div className="space-y-1">
-                      {sidebar.clients.map((c, i) => (
-                        <IssueSidebarItem
-                          key={c.id}
-                          rank={i + 1}
-                          name={c.name}
-                          value={c.total_spending}
-                          maxValue={sidebar.clients[0]?.total_spending || 1}
-                          formatValue={formatMoney}
-                          active={activeFilter?.type === 'client' && activeFilter.id === c.id}
-                          onClick={() => applyFilter(activeFilter?.type === 'client' && activeFilter.id === c.id ? null : { type: 'client', id: c.id, name: c.name })}
-                        />
-                      ))}
-                      {sidebar.clients.length === 0 && <p className="text-xs text-gray-400 py-1">No data</p>}
-                    </div>
+                </div>
+                <div className="bg-white rounded-lg border border-gray-200 p-3">
+                  <h3 className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2 flex items-center gap-1.5"><DollarSign size={12} /> Top Clients by Spending</h3>
+                  <div className="space-y-1">
+                    {sidebar.clients.map((c, i) => (
+                      <IssueSidebarItem
+                        key={c.id}
+                        rank={i + 1}
+                        name={c.name}
+                        value={c.total_spending}
+                        maxValue={sidebar.clients[0]?.total_spending || 1}
+                        formatValue={formatMoney}
+                        active={activeFilter?.type === 'client' && activeFilter.name === c.name}
+                        onClick={() => applyFilter(activeFilter?.type === 'client' && activeFilter.name === c.name ? null : { type: 'client', id: c.id, name: c.name })}
+                      />
+                    ))}
+                    {sidebar.clients.length === 0 && <p className="text-xs text-gray-400 py-1">No data</p>}
                   </div>
-                  <div className="bg-white rounded-lg border border-gray-200 p-3">
-                    <h3 className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2 flex items-center gap-1.5"><User size={12} /> Top Lobbyists</h3>
-                    <div className="space-y-1">
-                      {sidebar.lobbyists.map((l, i) => (
-                        <IssueSidebarItem
-                          key={l.name}
-                          rank={i + 1}
-                          name={l.name}
-                          value={l.filing_count}
-                          maxValue={sidebar.lobbyists[0]?.filing_count || 1}
-                          formatValue={v => `${v} filings`}
-                          active={activeFilter?.type === 'lobbyist' && activeFilter.name === l.name}
-                          onClick={() => applyFilter(activeFilter?.type === 'lobbyist' && activeFilter.name === l.name ? null : { type: 'lobbyist', name: l.name })}
-                        />
-                      ))}
-                      {sidebar.lobbyists.length === 0 && <p className="text-xs text-gray-400 py-1">No data</p>}
-                    </div>
+                </div>
+                <div className="bg-white rounded-lg border border-gray-200 p-3">
+                  <h3 className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2 flex items-center gap-1.5"><User size={12} /> Top Lobbyists</h3>
+                  <div className="space-y-1">
+                    {sidebar.lobbyists.map((l, i) => (
+                      <IssueSidebarItem
+                        key={l.name}
+                        rank={i + 1}
+                        name={l.name}
+                        value={l.filing_count}
+                        maxValue={sidebar.lobbyists[0]?.filing_count || 1}
+                        formatValue={v => `${v} filings`}
+                        active={activeFilter?.type === 'lobbyist' && activeFilter.name === l.name}
+                        onClick={() => applyFilter(activeFilter?.type === 'lobbyist' && activeFilter.name === l.name ? null : { type: 'lobbyist', name: l.name })}
+                      />
+                    ))}
+                    {sidebar.lobbyists.length === 0 && <p className="text-xs text-gray-400 py-1">No data</p>}
                   </div>
-                </>
-              )}
-            </>
-          ) : (
-            <>
-              {globalLoading ? (
-                <div className="flex justify-center py-8"><Loader2 className="animate-spin text-gray-300" size={20} /></div>
-              ) : (
-                <>
-                  <div className="bg-white rounded-lg border border-gray-200 p-3">
-                    <h3 className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2 flex items-center gap-1.5"><Building2 size={12} /> Top Firms by Revenue</h3>
-                    <div className="space-y-1">
-                      {globalFirms.map((f, i) => (
-                        <IssueSidebarItem
-                          key={f.name}
-                          rank={i + 1}
-                          name={f.name}
-                          value={f.total_income}
-                          maxValue={globalFirms[0]?.total_income || 1}
-                          formatValue={formatMoney}
-                          active={activeFilter?.type === 'firm' && activeFilter.name === f.name}
-                          onClick={() => applyFilter(activeFilter?.type === 'firm' && activeFilter.name === f.name ? null : { type: 'firm', name: f.name })}
-                        />
-                      ))}
-                    </div>
-                  </div>
-                  <div className="bg-white rounded-lg border border-gray-200 p-3">
-                    <h3 className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2 flex items-center gap-1.5"><DollarSign size={12} /> Top Clients by Spending</h3>
-                    <div className="space-y-1">
-                      {globalClients.map((c, i) => (
-                        <IssueSidebarItem
-                          key={c.name}
-                          rank={i + 1}
-                          name={c.name}
-                          value={c.total_spend}
-                          maxValue={globalClients[0]?.total_spend || 1}
-                          formatValue={formatMoney}
-                          active={activeFilter?.type === 'client' && activeFilter.name === c.name}
-                          onClick={() => applyFilter(activeFilter?.type === 'client' && activeFilter.name === c.name ? null : { type: 'client', name: c.name })}
-                        />
-                      ))}
-                    </div>
-                  </div>
-                  <div className="bg-white rounded-lg border border-gray-200 p-3">
-                    <h3 className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2 flex items-center gap-1.5"><User size={12} /> Top Lobbyists by Clients</h3>
-                    <div className="space-y-1">
-                      {globalLobbyists.map((l, i) => (
-                        <IssueSidebarItem
-                          key={l.name}
-                          rank={i + 1}
-                          name={l.name}
-                          value={l.unique_clients}
-                          maxValue={globalLobbyists[0]?.unique_clients || 1}
-                          formatValue={v => `${v} clients`}
-                          active={activeFilter?.type === 'lobbyist' && activeFilter.name === l.name}
-                          onClick={() => applyFilter(activeFilter?.type === 'lobbyist' && activeFilter.name === l.name ? null : { type: 'lobbyist', name: l.name })}
-                        />
-                      ))}
-                    </div>
-                  </div>
-                </>
-              )}
-            </>
-          )}
+                </div>
+              </>
+            ) : null}
           </div>
         </div>
       </div>
@@ -909,7 +997,7 @@ function FilingDetailPage({ filingUuid, onBack, onNavigate }: { filingUuid: stri
                         const name = l.lobbyist ? `${l.lobbyist.first_name || ''} ${l.lobbyist.last_name || ''}`.trim() : '';
                         return (
                           <div key={j} className="text-sm text-gray-700 flex items-center gap-1">
-                            <button onClick={() => onNavigate('search', { q: name })} className="hover:text-indigo-600 transition cursor-pointer text-left">{name}</button>
+                            <button onClick={() => onNavigate('search', { lobbyist: name })} className="hover:text-indigo-600 transition cursor-pointer text-left">{name}</button>
                             {l.covered_position ? <span className="text-gray-400 shrink-0">({l.covered_position})</span> : null}
                           </div>
                         );
@@ -2806,27 +2894,30 @@ function TopConsultantsByRevenue({ onNavigate }: { onNavigate?: (page: Page, ctx
 }
 
 function TopLobbyistsChart({ onNavigate }: { onNavigate?: (page: Page, ctx?: unknown) => void }) {
-  const [data, setData] = useState<Array<{ id: number; name: string; display_name: string; mention_count: number }>>([]);
+  const [data, setData] = useState<Array<{ name: string; unique_clients: number; firms: string[] }>>([]);
   const [loading, setLoading] = useState(true);
-  useEffect(() => { api.getTopLobbyists(15).then(setData).catch(() => setData([])).finally(() => setLoading(false)); }, []);
+  useEffect(() => { api.getTopLobbyistsByClients(15).then(setData).catch(() => setData([])).finally(() => setLoading(false)); }, []);
   if (loading) return <div className="bg-white rounded-lg border border-gray-200 p-4 flex justify-center py-8"><Loader2 className="animate-spin text-gray-300" size={20} /></div>;
   if (!data.length) return null;
-  const maxCount = Math.max(...data.map(d => d.mention_count));
+  const maxCount = Math.max(...data.map(d => d.unique_clients));
   return (
     <div className="bg-white rounded-lg border border-gray-200 p-4">
-      <h3 className="font-semibold text-gray-900 mb-3">Top Lobbyists</h3>
+      <h3 className="font-semibold text-gray-900 mb-3">Top Lobbyists by Clients</h3>
       <div className="space-y-1.5">
         {data.map((d, i) => (
-          <div key={d.id}>
+          <div key={d.name}>
             <div className="flex items-center justify-between text-sm mb-0.5">
-              <button onClick={() => onNavigate?.('entity', d.id)} className="text-gray-700 truncate text-xs hover:text-indigo-600 cursor-pointer text-left">
-                <span className="text-gray-400 mr-1">{i + 1}.</span>{d.display_name}
+              <button onClick={() => onNavigate?.('search', { q: d.name })} className="text-gray-700 truncate text-xs hover:text-indigo-600 cursor-pointer text-left">
+                <span className="text-gray-400 mr-1">{i + 1}.</span>{d.name}
               </button>
-              <span className="text-indigo-600 font-medium text-xs shrink-0 ml-2">{d.mention_count} appearances</span>
+              <span className="text-indigo-600 font-medium text-xs shrink-0 ml-2">{d.unique_clients} clients</span>
             </div>
             <div className="w-full h-1.5 bg-gray-100 rounded-full overflow-hidden">
-              <div className="h-full bg-indigo-400 rounded-full" style={{ width: `${d.mention_count / maxCount * 100}%` }} />
+              <div className="h-full bg-indigo-400 rounded-full" style={{ width: `${d.unique_clients / maxCount * 100}%` }} />
             </div>
+            {d.firms.length > 0 && (
+              <p className="text-[10px] text-gray-400 truncate mt-0.5">{d.firms.join(', ')}</p>
+            )}
           </div>
         ))}
       </div>
@@ -3297,9 +3388,532 @@ function ChatPage({ onNavigate, initialConversationId }: { onNavigate: (page: Pa
 }
 
 
+// ---------- Ads Page ----------
+function AdsPage({ onNavigate }: { onNavigate: (p: Page, ctx?: unknown) => void }) {
+  const [tab, setTab] = useState<'gallery' | 'campaigns'>('gallery');
+  const [stats, setStats] = useState<AdStats | null>(null);
+  const [captures, setCaptures] = useState<AdCaptureSummary[]>([]);
+  const [campaigns, setCampaigns] = useState<AdCampaignSummary[]>([]);
+  const [captureTotal, setCaptureTotal] = useState(0);
+  const [campaignTotal, setCampaignTotal] = useState(0);
+  const [capturePage, setCapturePage] = useState(1);
+  const [campaignPage, setCampaignPage] = useState(1);
+  const [siteFilter, setSiteFilter] = useState('');
+  const [domainFilter, setDomainFilter] = useState('');
+  const [loading, setLoading] = useState(true);
+  const [selectedCapture, setSelectedCapture] = useState<AdCaptureDetail | null>(null);
+  const [scrapeStatus, setScrapeStatus] = useState<{ status: string; captured?: number; errors?: number; sites_completed?: string[]; log?: string[]; error?: string } | null>(null);
+
+  // Load stats on mount
+  useEffect(() => {
+    api.getAdStats().then(setStats).catch(() => {});
+  }, []);
+
+  // Load captures when filters/page change
+  useEffect(() => {
+    setLoading(true);
+    api.getAdCaptures({ site: siteFilter || undefined, domain: domainFilter || undefined, page: capturePage, page_size: 24 })
+      .then(d => { setCaptures(d.results); setCaptureTotal(d.total); })
+      .catch(() => {})
+      .finally(() => setLoading(false));
+  }, [capturePage, siteFilter, domainFilter]);
+
+  // Load campaigns
+  useEffect(() => {
+    api.getAdCampaigns({ sort: 'captures', page: campaignPage })
+      .then(d => { setCampaigns(d.results); setCampaignTotal(d.total); })
+      .catch(() => {});
+  }, [campaignPage]);
+
+  const handleScrape = () => {
+    api.triggerAdScrape().then(setScrapeStatus).catch(() => {});
+  };
+
+  // Poll scrape status while running
+  useEffect(() => {
+    if (!scrapeStatus || scrapeStatus.status !== 'started') return;
+    const iv = setInterval(() => {
+      api.getAdScrapeStatus().then(s => {
+        setScrapeStatus(s);
+        if (s.status === 'done' || s.status === 'error' || s.status === 'idle') {
+          clearInterval(iv);
+          // Refresh data
+          api.getAdStats().then(setStats).catch(() => {});
+          api.getAdCaptures({ site: siteFilter || undefined, domain: domainFilter || undefined, page: 1, page_size: 24 })
+            .then(d => { setCaptures(d.results); setCaptureTotal(d.total); setCapturePage(1); })
+            .catch(() => {});
+        }
+      });
+    }, 3000);
+    return () => clearInterval(iv);
+  }, [scrapeStatus?.status]);
+
+  const loadCaptureDetail = (id: number) => {
+    api.getAdCapture(id).then(setSelectedCapture).catch(() => {});
+  };
+
+  const sites = ['politico', 'axios', 'punchbowl'];
+
+  return (
+    <div className="space-y-6">
+      <div className="flex items-center justify-between">
+        <div>
+          <h1 className="text-2xl font-bold text-gray-900">Ad Tracker</h1>
+          <p className="text-sm text-gray-500 mt-1">Monitor advocacy ads on DC political news sites</p>
+        </div>
+        <button
+          onClick={handleScrape}
+          disabled={scrapeStatus?.status === 'started' || scrapeStatus?.status === 'running'}
+          className="flex items-center gap-2 px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 disabled:opacity-50 cursor-pointer"
+        >
+          {(scrapeStatus?.status === 'started' || scrapeStatus?.status === 'running') ? (
+            <><Loader2 size={16} className="animate-spin" /> Scraping...</>
+          ) : (
+            <><RefreshCw size={16} /> Scrape Ads</>
+          )}
+        </button>
+      </div>
+
+      {/* Scrape progress banner */}
+      {scrapeStatus && (scrapeStatus.status === 'started' || scrapeStatus.status === 'running') && (
+        <div className="bg-indigo-50 border border-indigo-200 rounded-lg p-3 space-y-2">
+          <div className="text-sm text-indigo-700 font-medium">
+            Scraping in progress... {scrapeStatus.captured ?? 0} ads captured
+            {scrapeStatus.sites_completed && scrapeStatus.sites_completed.length > 0 && (
+              <span> — completed: {scrapeStatus.sites_completed.join(', ')}</span>
+            )}
+          </div>
+          {scrapeStatus.log && scrapeStatus.log.length > 0 && (
+            <div className="bg-indigo-100/50 rounded p-2 max-h-40 overflow-y-auto font-mono text-xs text-indigo-600 space-y-0.5">
+              {scrapeStatus.log.map((line, i) => <div key={i}>{line}</div>)}
+            </div>
+          )}
+        </div>
+      )}
+      {scrapeStatus && scrapeStatus.status === 'done' && (
+        <div className="bg-green-50 border border-green-200 rounded-lg p-3 space-y-2">
+          <div className="text-sm text-green-700 font-medium">
+            Scrape complete — {scrapeStatus.captured ?? 0} ads captured
+            {(scrapeStatus.errors ?? 0) > 0 && <span className="text-amber-600"> ({scrapeStatus.errors} errors)</span>}
+          </div>
+          {scrapeStatus.log && scrapeStatus.log.length > 0 && (
+            <details className="text-xs">
+              <summary className="text-green-600 cursor-pointer">Show log</summary>
+              <div className="bg-green-100/50 rounded p-2 mt-1 max-h-40 overflow-y-auto font-mono text-green-600 space-y-0.5">
+                {scrapeStatus.log.map((line, i) => <div key={i}>{line}</div>)}
+              </div>
+            </details>
+          )}
+        </div>
+      )}
+      {scrapeStatus && scrapeStatus.status === 'error' && (
+        <div className="bg-red-50 border border-red-200 rounded-lg p-3 space-y-2">
+          <div className="text-sm text-red-700 font-medium">
+            Scrape failed
+            {scrapeStatus.error && scrapeStatus.error.includes('proxy') && (
+              <span className="font-normal"> — network access to news sites is blocked in this environment. Deploy to production for full scraping.</span>
+            )}
+          </div>
+          {scrapeStatus.log && scrapeStatus.log.length > 0 && (
+            <div className="bg-red-100/50 rounded p-2 max-h-40 overflow-y-auto font-mono text-xs text-red-600 space-y-0.5">
+              {scrapeStatus.log.map((line, i) => <div key={i}>{line}</div>)}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Stats row */}
+      {stats && (
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+          <div className="bg-white rounded-lg border border-gray-200 p-4">
+            <div className="text-2xl font-bold text-gray-900">{stats.total_captures.toLocaleString()}</div>
+            <div className="text-sm text-gray-500">Ads Captured</div>
+          </div>
+          <div className="bg-white rounded-lg border border-gray-200 p-4">
+            <div className="text-2xl font-bold text-gray-900">{stats.total_campaigns.toLocaleString()}</div>
+            <div className="text-sm text-gray-500">Advertisers</div>
+          </div>
+          <div className="bg-white rounded-lg border border-gray-200 p-4">
+            <div className="text-2xl font-bold text-gray-900">{stats.unique_domains.toLocaleString()}</div>
+            <div className="text-sm text-gray-500">Unique Domains</div>
+          </div>
+          <div className="bg-white rounded-lg border border-gray-200 p-4">
+            <div className="text-2xl font-bold text-gray-900">{stats.latest_capture ? timeAgo(stats.latest_capture) : '—'}</div>
+            <div className="text-sm text-gray-500">Last Capture</div>
+          </div>
+        </div>
+      )}
+
+      {/* Top advertisers */}
+      {stats && stats.top_advertisers.length > 0 && (
+        <div className="bg-white rounded-lg border border-gray-200 p-4">
+          <h3 className="font-semibold text-gray-900 mb-3">Top Advertisers</h3>
+          <div className="flex flex-wrap gap-2">
+            {stats.top_advertisers.map((a, i) => (
+              <span key={i} className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-gray-50 border border-gray-200 rounded-full text-sm">
+                <span className="font-medium text-gray-900">{a.name}</span>
+                <span className="text-gray-400">·</span>
+                <span className="text-gray-500">{a.capture_count} ads</span>
+              </span>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Tabs */}
+      <div className="border-b border-gray-200">
+        <nav className="flex gap-4">
+          {(['gallery', 'campaigns'] as const).map(t => (
+            <button
+              key={t}
+              onClick={() => setTab(t)}
+              className={`pb-2 px-1 text-sm font-medium border-b-2 cursor-pointer ${tab === t ? 'border-indigo-600 text-indigo-600' : 'border-transparent text-gray-500 hover:text-gray-700'}`}
+            >
+              {t === 'gallery' ? 'Ad Gallery' : 'Campaigns'}
+            </button>
+          ))}
+        </nav>
+      </div>
+
+      {tab === 'gallery' && (
+        <div className="space-y-4">
+          {/* Filters */}
+          <div className="flex gap-3 items-center">
+            <select
+              value={siteFilter}
+              onChange={e => { setSiteFilter(e.target.value); setCapturePage(1); }}
+              className="border border-gray-300 rounded-md px-3 py-1.5 text-sm cursor-pointer"
+            >
+              <option value="">All sites</option>
+              {sites.map(s => <option key={s} value={s}>{s.charAt(0).toUpperCase() + s.slice(1)}</option>)}
+            </select>
+            <input
+              type="text"
+              placeholder="Filter by domain..."
+              value={domainFilter}
+              onChange={e => { setDomainFilter(e.target.value); setCapturePage(1); }}
+              className="border border-gray-300 rounded-md px-3 py-1.5 text-sm w-48"
+            />
+            <span className="text-sm text-gray-500">{captureTotal} ads</span>
+          </div>
+
+          {loading ? (
+            <div className="flex justify-center py-12"><Loader2 className="animate-spin text-gray-400" size={32} /></div>
+          ) : captures.length === 0 ? (
+            <div className="text-center py-12 text-gray-400">
+              <Eye size={48} className="mx-auto mb-3 opacity-50" />
+              <p className="text-lg font-medium">No ads captured yet</p>
+              <p className="text-sm mt-1">Click "Scrape Ads" to start capturing banner ads from political news sites.</p>
+            </div>
+          ) : (
+            <>
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+                {captures.map(cap => (
+                  <div
+                    key={cap.id}
+                    onClick={() => loadCaptureDetail(cap.id)}
+                    className="bg-white rounded-lg border border-gray-200 overflow-hidden hover:shadow-md transition cursor-pointer"
+                  >
+                    {/* Ad preview area */}
+                    <div className="bg-gray-50 h-32 flex items-center justify-center border-b border-gray-100">
+                      {cap.has_screenshot ? (
+                        <div className="text-xs text-gray-400 flex items-center gap-1"><Eye size={14} /> Click to view</div>
+                      ) : (
+                        <div className="text-xs text-gray-300">No screenshot</div>
+                      )}
+                    </div>
+                    <div className="p-3 space-y-1">
+                      <div className="flex items-center justify-between">
+                        <span className="inline-block px-2 py-0.5 text-xs font-medium bg-indigo-50 text-indigo-700 rounded">
+                          {cap.site}
+                        </span>
+                        <div className="flex items-center gap-1.5">
+                          {cap.landing_page_type && cap.landing_page_type !== 'unknown' && (
+                            <span className={`px-1.5 py-0.5 text-xs rounded ${
+                              cap.landing_page_type === 'advocacy' ? 'bg-red-50 text-red-700' :
+                              cap.landing_page_type === 'issue' ? 'bg-amber-50 text-amber-700' :
+                              cap.landing_page_type === 'corporate' ? 'bg-blue-50 text-blue-700' :
+                              cap.landing_page_type === 'donation' ? 'bg-green-50 text-green-700' :
+                              'bg-gray-50 text-gray-600'
+                            }`}>{cap.landing_page_type}</span>
+                          )}
+                          <span className="text-xs text-gray-400">{cap.ad_slot}</span>
+                        </div>
+                      </div>
+                      {cap.resolved_domain ? (
+                        <div className="text-sm font-medium text-gray-900 truncate">{cap.resolved_domain}</div>
+                      ) : cap.destination_domain ? (
+                        <div className="text-sm font-medium text-gray-900 truncate">{cap.destination_domain}</div>
+                      ) : null}
+                      {cap.landing_page_title ? (
+                        <div className="text-xs text-gray-600 truncate">{cap.landing_page_title}</div>
+                      ) : cap.ad_text ? (
+                        <div className="text-xs text-gray-500 truncate">{cap.ad_text}</div>
+                      ) : null}
+                      <div className="text-xs text-gray-400">{cap.captured_at ? timeAgo(cap.captured_at) : ''}</div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+
+              {/* Pagination */}
+              {captureTotal > 24 && (
+                <div className="flex justify-center gap-2 pt-2">
+                  <button
+                    onClick={() => setCapturePage(p => Math.max(1, p - 1))}
+                    disabled={capturePage === 1}
+                    className="px-3 py-1 border rounded text-sm disabled:opacity-30 cursor-pointer"
+                  >
+                    <ChevronLeft size={16} />
+                  </button>
+                  <span className="px-3 py-1 text-sm text-gray-600">
+                    Page {capturePage} of {Math.ceil(captureTotal / 24)}
+                  </span>
+                  <button
+                    onClick={() => setCapturePage(p => p + 1)}
+                    disabled={capturePage >= Math.ceil(captureTotal / 24)}
+                    className="px-3 py-1 border rounded text-sm disabled:opacity-30 cursor-pointer"
+                  >
+                    <ChevronRight size={16} />
+                  </button>
+                </div>
+              )}
+            </>
+          )}
+        </div>
+      )}
+
+      {tab === 'campaigns' && (
+        <div className="space-y-4">
+          {campaigns.length === 0 ? (
+            <div className="text-center py-12 text-gray-400">
+              <Building2 size={48} className="mx-auto mb-3 opacity-50" />
+              <p className="text-lg font-medium">No campaigns yet</p>
+              <p className="text-sm mt-1">Campaigns are created automatically when ads are scraped and grouped by advertiser domain.</p>
+            </div>
+          ) : (
+            <div className="bg-white rounded-lg border border-gray-200 overflow-hidden">
+              <table className="w-full text-sm">
+                <thead className="bg-gray-50 border-b border-gray-200">
+                  <tr>
+                    <th className="text-left px-4 py-2 font-medium text-gray-600">Advertiser</th>
+                    <th className="text-left px-4 py-2 font-medium text-gray-600">Domain</th>
+                    <th className="text-center px-4 py-2 font-medium text-gray-600">Ads</th>
+                    <th className="text-left px-4 py-2 font-medium text-gray-600">Sites</th>
+                    <th className="text-left px-4 py-2 font-medium text-gray-600">First Seen</th>
+                    <th className="text-left px-4 py-2 font-medium text-gray-600">Last Seen</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {campaigns.map(c => (
+                    <tr key={c.id} className="border-b border-gray-100 hover:bg-gray-50">
+                      <td className="px-4 py-2 font-medium text-gray-900">
+                        {c.advertiser_name}
+                        {c.entity_id && (
+                          <button
+                            onClick={() => onNavigate('entity', c.entity_id)}
+                            className="ml-2 text-xs text-indigo-600 hover:underline cursor-pointer"
+                          >
+                            View entity
+                          </button>
+                        )}
+                      </td>
+                      <td className="px-4 py-2 text-gray-500">{c.advertiser_domain || '—'}</td>
+                      <td className="px-4 py-2 text-center font-medium">{c.capture_count}</td>
+                      <td className="px-4 py-2">
+                        <div className="flex gap-1">
+                          {c.sites_seen_on.map(s => (
+                            <span key={s} className="px-1.5 py-0.5 text-xs bg-gray-100 rounded">{s}</span>
+                          ))}
+                        </div>
+                      </td>
+                      <td className="px-4 py-2 text-gray-500 text-xs">{c.first_seen ? formatDate(c.first_seen) : '—'}</td>
+                      <td className="px-4 py-2 text-gray-500 text-xs">{c.last_seen ? formatDate(c.last_seen) : '—'}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Capture detail modal */}
+      {selectedCapture && (
+        <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4" onClick={() => setSelectedCapture(null)}>
+          <div className="bg-white rounded-xl max-w-2xl w-full max-h-[80vh] overflow-y-auto p-6" onClick={e => e.stopPropagation()}>
+            <div className="flex items-center justify-between mb-4">
+              <h3 className="text-lg font-semibold text-gray-900">Ad Capture #{selectedCapture.id}</h3>
+              <button onClick={() => setSelectedCapture(null)} className="p-1 hover:bg-gray-100 rounded cursor-pointer"><X size={20} /></button>
+            </div>
+
+            {selectedCapture.screenshot_base64 && (
+              <div className="mb-4 border border-gray-200 rounded-lg overflow-hidden bg-gray-50">
+                <img
+                  src={`data:image/png;base64,${selectedCapture.screenshot_base64}`}
+                  alt="Ad screenshot"
+                  className="max-w-full h-auto"
+                />
+              </div>
+            )}
+
+            {/* Landing page info card */}
+            {selectedCapture.landing_page_title && (
+              <div className="mb-4 bg-gray-50 border border-gray-200 rounded-lg overflow-hidden">
+                {selectedCapture.landing_page_og_image && (
+                  <img
+                    src={selectedCapture.landing_page_og_image}
+                    alt=""
+                    className="w-full h-36 object-cover"
+                    onError={e => (e.currentTarget.style.display = 'none')}
+                  />
+                )}
+                <div className="p-3 space-y-1.5">
+                  <div className="flex items-center gap-2">
+                    <h4 className="font-semibold text-gray-900 text-sm flex-1">{selectedCapture.landing_page_title}</h4>
+                    {selectedCapture.landing_page_type && selectedCapture.landing_page_type !== 'unknown' && (
+                      <span className={`flex-shrink-0 px-2 py-0.5 text-xs font-medium rounded ${
+                        selectedCapture.landing_page_type === 'advocacy' ? 'bg-red-100 text-red-700' :
+                        selectedCapture.landing_page_type === 'issue' ? 'bg-amber-100 text-amber-700' :
+                        selectedCapture.landing_page_type === 'corporate' ? 'bg-blue-100 text-blue-700' :
+                        selectedCapture.landing_page_type === 'donation' ? 'bg-green-100 text-green-700' :
+                        selectedCapture.landing_page_type === 'product' ? 'bg-purple-100 text-purple-700' :
+                        'bg-gray-100 text-gray-600'
+                      }`}>{selectedCapture.landing_page_type}</span>
+                    )}
+                  </div>
+                  {selectedCapture.landing_page_description && (
+                    <p className="text-xs text-gray-600 line-clamp-3">{selectedCapture.landing_page_description}</p>
+                  )}
+                  {selectedCapture.resolved_url && (
+                    <a href={selectedCapture.resolved_url} target="_blank" rel="noopener noreferrer" className="text-xs text-indigo-600 hover:underline truncate block">
+                      {selectedCapture.resolved_domain || selectedCapture.resolved_url}
+                    </a>
+                  )}
+                  {selectedCapture.landing_page_keywords && (
+                    <div className="flex flex-wrap gap-1 pt-1">
+                      {selectedCapture.landing_page_keywords.split(',').slice(0, 8).map((kw, i) => (
+                        <span key={i} className="px-1.5 py-0.5 bg-gray-200 text-gray-600 text-xs rounded">{kw.trim()}</span>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
+
+            <dl className="grid grid-cols-2 gap-3 text-sm">
+              <div><dt className="text-gray-500">Site</dt><dd className="font-medium">{selectedCapture.site}</dd></div>
+              <div><dt className="text-gray-500">Slot</dt><dd className="font-medium">{selectedCapture.ad_slot}</dd></div>
+              <div className="col-span-2"><dt className="text-gray-500">Page URL</dt><dd className="font-medium truncate">{selectedCapture.page_url}</dd></div>
+              {selectedCapture.destination_url && (
+                <div className="col-span-2">
+                  <dt className="text-gray-500">Ad Click URL</dt>
+                  <dd><a href={selectedCapture.destination_url} target="_blank" rel="noopener noreferrer" className="text-indigo-600 hover:underline truncate block">{selectedCapture.destination_url}</a></dd>
+                </div>
+              )}
+              {selectedCapture.resolved_url && selectedCapture.resolved_url !== selectedCapture.destination_url && (
+                <div className="col-span-2">
+                  <dt className="text-gray-500">Resolves To</dt>
+                  <dd><a href={selectedCapture.resolved_url} target="_blank" rel="noopener noreferrer" className="text-indigo-600 hover:underline truncate block">{selectedCapture.resolved_url}</a></dd>
+                </div>
+              )}
+              {(selectedCapture.resolved_domain || selectedCapture.destination_domain) && (
+                <div><dt className="text-gray-500">Advertiser Domain</dt><dd className="font-medium">{selectedCapture.resolved_domain || selectedCapture.destination_domain}</dd></div>
+              )}
+              {selectedCapture.width && selectedCapture.height && (
+                <div><dt className="text-gray-500">Size</dt><dd className="font-medium">{selectedCapture.width} × {selectedCapture.height}</dd></div>
+              )}
+              {selectedCapture.ad_text && (
+                <div className="col-span-2"><dt className="text-gray-500">Ad Text</dt><dd className="font-medium">{selectedCapture.ad_text}</dd></div>
+              )}
+              <div><dt className="text-gray-500">Captured</dt><dd className="font-medium">{selectedCapture.captured_at ? formatDate(selectedCapture.captured_at) : '—'}</dd></div>
+            </dl>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+
+// ---------- Auto-sync Toast ----------
+function AutoSyncToast({ onComplete }: { onComplete: () => void }) {
+  const [status, setStatus] = useState<{ status: string; phase?: string; lda?: { stored: number; skipped?: number; duplicates?: number; pages: number } | null; newsletters?: { stored: number; skipped?: number; errors?: number } | null; error?: string | null } | null>(null);
+  const [dismissed, setDismissed] = useState(false);
+
+  useEffect(() => {
+    let timer: ReturnType<typeof setInterval>;
+    const poll = () => {
+      api.getAutoSyncStatus().then(s => {
+        setStatus(s);
+        if (s.status === 'completed' || s.status === 'error') {
+          clearInterval(timer);
+          onComplete();
+        }
+      }).catch(() => {});
+    };
+    poll();
+    timer = setInterval(poll, 3000);
+    return () => clearInterval(timer);
+  }, [onComplete]);
+
+  if (dismissed || !status || status.status === 'idle') return null;
+
+  const isRunning = status.status === 'running';
+  const isError = status.status === 'error';
+  const isDone = status.status === 'completed';
+
+  return (
+    <div className={`fixed bottom-4 right-4 z-50 max-w-sm rounded-lg border shadow-lg p-4 text-sm ${isError ? 'bg-red-50 border-red-200' : isDone ? 'bg-green-50 border-green-200' : 'bg-white border-gray-200'}`}>
+      <div className="flex items-start gap-3">
+        <div className="shrink-0 mt-0.5">
+          {isRunning && <Loader2 size={16} className="animate-spin text-indigo-500" />}
+          {isDone && <RefreshCw size={16} className="text-green-600" />}
+          {isError && <X size={16} className="text-red-500" />}
+        </div>
+        <div className="flex-1 min-w-0">
+          {isRunning && (
+            <>
+              <p className="font-medium text-gray-900">Syncing data...</p>
+              <p className="text-gray-500 text-xs mt-0.5">
+                {status.phase === 'lda_sync' ? 'Fetching new LDA filings...' : 'Scraping newsletters...'}
+              </p>
+              {status.lda && (
+                <p className="text-gray-400 text-xs mt-0.5">LDA: {status.lda.stored} new filings</p>
+              )}
+            </>
+          )}
+          {isDone && (
+            <>
+              <p className="font-medium text-green-800">Sync complete</p>
+              <div className="text-xs text-green-700 mt-1 space-y-0.5">
+                {status.lda && <p>LDA: {status.lda.stored} new filing{status.lda.stored !== 1 ? 's' : ''}{status.lda.duplicates ? `, ${status.lda.duplicates} existing` : ''}</p>}
+                {status.newsletters && <p>Newsletters: {status.newsletters.stored} new{status.newsletters.skipped ? `, ${status.newsletters.skipped} existing` : ''}</p>}
+              </div>
+            </>
+          )}
+          {isError && (
+            <>
+              <p className="font-medium text-red-800">Sync error</p>
+              <p className="text-xs text-red-600 mt-0.5 truncate">{status.error}</p>
+              {status.lda && <p className="text-xs text-red-600">LDA: {status.lda.stored} new filings (before error)</p>}
+            </>
+          )}
+        </div>
+        {(isDone || isError) && (
+          <button onClick={() => setDismissed(true)} className="text-gray-400 hover:text-gray-600 cursor-pointer shrink-0">
+            <X size={14} />
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
+
+
 // ---------- App ----------
 export default function App() {
-  type NavState = { page: Page; filingUuid?: string; entityId?: number; newsletterId?: number; centerEntityId?: number; leaderboardType?: string; conversationId?: number; searchFilter?: { registrant?: string; client?: string; q?: string } };
+  type NavState = { page: Page; filingUuid?: string; entityId?: number; newsletterId?: number; centerEntityId?: number; leaderboardType?: string; conversationId?: number; searchFilter?: { registrant?: string; client?: string; lobbyist?: string; government_entity?: string; q?: string } };
 
   // Build a NavState from the current browser URL hash
   const parseHash = useCallback((): NavState => {
@@ -3321,7 +3935,7 @@ export default function App() {
         return { page: 'search' };
       }
       default: {
-        const pages: Page[] = ['dashboard', 'search', 'influence', 'network', 'utilities', 'chat'];
+        const pages: Page[] = ['dashboard', 'search', 'influence', 'network', 'utilities', 'chat', 'ads'];
         if (pages.includes(segment as Page)) return { page: segment as Page };
         return { page: 'dashboard' };
       }
@@ -3408,9 +4022,12 @@ export default function App() {
     : (page === 'entity' || page === 'newsletter' || page === 'leaderboard') ? 'influence'
     : page;
 
+  const handleAutoSyncComplete = useCallback(() => setSyncVersion(v => v + 1), []);
+
   return (
     <div className="min-h-screen">
       <Nav page={navPage} setPage={p => { setNavState({ page: p }); }} />
+      <AutoSyncToast onComplete={handleAutoSyncComplete} />
       <main className="max-w-7xl mx-auto px-4 sm:px-6 py-6">
         {page === 'dashboard' && <Dashboard onNavigate={handleNavigate} />}
         {page === 'search' && <SearchPage key={JSON.stringify(navState.searchFilter ?? {})} onNavigate={handleNavigate} initialFilter={navState.searchFilter} />}
@@ -3429,6 +4046,7 @@ export default function App() {
         {page === 'leaderboard' && navState.leaderboardType && (
           <EntityLeaderboard entityType={navState.leaderboardType} onBack={handleBack} onNavigate={handleNavigate} />
         )}
+        {page === 'ads' && <AdsPage onNavigate={handleNavigate} />}
         {page === 'reports' && <ReportsPage syncVersion={syncVersion} onNavigate={handleNavigate} />}
         {page === 'utilities' && <UtilitiesPage onSyncComplete={() => setSyncVersion(v => v + 1)} />}
         {page === 'chat' && (
